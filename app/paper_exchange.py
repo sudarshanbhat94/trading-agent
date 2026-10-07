@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import sqlite3
 
 from .account_safety import atomic
 from . import books, executable_quotes
@@ -230,6 +231,19 @@ def service(con, catalogue, quotes, *, regime, now=None):
                 outcomes.append(_terminal(con, row, 'expired', 'Approved entry window expired', now)); continue
             if regime not in {'ON', 'NEUTRAL'} or plan['sleeve']=='index_directional' and regime!='ON':
                 outcomes.append(_terminal(con, row, 'rejected', 'Current regime blocks new equity longs', now)); continue
+            if plan.get('approval_kind') == 'house-mirror' and plan['sleeve'] == 'quality_momentum':
+                try:
+                    from .screening import automation
+                    from .sleeves.config import SLEEVES
+                    if not SLEEVES.quality_momentum.enabled:
+                        raise ValueError('Stock paper sleeve feature flag is disabled')
+                    origin = automation.source_fill(con, plan['house_position_id'], plan['house_epoch'])
+                    if plan.get('model_version') != automation.MODEL_VERSION or plan.get('selective_paper') != origin['selective_paper']:
+                        raise ValueError('Selective stock mirror identity changed')
+                    automation.binding(plan['selective_paper'], plan['symbol'], plan['stop'], plan['target'],
+                                       plan['house_epoch'], catalogue, now)
+                except (ValueError, sqlite3.Error, OSError, KeyError, TypeError) as exc:
+                    outcomes.append(_terminal(con,row,'rejected',str(exc),now));continue
             snapshot = (quotes.get(plan['symbol']) or {}).get('execution')
             try:
                 price, displayed = executable_quotes.top(snapshot, 'BUY', key=payload['instrument_key'],
@@ -312,8 +326,8 @@ def house_state(con, quotes, now):
 
 
 def enqueue_house(con, catalogue, allocation, quotes, *, regime, now):
-    """Freeze an existing allowlisted sleeve proposal, never promote a stock model."""
-    from .sleeves.config import PRODUCTION_SLEEVES
+    """Reserve an allowlisted paper proposal, bound to its immutable source."""
+    from .sleeves.config import PRODUCTION_SLEEVES, SLEEVES
     from .sleeves.risk import RiskManager, stop_loss_including_costs, SLIPPAGE
     from . import execution_contracts
     from .instrument_catalog import resolve
@@ -323,6 +337,8 @@ def enqueue_house(con, catalogue, allocation, quotes, *, regime, now):
     if regime not in {'ON','NEUTRAL'} or candidate.sleeve not in PRODUCTION_SLEEVES or candidate.instrument != 'EQ' or \
             candidate.sleeve=='index_directional' and regime!='ON':
         raise ValueError('Unsupported or unpromoted house proposal')
+    if not getattr(SLEEVES, candidate.sleeve).enabled:
+        raise ValueError('House paper sleeve feature flag is disabled')
     if candidate.sleeve=='index_directional':
         from .sleeves.index_directional import SYMBOL
         if candidate.symbol!=SYMBOL:raise ValueError('Instrument is outside the production index model')
@@ -337,9 +353,28 @@ def enqueue_house(con, catalogue, allocation, quotes, *, regime, now):
         _, rules = execution_contracts._latest(catalogue, 'rules', spec.id, now)
         tick = Decimal(str(rules['tick_size']))
         ceiling = float((Decimal(str(candidate.entry))*(1+Decimal(str(SLIPPAGE)))/tick).to_integral_value(rounding=ROUND_FLOOR)*tick)
+        stock = None
+        stock_request_key = None
+        if candidate.sleeve == 'quality_momentum':
+            from .screening import automation
+            stock = automation.binding(candidate.why.get('selective_paper'), candidate.symbol,
+                                       candidate.stop, candidate.target, epoch, catalogue, now)
+            if not stock['entry_low'] <= candidate.entry <= stock['entry_high']:
+                raise ValueError('Stock reference price is outside its original entry zone')
+            ceiling = min(ceiling, float(stock['entry_high']))
+            ceiling = float((Decimal(str(ceiling))/tick).to_integral_value(rounding=ROUND_FLOOR)*tick)
+            metadata = candidate.why['selective_paper']
+            stock_request_key = 'stock-publication:'+hashlib.sha256((epoch+':'+metadata['fingerprint']).encode()).hexdigest()
+            prior = con.execute('SELECT id FROM paper_order_intents WHERE user_id=0 AND epoch=? AND request_key=?',
+                                (epoch, stock_request_key)).fetchone()
+            if prior:
+                return status(con, 0, prior[0])
         sized = RiskManager().size(replace(candidate, entry=ceiling), state)
         if not sized.ok: raise ValueError(sized.reason)
         quantity = min(int(allocation.shares), sized.shares)
+        if stock:
+            quantity = min(quantity, int(stock['qty']))
+            automation.check_economics(stock, quantity)
         if quantity*ceiling < RiskManager().s.min_ticket: raise ValueError('House ticket below account minimum')
         spec, key, evidence = execution_contracts.order_contract(catalogue, instrument_id=spec.id,
                                                 quantity=quantity, price=ceiling, now=now)
@@ -361,6 +396,15 @@ def enqueue_house(con, catalogue, allocation, quotes, *, regime, now):
                     instrument_id=spec.id, epoch=epoch, model_version='existing-production-sleeve-v1',
                     expires_at=(now+timedelta(minutes=5)).isoformat())
         request_key = 'house-proposal:'+hashlib.sha256((semantic+now.isoformat()).encode()).hexdigest()
+        if stock:
+            metadata = candidate.why['selective_paper']
+            plan.update(entry_low=stock['entry_low'], entry_high=ceiling,
+                        model_version=automation.MODEL_VERSION, selective_paper=metadata,
+                        source_publication=dict(publication_id=metadata['publication_id'], fingerprint=metadata['fingerprint']),
+                        validation='unvalidated paper trial')
+            # Stable across cycles/restarts/days. A publication cannot reopen
+            # after a fill, cancellation or exit; a new plan needs a new identity.
+            request_key = stock_request_key
         order_id = 'paper_'+hashlib.sha256(request_key.encode()).hexdigest()
         notional = quantity*ceiling
         payload = dict(plan=plan, instrument_key=key, regime_at_submit=regime, notional=notional,
@@ -380,7 +424,7 @@ def service_house(con, catalogue, quotes, *, regime, now):
     from . import v2_live, execution_contracts, entry_contracts
     from .sleeves.base import Candidate
     from .sleeves.risk import RiskManager, stop_loss_including_costs
-    from .sleeves.config import PRODUCTION_SLEEVES
+    from .sleeves.config import PRODUCTION_SLEEVES, SLEEVES
     from .worker_fencing import require_current
     from .recovery_guard import assert_database_execution_allowed
     assert_database_execution_allowed(con); outcomes=[]
@@ -397,8 +441,19 @@ def service_house(con, catalogue, quotes, *, regime, now):
             if now>=executable_quotes.moment(plan['expires_at']):
                 outcomes.append(_terminal(con,row,'expired','House proposal expired',now));continue
             if regime not in {'ON','NEUTRAL'} or plan['sleeve'] not in PRODUCTION_SLEEVES or \
-                    plan['sleeve']=='index_directional' and regime!='ON':
+                    plan['sleeve']=='index_directional' and regime!='ON' or not getattr(SLEEVES, plan['sleeve']).enabled:
                 outcomes.append(_terminal(con,row,'rejected','Regime or production sleeve gate blocks entry',now));continue
+            if plan['sleeve'] == 'quality_momentum':
+                try:
+                    from .screening import automation
+                    if plan.get('model_version') != automation.MODEL_VERSION:
+                        raise ValueError('Legacy stock order is not authorised by the selective paper trial')
+                    source = automation.binding(plan.get('selective_paper'), plan['symbol'], plan['stop'],
+                                                plan['target'], row[2], catalogue, now)
+                    if plan['entry_low'] != source['entry_low'] or plan['entry_high'] > source['entry_high'] or plan['quantity'] > source['qty']:
+                        raise ValueError('Stock order exceeds its frozen publication')
+                except (ValueError, sqlite3.Error, OSError, KeyError, TypeError) as exc:
+                    outcomes.append(_terminal(con,row,'rejected',str(exc),now));continue
             snapshot=(quotes.get(plan['symbol']) or {}).get('execution')
             try:
                 price,displayed=executable_quotes.top(snapshot,'BUY',key=payload['instrument_key'],symbol=plan['symbol'],
@@ -434,7 +489,8 @@ def service_house(con, catalogue, quotes, *, regime, now):
             con.execute("INSERT INTO paper_depth_usage VALUES(?,'BUY',?) ON CONFLICT(snapshot_id,side) DO UPDATE SET quantity=quantity+excluded.quantity",
                         (snapshot['snapshot_id'],plan['quantity']))
             result=dict(ok=True,mode='paper',order_id=order_id,plan_id=row[3],status='filled',qty=plan['quantity'],
-                        entry=price,position_id=pid,paper_recorded=True,protection='application-paper',simulation_version=SIMULATION_VERSION)
+                        entry=price,position_id=pid,paper_recorded=True,protection='application-paper',simulation_version=SIMULATION_VERSION,
+                        model_version=plan['model_version'],source_publication=plan.get('source_publication'))
             con.execute("UPDATE paper_order_state SET status='filled',reason='',result=? WHERE order_id=?",(json.dumps(result),order_id))
             _event(con,order_id,'FILLED',dict(result=result,snapshot=snapshot),now);outcomes.append(result)
     return outcomes

@@ -135,7 +135,7 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
             invalidation=f"Cancel if price falls below Rs {stop:.2f}, adverse news appears, or the market/risk gate blocks entry",
             horizon="4–8 weeks; reassess after 40 sessions",
             target_method="T1/T2/T3 = 2/3/4 times price risk from the upper entry price; scenarios, not price forecasts",
-            actionable=False,execution="Conditional paper preview; stock execution remains unpromoted",
+            actionable=False,execution="Conditional research preview; automatic paper entries use a separate confirmed trial plan",
             evidence=row))
     rows.sort(key=lambda r:(-r["score"],r["symbol"]))
     selected, sectors = [], set()
@@ -155,4 +155,4 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
             book.capital*SLEEVES.max_drawdown-book.open_risk)),2),
         max_positions=SLEEVES.max_positions_total,book_error=book_error,
         rejected=rejected,generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
-        note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Entry confirmation and independent validation are still required.")
+        note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Automatic paper entries require confirmed trial plans; independent validation remains required before live use.")

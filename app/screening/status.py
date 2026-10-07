@@ -58,6 +58,9 @@ def paper_execution_scope():
     from ..sleeves.index_directional import SYMBOL
     enabled = [name for name in PRODUCTION_SLEEVES if getattr(SLEEVES, name).enabled]
     stocks = [name for name in enabled if name in ("mean_reversion", "quality_momentum", "early_momentum")]
+    from .automation import MODEL_VERSION
     return dict(production_sleeves=enabled, automated_stock_sleeves=stocks,
                 stock_entries_enabled=bool(stocks),
+                stock_model_version=MODEL_VERSION if 'quality_momentum' in stocks else None,
+                stock_validation='unvalidated paper trial' if stocks else None,
                 automated_index_instruments=[SYMBOL] if "index_directional" in enabled else [])

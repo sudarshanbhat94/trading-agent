@@ -344,7 +344,7 @@ class EngineWiringTest(ContractStorageCase):
     def test_all_five_sleeves_exist_and_are_prioritised(self) -> None:
         eng = SleeveEngine()
         self.assertEqual(sorted(eng.sleeves), sorted(PRIORITY))
-        self.assertEqual(PRIORITY[0], "index_directional", "retrospectively positive candidate gets first claim")
+        self.assertEqual(PRIORITY[0], "quality_momentum", "qualified individual stocks get first claim")
         self.assertEqual(PRIORITY[-1], "options_overlay", "overlay is allocated last")
 
     def test_every_sleeve_has_a_feature_flag(self) -> None:
@@ -354,12 +354,14 @@ class EngineWiringTest(ContractStorageCase):
                 self.assertIsNotNone(cfg)
                 self.assertIsInstance(cfg.enabled, bool)
 
-    def test_only_index_can_open_paper_trades(self) -> None:
-        self.assertEqual(ACTIVE_SLEEVES, ("index_directional", "quality_momentum"))
-        self.assertEqual(PRODUCTION_SLEEVES, ("index_directional",))
-        self.assertEqual(OBSERVATION_SLEEVES, ("quality_momentum",))
+    def test_only_selective_stock_trial_and_index_can_open_paper_trades(self) -> None:
+        from app.screening.automation import SelectivePaperSleeve
+        self.assertEqual(ACTIVE_SLEEVES, ("quality_momentum", "index_directional"))
+        self.assertEqual(PRODUCTION_SLEEVES, ACTIVE_SLEEVES)
+        self.assertEqual(OBSERVATION_SLEEVES, ())
+        self.assertIsInstance(SleeveEngine().sleeves['quality_momentum'], SelectivePaperSleeve)
 
-    def test_positive_stock_screen_never_reaches_allocator(self) -> None:
+    def test_old_factor_screen_without_dated_trial_evidence_never_reaches_allocator(self) -> None:
         bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
         bars.volume = 2_000_000.0
         asof = bars.index[-1]
@@ -372,17 +374,9 @@ class EngineWiringTest(ContractStorageCase):
                              factor_symbols={"TEST"}, require_reference_data=True,
                              require_live_quotes=True, routable_instruments=("EQ",))
         stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
-        self.assertEqual([r["symbol"] for r in stock.diagnostics["watch"]], ["TEST"])
-        self.assertGreater(stock.diagnostics["watch"][0]["min_ticket_stop_risk"], 0)
-        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_risk_cap"], 150)
-        self.assertLess(stock.diagnostics["watch"][0]["planned_stop"],
-                        stock.diagnostics["watch"][0]["price"])
-        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_notional_cap"], 3000)
-        self.assertTrue(stock.diagnostics["screen_gate_open"])
-        self.assertIn("fresh_book_risk_fit", stock.diagnostics)
         self.assertEqual(stock.candidates, [])
         self.assertFalse(stock.active)
-        self.assertIn("research only", stock.note)
+        self.assertIn("constituents unavailable", stock.note)
         self.assertEqual(result.allocations, [])
 
     def test_unaffordable_signal_is_reported_not_called_actionable(self) -> None:
@@ -415,8 +409,7 @@ class EngineWiringTest(ContractStorageCase):
                              factor_symbols={"TEST"}, require_reference_data=True,
                              require_live_quotes=True, routable_instruments=("EQ",))
         stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
-        self.assertEqual(stock.diagnostics["watch"][0]["symbol"], "TEST")
-        self.assertEqual(stock.diagnostics["watch"][0]["price_source"], "completed close")
+        self.assertIn("constituents unavailable", stock.note)
         self.assertEqual(stock.candidates, [])
         self.assertEqual(result.allocations, [])
 

@@ -76,6 +76,12 @@ def approve(con,plan,*,approved_by,approval_reference,now=None):
                 plan['quantity']>source[2] or json.loads(contract[0])['instrument_id']!=plan['instrument_id']:
             raise ValueError('Mirror approval requires the current owned allowlisted house fill')
         ExitPolicy.decode(plan['exit_policy'])
+        if plan['sleeve'] == 'quality_momentum':
+            from .screening import automation
+            origin = automation.source_fill(con, plan['house_position_id'], plan['house_epoch'])
+            if plan.get('model_version') != automation.MODEL_VERSION or plan.get('selective_paper') != origin['selective_paper'] or \
+                    plan['entry_low'] != origin['entry_low'] or plan['entry_high'] > origin['entry_high']:
+                raise ValueError('Stock mirror must retain the actual fill model and frozen entry zone')
     elif plan.get('approval_kind')=='validated-model':
         if plan.get('sleeve') not in {'mean_reversion','quality_momentum','early_momentum','index_directional','options_overlay'} or \
                 not plan.get('independent_validation_reference'):
@@ -175,6 +181,15 @@ def submit_house_mirror(con,catalogue,user_id,payload,quotes,*,regime,now):
         _,rules=execution_contracts._latest(catalogue,'rules',spec.id,now)
         tick=Decimal(str(rules['tick_size']))
         ceiling=float((Decimal(str(payload['price']))*(1+Decimal(str(SLIPPAGE)))/tick).to_integral_value(rounding=ROUND_FLOOR)*tick)
+        origin = None
+        if (payload['sleeve'] or payload['strategy']) == 'quality_momentum':
+            from .screening import automation
+            origin = automation.source_fill(con, payload['src_id'], payload['house_epoch'])
+            automation.binding(origin['selective_paper'], payload['symbol'], payload['stop'], payload['target'],
+                               payload['house_epoch'], catalogue, now)
+            ceiling = min(ceiling, origin['entry_high'])
+            if price < origin['entry_low']:
+                raise ValueError('Current ask is below the original stock entry zone')
         if price>ceiling:raise ValueError('Current ask exceeds the source fill slippage allowance')
         state,reason=books.risk_state(con,user_id,'IN',quotes)
         candidate=Candidate(payload['symbol'],payload['sleeve'] or payload['strategy'],1,ceiling,payload['stop'],
@@ -182,6 +197,10 @@ def submit_house_mirror(con,catalogue,user_id,payload,quotes,*,regime,now):
         allocation=RiskManager().size(candidate,state) if state and not reason else None
         if not allocation or not allocation.ok:raise ValueError(reason or (allocation.reason if allocation else 'Account risk unavailable'))
         quantity=min(allocation.shares,int(payload['max_shares']))
+        if origin:
+            source = automation.binding(origin['selective_paper'], payload['symbol'], payload['stop'], payload['target'],
+                                        payload['house_epoch'], catalogue, now)
+            automation.check_economics(source, quantity)
         plan=dict(user_id=user_id,market='IN',epoch=epoch,mode='paper',side='BUY',product='D',
             instrument_id=spec.id,symbol=payload['symbol'],quantity=quantity,stop=payload['stop'],target=payload['target'],
             entry_low=float(Decimal(str(payload['stop']))+tick),entry_high=ceiling,
@@ -189,6 +208,10 @@ def submit_house_mirror(con,catalogue,user_id,payload,quotes,*,regime,now):
             approval_kind='house-mirror',house_position_id=payload['src_id'],house_epoch=payload['house_epoch'],
             exit_policy=payload['exit_policy'],evidence_reference='house-fill:'+str(payload['src_id']),
             evidence_at=payload['created_at'],expires_at=(now+timedelta(minutes=5)).isoformat())
+        if origin:
+            plan.update(entry_low=origin['entry_low'], model_version=origin['model_version'],
+                        selective_paper=origin['selective_paper'], source_publication=origin['source_publication'],
+                        validation='unvalidated paper trial')
         plan_id=approve(con,plan,approved_by='existing-production-house-fill',
                         approval_reference='current-house-position:'+str(payload['src_id']),now=now)
         return submit(con,catalogue,user_id,plan_id,request_key,quotes,regime=regime,now=now)

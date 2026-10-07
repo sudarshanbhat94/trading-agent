@@ -81,6 +81,14 @@ class DeskStatusCopyTest(unittest.TestCase):
         self.assertIn('&lt;img', html)
         self.assertNotIn('<img src=x', html)
 
+    def test_enabled_stock_trial_is_visible_and_does_not_claim_validated_returns(self):
+        data = payload();data['execution_scope']['stock_entries_enabled'] = True
+        html = render(data)
+        self.assertIn('Individual-stock paper automation is enabled', html)
+        self.assertIn('completed rebound', html)
+        self.assertIn('has not established profitable returns', html)
+        self.assertNotIn('Automated individual-stock entries are not enabled', html)
+
 
 if __name__ == '__main__':
     unittest.main()

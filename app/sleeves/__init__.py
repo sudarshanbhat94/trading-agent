@@ -1,11 +1,11 @@
 """Research sleeves behind one production allowlist and one risk manager.
 
-Only `index_directional` can submit Rs 10,000 paper-book proposals. The
-quality-stock screen uses current NSE Quality 50 constituents and cannot
-allocate paper cash. Other sleeves remain research-only.
+The selective individual-stock paper trial and the separate index sleeve can
+submit Rs 10,000 paper-book proposals. The old Quality 50 model is not installed
+in the production orchestrator. Other sleeves remain research-only.
 
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
-    quality_momentum  secondary — quality + intermediate momentum, ON only
+    quality_momentum  trial     — dated stock quality + confirmed pullback, ON/NEUTRAL
     early_momentum    tactical  — pre-top-gainer ignition detector
     index_directional index     — monthly NIFTYBEES trend exposure
     options_overlay   overlay   — defined-risk spreads only

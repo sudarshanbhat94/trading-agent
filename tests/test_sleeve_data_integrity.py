@@ -185,8 +185,9 @@ class BoundaryTest(unittest.TestCase):
                             {s:{"price":100} for s in ("GOOD","FUT","BAD")}, book,
                             require_live_quotes=True, require_reference_data=True,
                             eligible_symbols={"GOOD","STALE"}, routable_instruments=("EQ",))
-        self.assertEqual([c.symbol for c in result.decisions[0].candidates],["GOOD"])
-        self.assertEqual(len(result.decisions[0].rejected),3)
+        index_decision = next(d for d in result.decisions if d.sleeve == 'index_directional')
+        self.assertEqual([c.symbol for c in index_decision.candidates],["GOOD"])
+        self.assertEqual(len(index_decision.rejected),3)
         self.assertEqual([a.candidate.symbol for a in result.allocations],["GOOD"])
         with patch.object(v2_live,"market_open",return_value=True), \
              patch("app.ideas.track"), patch("app.ideas.publish",return_value=0) as publish:

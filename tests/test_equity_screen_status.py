@@ -61,7 +61,9 @@ class EquityScreenStatusTest(unittest.TestCase):
         before = copy.deepcopy(SLEEVES)
         got = paper_execution_scope()
         self.assertEqual(got['production_sleeves'],list(PRODUCTION_SLEEVES))
-        self.assertFalse(got['stock_entries_enabled'])
+        self.assertTrue(got['stock_entries_enabled'])
+        self.assertEqual(got['stock_model_version'], 'selective-paper-v1')
+        self.assertEqual(got['stock_validation'], 'unvalidated paper trial')
         self.assertEqual(got['automated_index_instruments'],['NIFTYBEES'])
         self.assertEqual(SLEEVES,before)
 
@@ -83,7 +85,7 @@ class EquityScreenStatusTest(unittest.TestCase):
                 got=json.loads(v2_web.api_overview(dict(id=2,account_plan='free')).body)
                 broker.assert_not_called();read.assert_called_once_with('IN')
         self.assertEqual(got['stock_screen']['screened_count'],5)
-        self.assertFalse(got['execution_scope']['stock_entries_enabled'])
+        self.assertTrue(got['execution_scope']['stock_entries_enabled'])
         self.assertEqual(got['regime_state']['IN'],'OFF')
 
 

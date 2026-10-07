@@ -941,7 +941,7 @@ def _remember_sleeve_view(market, result, asof, today_s):
             sleeve=dec.sleeve, active=bool(dec.active), note=dec.note,
             candidates=len(dec.candidates), rejected=rejected,
             diagnostics=dict(dec.diagnostics or {})))
-    primary = next((d for d in decisions if d["sleeve"] == "index_directional"),
+    primary = next((d for d in decisions if d["sleeve"] == "quality_momentum"),
                    decisions[0] if decisions else None)
     count = len(result.allocations)
     if count:
@@ -969,7 +969,7 @@ def _remember_sleeve_view(market, result, asof, today_s):
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
         risk_rejections=[dict(symbol=s, reason=r) for s, r in result.risk_rejections[:5]],
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
-        cadence="first NSE session of each month", decisions=decisions,
+        cadence="stocks: each production screening cycle; index: monthly review", decisions=decisions,
         diagnostics=(primary.get("diagnostics", {}) if primary else {}))
     # Survive service restarts and closed-market deployments. This is display
     # state only; failure to persist it must never affect the trading pass.
@@ -1861,6 +1861,10 @@ def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None, stop=No
     broker. Each order goes to that user's account, sized to their own margin —
     there is no shared sleeve any more."""
     from . import broker, live_trade
+    # Paper trial fills must not even verify a broker token or enter broker
+    # fan-out. Live promotion is a separate, explicitly authorised route.
+    if strategy not in live_trade.MIRRORED_LANES:
+        return
     # verify() before fanning out: a revoked token must fail the gate here, not
     # produce a burst of 401s that look like rejected orders
     users = []
@@ -4496,13 +4500,12 @@ def sleeve_pass(market):
         feed_db = _ro(MAIN_DB)
         try:
             from .sleeves.feeds import delivery_reader
-            from .sleeves.reference import (snapshot, refresh_membership,
-                                            refresh_factor_membership, factor_members)
+            from .sleeves.reference import snapshot, refresh_membership
             if market == "IN":
                 refresh_membership()
-                refresh_factor_membership()
             eligible, quality_scores = snapshot(datetime.now(timezone.utc))
-            factors = factor_members(datetime.now(timezone.utc)) if market == "IN" else None
+            from .screening import automation
+            observed_at = datetime.now(timezone.utc)
             result = _SLEEVE_ENGINE.run(
                 tails, mdf, asof, live, book,
                 trade_date=today,
@@ -4513,7 +4516,9 @@ def sleeve_pass(market):
                                           if last_rebalance else None),
                 require_live_quotes=True, routable_instruments=("EQ",),
                 eligible_symbols=eligible, quality_scores=quality_scores,
-                factor_symbols=factors,
+                equity_screen=automation.current_screen(observed_at) if market=='IN' else None,
+                paper_epoch=epoch_ts if market=='IN' else None,
+                observed_at=observed_at,
                 require_reference_data=(market == "IN"),
                 bootstrap_entry=not index_seen)
         finally:
@@ -4684,6 +4689,13 @@ def service_personal_paper(personal, market):
     symbols=[r[0] for r in personal.execute('SELECT DISTINCT symbol FROM user_positions WHERE market=?',(market,))]
     books.monitor_positions(personal,market,_live(market,symbols),regime_view=sleeve_view(market))
     if market!='IN':return
+    from .screening import automation
+    try:
+        tracked = automation.symbols()
+        if tracked:
+            automation.observe(_live(market, tracked), datetime.now(timezone.utc))
+    except (ValueError, sqlite3.Error, OSError):
+        _LOG.exception('Stock paper trial observations unavailable; exit management continues')
     buys=paper_exchange.pending(personal)
     pending_symbols=[json.loads(r[5])['plan']['symbol'] for r in buys+paper_exchange.exit_pending(personal)]
     if not pending_symbols:return

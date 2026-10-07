@@ -10,14 +10,11 @@ import os
 from dataclasses import dataclass
 
 
-# Hard production boundary. Research sleeves retain their own sizing defaults
-# for isolated replay and tests, but only these shares can consume the live
-# paper book. The executable after-cost stock replay has only one holdout
-# trade, so it is observed for research only and cannot consume paper cash.
-# Keeping the allowlist beside allocation prevents inactive research modules
-# from making a promoted sleeve look over-allocated.
-PRODUCTION_SLEEVES = ("index_directional",)
-OBSERVATION_SLEEVES = ("quality_momentum",)
+# PAPER entry boundary. The quality slot uses selective-paper-v1, not the old
+# Quality 50 replay. This is an authorised forward paper trial, NOT a claim of
+# validated returns or permission for a broker order. Legacy sleeves stay out.
+PRODUCTION_SLEEVES = ("quality_momentum", "index_directional")
+OBSERVATION_SLEEVES = ()
 
 
 def _bool(key: str, default: bool) -> bool:
@@ -90,7 +87,7 @@ class SleeveSettings:
             enabled=_bool("SLEEVE_QUALITY_MOMENTUM", True),
             risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.30),
             max_positions=1,
-            note="research-only; NSE Quality 50 with completed-session momentum, monthly")
+            note="selective-paper-v1 trial; liquid NSE stocks, dated quality evidence and confirmed pullback")
         self.early_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_EARLY_MOMENTUM", True),
             risk_share=_float("SHARE_EARLY_MOMENTUM", 0.20),
