@@ -35,6 +35,18 @@ var DESK_ACCOUNT='mine',DESK_DATA=null;
 function deskMoney(v){return v==null?'—':'₹'+new Intl.NumberFormat('en-IN',{maximumFractionDigits:2}).format(v);}
 function deskMetric(label,v){return '<div><small>'+esc(label)+'</small><b>'+v+'</b></div>';}
 function deskAccount(mode){DESK_ACCOUNT=mode;if(DESK_DATA)renderDesk(DESK_DATA);}
+function deskEquityScreen(d){
+ var s=d.stock_screen||{},scope=d.execution_scope||{},current=s.status==='current';
+ var label=current?'SCREEN UPDATED':s.status==='stale'?'STALE SCREEN':'SCREEN UNAVAILABLE';
+ var count=v=>v==null?'—':esc(v);
+ var text=current?'The latest screen covers '+count(s.screened_count)+' liquid individual NSE stocks from '+count(s.universe_count)+' constituents.':'Current stock coverage is unavailable. Last captured counts below are historical.';
+ var note=scope.stock_entries_enabled===true?'Stock entries still require approved setups and account risk checks.':scope.stock_entries_enabled===false?'Automated individual-stock entries are not enabled in this build.':'Individual-stock execution status is unavailable.';
+ return '<section class=desk-panel><div class=desk-head><div class=desk-eyebrow>NSE EQUITY SCREENING</div><span class="desk-status '+(current?'':'warn')+'">'+label+'</span></div><h2 style="font-size:23px;margin:8px 0">Individual stock opportunities</h2><p class=desk-message>'+text+'</p>'
+  +'<div class=desk-metrics>'+deskMetric('Constituent universe',count(s.universe_count))+deskMetric('Stocks screened',count(s.screened_count))+deskMetric('Passed evidence gates',current?count(s.evidence_passes):'—')+deskMetric('Price data through',esc(s.price_asof||'unavailable'))+'</div>'
+  +'<p class=desk-note>'+esc(note)+' Screening continues separately from the index entry gate. Evidence passes are not approved buys or fills.</p>'
+  +(current&&s.rejections&&s.rejections.length?'<details class=desk-history><summary>Why stocks were filtered</summary>'+s.rejections.map(r=>'<p class=desk-note>'+count(r.count)+' · '+esc(r.reason)+'</p>').join('')+'</details>':'')
+  +'<button class=desk-action style="margin-top:15px" onclick="go(\'ideas\')">Review stock ideas →</button></section>';
+}
 function renderDesk(d){
  DESK_DATA=d;var house=(d.markets||[]).find(x=>x.market==='IN')||{},mine=d.mine,real=d.real;
  REAL=real||null;MINE=mine||null;HERO=null;
@@ -55,13 +67,13 @@ function renderDesk(d){
  h+='</section>';
  var regime=(d.regime_state||{}).IN||'UNKNOWN',risk=house.readiness||{};
  var blocked=risk.halted||regime==='OFF'||regime==='UNKNOWN';
- var explanation=risk.halted?risk.reason:(regime==='OFF'?'NIFTYBEES is below its completed-session 200-day trend, so the strategy is holding cash.':(regime==='UNKNOWN'?'Waiting for a current, completed-session market reading.':'Only candidates that pass data, conviction and account risk checks can enter.'));
+ var explanation=risk.halted?risk.reason:(regime==='OFF'?'The completed market-trend gate is OFF. Automated index entries are paused; individual-stock screening is shown separately.':(regime==='UNKNOWN'?'Waiting for a current, completed-session market reading.':'Only approved candidates that pass data and account risk checks can enter.'));
  var statusNote=risk.halted
   ?'Paper execution is paused until this book-risk condition clears.'
-  :(house.positions?'No new entries; existing positions remain under exit management.'
-    :(regime==='OFF'?'The paper book is 100% cash. Nothing is currently held.'
-      :'The engine is screening; no position has qualified yet.'));
- h+='<div class=desk-grid><section class=desk-panel><div class=desk-head><div class=desk-eyebrow>STRATEGY STATUS</div><span class="desk-status '+(blocked?'warn':'')+'">'+(blocked?'NO NEW ENTRIES':'SCREENING')+'</span></div><h2 style="font-size:23px;margin:8px 0">'+regime+' regime</h2><p class=desk-message>'+esc(explanation)+'</p><p class=desk-note>'+esc(statusNote)+'</p><button class=desk-action style="margin-top:15px" onclick="go(\'ideas\')">Review opportunities →</button></section>'
+  :(house.positions?(blocked?'No new entries; existing strategy positions remain under exit management.':'Existing strategy positions remain under exit management.')
+    :(house.positions===0?'The strategy paper book has no open positions.':'Strategy paper positions are unavailable.'));
+ h+=deskEquityScreen(d);
+ h+='<div class=desk-grid><section class=desk-panel><div class=desk-head><div class=desk-eyebrow>INDEX ENTRY STATUS</div><span class="desk-status '+(blocked?'warn':'')+'">'+(blocked?'INDEX ENTRIES PAUSED':'INDEX GATE OPEN')+'</span></div><h2 style="font-size:23px;margin:8px 0">'+esc(regime)+' regime</h2><p class=desk-message>'+esc(explanation)+'</p><p class=desk-note>'+esc(statusNote)+'</p><p class=desk-note>NIFTYBEES is the Nifty ETF route, not the individual-stock universe.</p></section>'
   +'<section class=desk-panel><div class=desk-eyebrow>INDEX DESK</div><h2 style="font-size:18px;margin:10px 0">Nifty & Bank Nifty</h2><p class=desk-note>Market context, charts and instrument eligibility in one place.</p>'
   +['NIFTY','BANKNIFTY'].map(x=>'<div class=desk-index><div><b>'+({NIFTY:'Nifty 50',BANKNIFTY:'Bank Nifty'})[x]+'</b><small>View price, breadth and options context</small></div><button class=desk-action onclick="stock(\''+x+'\',\'IN\')">View →</button></div>').join('')+'</section></div>';
  h+='<section class=desk-panel style="margin-top:18px"><div class=desk-head><div><div class=desk-eyebrow>YOUR WORKSPACE</div><h2>Positions & activity</h2></div><div class=desk-top-actions><button class=desk-action onclick="BOOK=\'mine\';go(\'positions\')">Portfolio</button><button class=desk-action onclick="BOOK=\'mine\';go(\'orders\')">Order history</button></div></div>';

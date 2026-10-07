@@ -578,7 +578,10 @@ def api_overview(user: dict = Depends(require_session)):
                 rw.close()
     except Exception:
         _LOG.exception("user book stats failed")
+    from .screening.status import equity_screen_status, paper_execution_scope
+    stock_screen = equity_screen_status(_evidence_screen("IN"))
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
+                             stock_screen=stock_screen, execution_scope=paper_execution_scope(),
                              equity_options_offset=round(contamination, 2),
                              regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
