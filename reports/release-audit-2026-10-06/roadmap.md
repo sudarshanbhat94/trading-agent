@@ -1,6 +1,6 @@
 # D, F, G. Delivery phases, implementation tasks and launch evidence
 
-**Current programme state: local safety work advanced; commercial/live release NO-GO.** Preserve the existing ₹10,000 epoch, full history and registered experiment. No production rollout, broker configuration, real order, paid purchase or model promotion is authorized by this implementation. Upstox is first; Angel One second. Official public data is supplemented with licensed sources wherever technical coverage/reliability or commercial rights require it.
+**Current programme state: local safety work advanced; commercial/live release NO-GO.** Preserve the existing ₹10,000 epoch, full history and registered experiment. No production rollout, broker configuration, real order, paid purchase or model promotion is authorized by this implementation. The latest human scope correction is Upstox only; Angel One is excluded from current work. Official public data is supplemented with licensed sources wherever technical coverage/reliability or commercial rights require it.
 
 Engineering-hour ranges overlap and include targeted tests; external approvals and market sessions are separate. The previous seven tasks described repairs now largely implemented locally. The seven below address the current remaining work, not another repeat of the old migrations.
 
@@ -9,7 +9,7 @@ Engineering-hour ranges overlap and include targeted tests; external approvals a
 | Phase | Milestone / scope | Dependencies | Effort | Exit criteria |
 |---|---|---|---:|---|
 | 0 — critical safety | Immediate controls from F02–F15: risk/exit identity, personal exits, held feed, fail-closed gates, unsafe HTML, peak/epoch safety; legal/broker classification discovery begins. New catalogue and complete broker-ledger/protection implementation continue in phases 1–2; affected routes remain unpromoted until complete. | Reconciled backups; frozen current book/evidence; known managed ownership | 160–240h | Reproduced defects no longer reproduce; no second entry path; exits survive entry disarm; exact ownership and account invariants hold. No automatic promotion of unvalidated strategies. |
-| 1 — instruments, adapters, paper | Versioned instrument/master/calendar/action catalog; canonical plan/order/exit contract; Paper + existing Upstox adapter ports; supported cash/ETF route, explicit refusals; SmartAPI fixtures | Phase 0 identity/risk safety; broker docs and scoped account permissions | 180–280h | NSE/BSE same-ticker/series fixtures independent; daily sync is dated/recoverable; identical domain path before paper/live adapter; no fabricated unsupported trades. |
+| 1 — instruments, adapters, paper | Versioned instrument/master/calendar/action catalog; canonical plan/order/exit contract; Paper + existing Upstox adapter ports; supported cash/ETF route, explicit refusals; Upstox contract fixtures | Phase 0 identity/risk safety; broker docs and scoped account permissions | 180–280h | NSE/BSE same-ticker/series fixtures independent; daily sync is dated/recoverable; identical domain path before paper/live adapter; no fabricated unsupported trades. |
 | 2 — risk/execution/reconciliation | Account-level atomic reservations, durable semantic idempotency, fill/fee ledger, native protection, actual inventory/tradebook reconciliation, incidents and restart recovery | Phase 1 identity/ports; certified broker sandbox/fixtures; Phase 0 exit authority | 180–260h | Zero unresolved test divergences; no duplicate/oversold position through partial/rejected/unknown fills and outages; protected state backed by broker evidence. |
 | 3 — derivatives and further venues | Index/stock futures, options and defined-risk multi-leg routing; lot/tick/freeze/margin/greeks, expiry/delivery/roll guards; asset-specific currency/commodity/US adapters and cost/FX/settlement where eligible | Phase 2; official contracts; customer entitlements and margin APIs; validated models | 240–400h for first approved derivatives scope | Actual funded contract quantities and confirmed legs; no naked/physical-settlement surprise; each venue/adapter separately certified. Additional brokers/venues expand this estimate. |
 | 4 — product UI / landing / onboarding | Typed account/mode/plan/order/protection lifecycle, desktop/mobile design system, accessible charts, truthful P&L, guided readiness, landing/help, idempotent billing/renewal | Canonical contracts from phases 1–2; truthful capability matrix; initial copy/security fixes run in phase 0 | 160–260h | End-to-end plan → approved paper intent → confirmed fill → protected position → exit → actual P&L; account numbers match ledger; no marketing overclaim. |
@@ -23,6 +23,8 @@ Approximate initial programme envelope: **1,120–1,760 engineering hours**, sub
 Freeze one liquid individual-stock hypothesis and its exact trade contract, then collect official point-in-time membership/quality/news/price evidence. Run untouched after-cost walk-forward and a genuinely capital-constrained forward portfolio using the same risk/exit/fill contract. Retain negative, untouched and invalidated plans. Do not mine the already inspected losing cohort to choose thresholds and call that validation.
 
 The current ₹10,000 paper epoch and publications stay intact. Additional paper test accounts are isolated and are not presented as resets that erase losses. Operational correctness and statistically credible positive expectancy are **different gates**. Thirty idle sessions do not satisfy the opportunity/fill/exit validation requirement.
+
+**Immediate human priority:** data correctness, correct Ideas population, engine call eligibility, order placement and outcome tracking. Finish this path before unrelated broker/product expansion.
 
 ## F. Seven pasteable implementation tasks
 
@@ -38,9 +40,9 @@ The current ₹10,000 paper epoch and publications stay intact. Additional paper
 
 **Acceptance:** real source fixtures and independent dated acceptance; collisions, action revisions, stale missing rules and ambiguous legacy ownership refuse; startup/import failures preserve the existing epoch. Source availability and commercial rights are separately recorded. F10/F25/F26/F27/F28.
 
-### 3. One approved execution orchestration and Angel integration — 56–96h
+### 3. One approved execution orchestration for paper and Upstox — 56–96h
 
-**Paste:** “Retain the approved/manual cash-paper pipeline, immutable plan bindings and unified risk. Converge house and broker approved-plan attribution/reservations with the journal and actual ledger. Integrate the existing Angel One transport into a durable factory only for separately certified capabilities; native protection remains unsupported until implemented and tested. Preserve exact account/product/contract/model/protection semantics and unsupported route refusals. Do not create passing live authorization.”
+**Paste:** “Retain the approved/manual cash-paper pipeline, immutable plan bindings and unified risk. Converge house and broker approved-plan attribution/reservations with the journal and actual ledger. Converge only the existing Upstox adapter; certify its native protection with explicit broker evidence and failure handling. Preserve exact account/product/contract/model/protection semantics and unsupported route refusals. Do not create passing live authorization.”
 
 **Acceptance:** one approved fixture traverses paper and mocked supported broker entry/fill/protection/exit/reconciliation/accounting with identical risk decisions; retry/partial/cancel/unknown/external inventory and parallel account cases remain safe. No real order. F01/F18/F19/F21.
 
@@ -86,9 +88,9 @@ The current ₹10,000 paper epoch and publications stay intact. Additional paper
 - [ ] Qualified legal/commercial classification, exchange/broker provider/hosting/API requirements, data licences, privacy/grievance/retention and user terms recorded.
 - [ ] Exact release commit, clean source, explicit certified scopes and reviewed evidence manifest; deployment, promotion and live beta independently authorized.
 
-**Unresolved external dependencies:** qualified commercial entity/service classification and any registration/empanelment; Upstox vendor/hosting/API/protection permissions and supported sandbox evidence; Angel One access/contract certification; point-in-time fundamentals/prices/news coverage and commercial redistribution licence; account-specific margin, sell authorization and derivative eligibility; secret escrow, on-call/incident recipient and complete recovery environment; genuine forward sessions and approved independent strategy results. Public access, an API token or transparent scoring does not satisfy these dependencies.
+**Unresolved external dependencies:** qualified commercial entity/service classification and any registration/empanelment; Upstox vendor/hosting/API/protection permissions and supported sandbox evidence; point-in-time fundamentals/prices/news coverage and commercial redistribution licence; account-specific margin, sell authorization and derivative eligibility; secret escrow, on-call/incident recipient and complete recovery environment; genuine forward sessions and approved independent strategy results. Public access, an API token or transparent scoring does not satisfy these dependencies.
 
-**Decisions already resolved:** Upstox first, Angel One second; official public sources plus licensed data as necessary; existing ₹10,000 epoch and forward protocol preserved; other routes are individually certified rather than assumed. No further broker-priority or capital question is needed.
+**Decisions already resolved:** Upstox only (latest human correction); official public sources plus licensed data as necessary; existing ₹10,000 epoch and forward protocol preserved; other routes are individually certified rather than assumed. No further broker-priority or capital question is needed.
 
 ## Evidence evaluator limitations
 

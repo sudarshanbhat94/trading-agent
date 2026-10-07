@@ -23,18 +23,21 @@ def _finite(value):
 
 
 def _features(frame, asof):
+    if not isinstance(frame.index, pd.DatetimeIndex) or not {'open','high','low','close','volume'}.issubset(frame.columns):
+        return None
     g = frame.loc[:asof].sort_index()
-    if len(g) < 127 or g.index[-1] != asof:
+    if len(g) < 127 or g.index[-1] != asof or not g.index.is_unique:
         return None
     cols = g[["open", "high", "low", "close", "volume"]].tail(127).apply(pd.to_numeric, errors="coerce")
     if (not cols.map(lambda x: math.isfinite(x)).all().all()
             or (cols[["open", "high", "low", "close"]] <= 0).any().any()
             or (cols.volume < 0).any() or (cols.high < cols.low).any()
-            or (cols.close > cols.high).any() or (cols.close < cols.low).any()):
+            or (cols.close > cols.high).any() or (cols.close < cols.low).any()
+            or (cols.open > cols.high).any() or (cols.open < cols.low).any()):
         return None
     c, v = cols.close, cols.volume
     # Unreviewed jumps can be a split, consolidation or corrupt adjustment.
-    if c.pct_change().tail(21).abs().max() > .40:
+    if c.pct_change().abs().max() > .40:
         return None
     price = float(c.iloc[-1])
     prior_volume = float(v.iloc[-21:-1].mean())
@@ -44,6 +47,8 @@ def _features(frame, asof):
     return dict(price=price, turnover=float((c*v).tail(20).median()),
         return20_pct=float((c.iloc[-1]/c.iloc[-21]-1)*100),
         return126_pct=float((c.iloc[-1]/c.iloc[-127]-1)*100),
+        return20_start=str(c.index[-21])[:10], return20_end=str(c.index[-1])[:10],
+        return126_start=str(c.index[-127])[:10], return126_end=str(c.index[-1])[:10],
         above50=bool(price > c.tail(50).mean()),
         relative_volume=float(v.iloc[-1]/prior_volume) if prior_volume > 0 else None,
         distance_high_pct=(price/high20-1)*100,
@@ -88,6 +93,9 @@ def _quality(f, sector, price):
 def build(tails, eligible, sectors, con, now, asof):
     features = {s: _features(g, asof) for s, g in tails.items()}
     benchmark = features.get("NIFTYBEES")
+    def matched(feat):
+        return bool(benchmark and (feat['return20_start'],feat['return20_end']) ==
+                    (benchmark['return20_start'],benchmark['return20_end']))
     universe = []
     excluded = {}
     for symbol in sorted(eligible or []):
@@ -101,14 +109,14 @@ def build(tails, eligible, sectors, con, now, asof):
     sector_returns = {}
     for symbol in universe:
         sector = sectors.get(symbol)
-        if sector and sector not in ("NSE Listed Equity", "Other", "Unknown"):
+        if sector and sector not in ("NSE Listed Equity", "Other", "Unknown") and matched(features[symbol]):
             sector_returns.setdefault(sector, []).append(features[symbol]["return20_pct"])
     peer_returns = {s: sorted(v)[len(v)//2] for s,v in sector_returns.items() if len(v) >= 3}
     rows = []
     for symbol in universe:
         feat = dict(features[symbol])
         sector = sectors.get(symbol) or "Unknown"
-        rs = feat["return20_pct"]-benchmark["return20_pct"] if benchmark else None
+        rs = feat["return20_pct"]-benchmark["return20_pct"] if matched(feat) else None
         sector_rs = peer_returns.get(sector)
         sector_rs = sector_rs-benchmark["return20_pct"] if sector_rs is not None and benchmark else None
         f, flags = _quality(latest(con, symbol, "fundamentals", now, 14), sector, feat["price"])
@@ -129,7 +137,8 @@ def build(tails, eligible, sectors, con, now, asof):
             days = (datetime.fromisoformat(earnings["date"]).date()-now.date()).days
             if 0 <= days <= 2: flags.append("results due within two days")
         if delivery is None or avg is None: flags.append("delivery confirmation unavailable")
-        if rs is None: flags.append("Nifty benchmark history unavailable")
+        if rs is None:
+            flags.append("Nifty comparison dates do not match" if benchmark else "Nifty benchmark history unavailable")
         if sector_rs is None: flags.append("sector comparison unavailable")
         if feat["setup"] == "no controlled entry setup":
             flags.append("no controlled entry setup")
@@ -144,7 +153,8 @@ def build(tails, eligible, sectors, con, now, asof):
             sector_evidence=latest(con, symbol, "sector", now, 7),
             score=round(sum(points.values()), 2), components=points,
             metrics=dict(feat, rs_vs_nifty20_pct=round(rs, 2) if rs is not None else None,
-                         sector_rs20_pct=round(sector_rs, 2) if sector_rs is not None else None),
+                         sector_rs20_pct=round(sector_rs, 2) if sector_rs is not None else None,
+                         rs_benchmark="NIFTYBEES", rs_benchmark_kind="Nifty equity ETF proxy"),
             fundamentals=f, news=news, earnings=earnings, participation=participation,
             flags=flags, actionable=False))
     rows.sort(key=lambda r: (bool(r["flags"]), -r["score"], r["symbol"]))
@@ -172,7 +182,7 @@ def build(tails, eligible, sectors, con, now, asof):
                   (["fresh option chain unavailable"] if options is None else []),
             note="ETF completed-session price proxy; no futures / options execution claim"))
     return dict(status="ok" if eligible else "membership_unavailable", version="evidence-v1",
-        generated_at=now.isoformat(), price_asof=str(asof)[:10],
+        generated_at=now.isoformat(), price_asof=str(asof)[:10], data_contract_version="screening-data-v2",
         source="verified NSE membership + completed prices + independently captured evidence",
         universe_count=len(eligible or []), liquid_count=len(universe),
         equities=rows, indices=indices, exclusions=excluded,

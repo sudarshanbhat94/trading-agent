@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2511,
-    "passed": 2378,
+    "run": 2552,
+    "passed": 2419,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 19.932,
-    "note": "Frozen source after provider-time, exact-depth, conflict and provider-to-paper regressions; package-aware external HTTP isolation."
+    "seconds": 19.983,
+    "note": "Current data/Ideas/engine source; full retry after sandbox localhost binding failures"
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -63,14 +63,14 @@
   "profitability_established": false,
   "commercial_readiness": "NO-GO",
   "previous_milestone_full_unittest": {
-    "run": 2409,
-    "passed": 2276,
+    "run": 2511,
+    "passed": 2378,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 18.761,
-    "note": "Frozen source; final run with localhost fixture permission. First run had only a sandbox socket refusal; no source edits between runs."
+    "seconds": 19.932,
+    "note": "Frozen source after provider-time, exact-depth, conflict and provider-to-paper regressions; package-aware external HTTP isolation."
   },
   "resumed_initial_full_run": {
     "run": 2311,
@@ -100,7 +100,7 @@
     "production_modified": false
   },
   "entire_release_plan_complete": false,
-  "working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+  "working_parent": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
   "refreshed_at": "2026-10-07T09:56:32.194158+00:00",
   "this_turn_initial_full_run": {
     "run": 2353,
@@ -560,5 +560,23 @@
     "exact_runtime_commit": "424d7b475cebefb83aeed94156cb6c9cd93deaf8",
     "ci_run": "https://github.com/sudarshanbhat94/trading-agent/actions/runs/37609794425",
     "ci_status": "success"
+  },
+  "ideas_engine_data_milestone": {
+    "report": "reports/ideas-engine-data-hardening-2026-10-07.md",
+    "hashes": {
+      "app/screening/store.py": "050fc4a9109000a6be59f5bf27c3cb3cc5a3e3ba9383fdd0dc57f5cbe2a1c0e0",
+      "app/screening/screen.py": "8965973187ae47d6f73b5686ec3cb827cdc904aa4d661ce472c5644f68a74937",
+      "app/screening/plans.py": "a774ec51652b67da7a1104c401d14449f398c8bc42a88121694e6a0bf8f38651",
+      "app/sleeves/feeds.py": "971782b23047a554abf041c8adfb856f41d54f4bb94e023aecc869786f49eb8f",
+      "tests/test_screening_data_contract.py": "a579c8575ae492c322ab9d19fb50d3a2e47761e902c4cc78c2a8a0058cd0e407"
+    },
+    "broker_scope": [
+      "upstox"
+    ],
+    "new_regression_methods": 15,
+    "function_fixtures": 102,
+    "paper_rehearsal": "passed; synthetic; no actual broker orders",
+    "production_changed": false,
+    "model_promoted": false
   }
 }

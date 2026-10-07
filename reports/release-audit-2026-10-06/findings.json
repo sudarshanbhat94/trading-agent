@@ -100,7 +100,7 @@
     ],
     "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
     "fix": "Use one account-specific risk snapshot and serialized reservation for every entry; apply per-user cash, open risk, loss and drawdown limits.",
-    "acceptance": "After a \u20b9200 loss on \u20b910,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
+    "acceptance": "After a ₹200 loss on ₹10,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
     "hours": [
       1,
       4
@@ -730,7 +730,7 @@
       "app/v2_web.py:1884",
       "app/approved_execution.py:82"
     ],
-    "rootCause": "Historical boundary: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
+    "rootCause": "Historical boundary: Symbol-only manual route substitutes ±6% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
     "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
     "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
     "hours": [
@@ -742,7 +742,7 @@
       "app/manual_execution.py:6"
     ],
     "original_status": "Confirmed route mismatch",
-    "original_rootCause": "Symbol-only manual route substitutes \u00b16% levels and separate sizing.",
+    "original_rootCause": "Symbol-only manual route substitutes ±6% levels and separate sizing.",
     "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Not deployed; baseline finding remains",
@@ -873,7 +873,7 @@
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
     "current_state": "Angel One transport now implements strict owner-bound encrypted sessions, single-attempt submit/modify/cancel/status/current-day fills/inventory/holdings/funds/margin with official-host wire fixtures. Native protection is unsupported; orchestration_enabled and live_certified remain false.",
-    "remaining": "Angel journal factory integration, native protection and real route certification; all additional assets and all-adapter orchestration.",
+    "remaining": "Paper/Upstox domain orchestration convergence and actual Upstox operational certification; additional asset routes need separate certification.",
     "test_evidence": "tests.test_angelone_port",
     "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
@@ -883,7 +883,8 @@
     ],
     "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
     "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
-    "release_certification": false
+    "release_certification": false,
+    "scope_override": "Latest human instruction: Upstox only. Angel One is outside current implementation scope; its historical observation is preserved."
   },
   {
     "id": "F22",
@@ -1865,7 +1866,7 @@
     ],
     "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
     "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
-    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says \u20b910,000 and history retention consistently.",
+    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says ₹10,000 and history retention consistently.",
     "hours": [
       1,
       4
@@ -2880,6 +2881,36 @@
     "revalidated_working_parent": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
     "revalidation_method": "Exact-parent disposable module regressions; current isolated fixtures and full suite",
     "revalidation_source": "inventory.json source hashes; reports/official-research-review-2026-10-07.md",
+    "release_certification": false
+  },
+  {
+    "id": "F74",
+    "area": "Data / Ideas / engine",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Screening and engine data boundaries accept mutable, mismatched or noncurrent evidence",
+    "evidence": [
+      "app/screening/store.py:45",
+      "app/screening/store.py:65",
+      "app/screening/screen.py:25",
+      "app/sleeves/feeds.py:6"
+    ],
+    "rootCause": "Evidence replacement and coarse timestamp selection; return comparisons lack shared dates; cached expiry and quote validation are incomplete.",
+    "fix": "Immutable evidence and exact availability/conflict checks, current cached-evidence validation, matching comparison dates, complete momentum-window price checks and strict engine quote timestamps.",
+    "current_state": "Fifteen new regression methods and full local suite pass. No deployment or promotion.",
+    "acceptance": "Changed evidence cannot rewrite history; conflicting/future/corrupt evidence is unavailable; comparison endpoints match; expired review facts lose eligibility; engine refuses invalid quotes; existing order/tracking lifecycle passes.",
+    "hours": [
+      2,
+      6
+    ],
+    "hours_basis": "Remaining scoped source/deployment acceptance; independent strategy validation is separate.",
+    "test_evidence": "tests.test_screening_data_contract; 2552 unittest and 102 research/UI function fixtures; isolated execution rehearsal.",
+    "revalidated_against": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
+    "revalidated_working_parent": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
+    "deployed_repair": false,
+    "production_status": "Not deployed / uncertified",
+    "remaining": "Authorized verified rollout, real source/canonical execution-rule coverage and independent strategy evidence.",
     "release_certification": false
   }
 ]
