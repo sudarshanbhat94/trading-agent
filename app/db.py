@@ -1131,13 +1131,15 @@ class Database:
     def init(self) -> None:
         from .schema_migrations import apply,validate_accounts
         with self.connect() as conn:
-            apply(conn,'account-schema-v2',{'version':2,'scope':'owned-sessions-atomic-subscription-receipts'},self._init_schema,validate_accounts)
+            apply(conn,'account-schema-v3',{'version':3,'scope':'owned-sessions-shared-login-reservations'},self._init_schema,validate_accounts)
 
     def _init_schema(self, conn) -> None:
         from .billing_ledger import ensure_schema as _billing_schema
         _billing_schema(conn)
         from .auth import _session_schema
         _session_schema(conn)
+        from .executable_quotes import ensure_schema as _execution_quote_schema
+        _execution_quote_schema(conn)
         conn.executescript(
             """
             create table if not exists universe (
@@ -2049,6 +2051,9 @@ class Database:
         values.append(user_id)
         with self.connect() as conn:
             conn.execute(f"update users set {', '.join(assignments)} where id = ?", values)
+            if password_hash is not None or role is not None or active is not None:
+                from .auth import revoke_sessions
+                revoke_sessions(conn, user_id)
         user = self.user_by_id(user_id)
         return _public_user(user) if user else None
 
@@ -6364,6 +6369,7 @@ class Database:
                 on conflict(key) do update set
                     value = excluded.value,
                     updated_at = excluded.updated_at
+                where runtime_settings.value is not excluded.value
                 """,
                 rows,
             )

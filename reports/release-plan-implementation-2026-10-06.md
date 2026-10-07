@@ -20,18 +20,18 @@
 
 ## Verification
 
-Final frozen-source verification is recorded in [verification.json](release-audit-2026-10-06/verification.json). 2,392 unittest checks: 2,259 passed, 133 skipped, zero failures/errors; separate research/UI runner 102 passed. Isolated actual-handler paper lifecycle rehearsals pass with balanced cash, no duplicates, no negative cash and zero broker orders. Linux CPython 3.12 exact hash/wheel dry-run passed; actual remote matrix results are separate evidence.
+Final frozen-source verification is recorded in [verification.json](release-audit-2026-10-06/verification.json). 2,453 unittest checks: 2,320 passed, 133 skipped, zero failures/errors; separate research/UI runner 102 passed. Isolated actual-handler paper lifecycle rehearsals pass with balanced cash, no duplicates, no negative cash and zero broker orders. Linux CPython 3.12 exact hash/wheel dry-run passed; actual remote matrix results are separate evidence.
 
 Selected production handlers and actual account components were exercised with disposable synthetic session/account/calendar/quotes at 390×844. The browser displayed ₹10,000 cash/equity/zero positions, reviewed 20-share plan, post-fee fill, target exit and owned sleeve/regime/R report without horizontal overflow. [Current screenshot](release-audit-2026-10-06/ui-evidence/paper-lifecycle-mobile-current.png). This is not full deployed authentication/billing/accessibility or strategy validation.
 
-Read-only production snapshot dated 6 October retains build `2b300b4`, active service, user 2 capital/cash/equity ₹10,000, zero positions and unchanged epoch/protocol. No production repair claim is made.
+Read-only production snapshot dated 7 October retains build `2b300b4`, active service, user 2 capital/cash/equity ₹10,000, zero positions and unchanged epoch/protocol. No production repair claim is made.
 
 ## Exact phase ledger
 
 | Phase | Delivered locally | Remaining engineering | Separate acceptance |
 |---|---|---|---|
-| 0 safety | 55 finding records; targeted risk/ownership/legacy/security/accounting regressions; F54 exact historical crash repaired | Full semantic review of every inventoried legacy module; residual route/security boundaries | Qualified legal/data classification; deployed revalidation |
-| 1 universe/paper | All-writer canonical gate; normalized import/quarantine; immutable approved/manual stock-paper lifecycle | Official raw master/actions/calendars connectors and production rules; full historic mapping; house/live approved-plan convergence | Real source coverage/rights and funded liquid-stock acceptance |
+| 0 safety | 57 finding records; targeted risk/ownership/legacy/security/accounting regressions; F54 exact historical crash repaired | Full semantic review of every inventoried legacy module; residual route/security boundaries | Qualified legal/data classification; deployed revalidation |
+| 1 universe/paper | All-writer canonical gate; normalized import/quarantine; immutable approved/manual stock-paper lifecycle | Official raw actions/calendars/execution-rule connectors and production rules; full historic mapping; live approved-plan convergence | Real source coverage/rights and funded liquid-stock acceptance |
 | 2 execution | Owned actual fill postings; sourced assessment/settlement/reversal API; partial native recovery; acknowledgements | Final net fees/margin/FX/settlement integration, completed GTT/amendment; consented incident escalation; shared adapters | Actual broker/sandbox protection, reconciliation/outage and recovery certification |
 | 3 assets | Angel One transport/ownership/wire contract; unsupported route refusal | Angel journal/native integration; BSE/US/futures/options/FX/commodity; margin/freezes/multi-leg/expiry/physical settlement | Each route/product/account separately certified |
 | 4 product | Account P&L, frozen review, receipts/incident/protection states and owner async guards | Full onboarding/risk/help/landing, automated billing/refunds/renewals; all production journeys and accessibility | Deployed browser/account/ledger acceptance |
@@ -45,3 +45,7 @@ Remaining engineering is not relabelled as external approval. Synthetic profitab
 ## Next-session recheck — 7 October
 
 [Run commands, current blockers and evidence](../docs/next-session-readiness.md). Added official bounded BOD discovery, timezone-correct source dates, current-day effective reviewed-bundle checks, owned API/CLI/browser preflight and first-load import-deadlock repair. Production-copy upgrade preserved all existing values/history/epoch; production is unchanged. Discovery remains distinct from execution coverage. Complete NSE raw rule/action/session normalization, broker final accounting/certification, stock-model validation and remaining phases stay open. The full programme is not ready for tomorrow merely because this candidate passes tests.
+
+## Durable next-event paper completion — 7 October
+
+New NSE cash paper house/manual/approved/subscriber intents converge on risk reservations, immutable journal, later depth fills, owned later-bid exits and balanced actual accounting. Pending/cancelled states and capacity are explicit in the shared Orders UI. Protection runs before entry catalogue checks. Persistent login throttling, atomic all-session revocation and no-op startup setting preservation are tested. Actual copied-production startup/migration and synthetic mobile/cancellation journeys passed with zero real orders/production mutation. [Detailed scope and retained failures](paper-exchange-implementation-2026-10-07.md). This finishes that implementation milestone; it does not close partial fills, complete live adapters, source/model/asset/operations/commercial phases or relevant market-session acceptance.

@@ -146,7 +146,7 @@ def _live_map(market, symbols=None):
     quote table just to value a handful of held positions."""
     try:
         con = _ro(MAIN_DB)
-        if symbols:
+        if symbols is not None:
             syms = [s for s in symbols]
             if not syms:
                 con.close()
@@ -157,6 +157,9 @@ def _live_map(market, symbols=None):
         else:
             rows = con.execute("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=?",
                                (LIVE_SOURCE[market],)).fetchall()
+        from . import executable_quotes
+        try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
+        except (sqlite3.Error,ValueError,TypeError):execution = {}
         con.close()
     except Exception:
         return {}
@@ -169,6 +172,7 @@ def _live_map(market, symbols=None):
         if price > 0:
             out[sym] = dict(price=price, open=_n(o, price), high=_n(h, price),
                             low=_n(l, price), prev=_n(c, price), ts=ts)
+            if sym in execution: out[sym]['execution'] = execution[sym]
     return out
 
 
@@ -1901,7 +1905,7 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     if shut is not None:
         return shut
     if mode == "paper":
-        from . import approved_execution,entry_contracts
+        from . import approved_execution,entry_contracts,books
         from uuid import uuid4
         if market != "IN":
             return JSONResponse({"error":"UNSUPPORTED_CAPABILITY: reviewed NSE cash paper route only"},status_code=409)
@@ -1919,11 +1923,11 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
         try:
             with entry_contracts.open_catalogue() as (catalogue,now):
                 result=approved_execution.submit_manual_paper(con,catalogue,int(user['id']),sym,request_key,
-                    _live_map('IN',[sym]),quantity=requested,stop=payload.get('stop'),target=payload.get('target'),
+                    _live_map('IN',set([sym]+[p['symbol'] for p in books.positions(con,int(user['id']),'IN')])),quantity=requested,stop=payload.get('stop'),target=payload.get('target'),
                     regime=_regime_state('IN'),now=now)
             result.update(symbol=sym,broker_status=None,request_key=request_key)
             if not result['ok']:result['error']=result['reason']
-            return JSONResponse(result,status_code=200 if result['ok'] else 409)
+            return JSONResponse(result,status_code=202 if result.get('status')=='pending' else 200 if result['ok'] else 409)
         except ValueError as exc:
             return JSONResponse({"error":str(exc),"code":"ACCOUNT_RISK_REFUSAL"},status_code=409)
         except sqlite3.Error:
@@ -2046,6 +2050,11 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
                 main.close()
         if not held:
             return JSONResponse({"error":"No paper holding for this symbol"}, status_code=409)
+        from . import paper_exchange
+        if market=='IN' and paper_exchange.managed_position(v2,uid,held[0]['id']):
+            result=paper_exchange.queue_exit(v2,uid,held[0]['id'],'manual')
+            result['symbol']=sym
+            return JSONResponse(result,status_code=202)
         out = books.sell(v2, uid, market, sym, round(px, 2), "manual")
         pnl, ret = out or (0, 0)
         broker_note = None
@@ -2713,7 +2722,7 @@ def api_approved_plans(user:dict=Depends(require_session)):
 
 @router.post('/api/approved-orders')
 def api_approved_order(payload:dict,user:dict=Depends(require_session)):
-    from . import approved_execution,entry_contracts
+    from . import approved_execution,entry_contracts,books
     if set(payload)-{'plan_id','request_key'}:
         raise HTTPException(400,'Use the immutable plan identity; levels and quantity cannot be overridden')
     if not isinstance(payload.get('plan_id'),str) or not payload['plan_id'].startswith('plan_') or \
@@ -2727,10 +2736,41 @@ def api_approved_order(payload:dict,user:dict=Depends(require_session)):
         symbol=json.loads(plan[0])['symbol']
         with entry_contracts.open_catalogue() as (catalogue,now):
             result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
-                                              _live_map('IN',[symbol]),regime=_regime_state('IN'),now=now)
-        return JSONResponse(result,status_code=200 if result['ok'] else 409)
+                                              _live_map('IN',set([symbol]+[p['symbol'] for p in books.positions(con,int(user['id']),'IN')])),regime=_regime_state('IN'),now=now)
+        return JSONResponse(result,status_code=202 if result.get('status')=='pending' else 200 if result['ok'] else 409)
     except ValueError as exc:raise HTTPException(409,str(exc))
     except sqlite3.Error:raise HTTPException(503,'Approved execution evidence unavailable')
+    finally:con.close()
+
+
+@router.get('/api/paper-orders')
+def api_paper_orders(user:dict=Depends(require_session)):
+    from . import paper_exchange,books
+    con=_ro(V2_DB)
+    try:
+        uid=int(user['id']);epoch=books.current_epoch(con,uid,'IN')
+        rows=con.execute('SELECT i.id,i.payload,i.submitted_at FROM paper_order_intents i '
+                         'WHERE i.user_id=? AND i.epoch=? ORDER BY i.submitted_at DESC LIMIT 100',(uid,epoch)).fetchall()
+        orders=[]
+        for order_id,text,at in rows:
+            payload=json.loads(text);result=paper_exchange.status(con,uid,order_id)
+            orders.append(dict(result,side=payload['plan'].get('side','BUY'),symbol=payload['plan']['symbol'],sleeve=payload['plan']['sleeve'],
+                               regime=payload['regime_at_submit'],submitted_at=at,
+                               stop=payload['plan']['stop'],target=payload['plan']['target']))
+        return JSONResponse(dict(orders=orders,epoch=epoch,scope='owned-paper',partial_fills_supported=False),
+                            headers={'Cache-Control':'private, no-store'})
+    except sqlite3.Error:raise HTTPException(503,'Paper order journal unavailable')
+    except (ValueError,KeyError,TypeError):raise HTTPException(503,'Paper order evidence requires reconciliation')
+    finally:con.close()
+
+
+@router.post('/api/paper-orders/{order_id}/cancel')
+def api_cancel_paper_order(order_id:str,user:dict=Depends(require_session)):
+    from . import paper_exchange
+    con=_rw()
+    try:return JSONResponse(paper_exchange.cancel(con,int(user['id']),order_id))
+    except ValueError as exc:raise HTTPException(404,str(exc))
+    except sqlite3.Error:raise HTTPException(503,'Paper order journal unavailable')
     finally:con.close()
 
 
@@ -3392,6 +3432,12 @@ def api_exit(pid: int, user: dict = Depends(require_session)):
         rw.close()
         return JSONResponse(dict(error="position not found"), status_code=404)
     market, strat, sym, edate, entry, shares, conv, oat = row
+    from . import paper_exchange
+    if market=='IN' and paper_exchange.managed_position(rw,0,pid):
+        try:
+            result=paper_exchange.queue_exit(rw,0,pid,'manual');result['symbol']=sym
+            return JSONResponse(result,status_code=202)
+        finally:rw.close()
     px = _live_map(market).get(sym, {}).get("price", entry)
     # Same single writer — see record_exit.
     from .v2_live import record_exit
@@ -5309,6 +5355,7 @@ function renderMineTile(m,ccy){
   pct:(m.budget?Math.round((m.overall_pnl||0)/m.budget*10000)/100:0),
   series:(m.series||[]),baseline:m.budget,
   note:'The AI\u2019s trades, sized to YOUR cash. Resetting this clears only your book.'
+   +(m.pending_orders?' · '+esc(m.pending_orders)+' pending · ₹'+INR.format(m.reserved_cash)+' reserved · ₹'+INR.format(m.available_cash)+' available':'')
    +((m.series||[]).length>1?' \u00b7 one point per day since '+(m.series_start||''):''),
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}})
@@ -5865,7 +5912,7 @@ function loadOrders(){api('/v2/api/orders?limit=500&scope='+BOOK).then(r=>{var o
  var buys=os.filter(o=>o.side=='BUY'),sells=os.filter(o=>o.side=='SELL');
  document.getElementById('ordtot').textContent=(buys.length+sells.length)?(buys.length+' bought · '+sells.length+' sold'):'';
  var col=function(lbl,arr,cls){return '<div class="ordcol '+cls+'"><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
- document.getElementById('ordlist').innerHTML='<div class=ordgrid>'+col('Bought',buys,'oc-buy')+col('Sold',sells,'oc-sell')+'</div>';});}
+ document.getElementById('ordlist').innerHTML='<div id=paperPendingOrders aria-live=polite></div><div class=ordgrid>'+col('Bought',buys,'oc-buy')+col('Sold',sells,'oc-sell')+'</div>';loadPaperOrders();});}
 function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classList.remove('os-buy','os-sell');l.classList.add('os-'+s)}document.querySelectorAll('#ordside b').forEach(function(b,i){b.classList.toggle('on',(i===0)===(s==='buy'))})}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
@@ -6681,11 +6728,11 @@ function doReset(){if(!confirm('Start a new ₹10,000 epoch for your personal pa
  api('/v2/api/reset',{method:'POST'}).then(function(r){if(r.ok){if(m)m.textContent='✅ book reset to ₹'+INR.format(r.j.budget||10000);toast('✅ paper book reset — clean slate');refresh();}else{if(m)m.textContent='⚠ '+(r.j.error||'failed');}});}
 function doBuy(sym,mkt){if(!confirm('Paper buy '+sym+' at the live price?'))return;
  api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper',request_key:crypto.randomUUID()})}).then(function(r){
-  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.status==='pending'?'Paper order submitted · awaiting liquidity':r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'buy failed'));});}
 function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live price?'))return;
  api('/v2/api/sell',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper'})}).then(function(r){
-  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper sold '+r.j.symbol+' ('+r.j.pnl_pct+'%)'));renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.status==='pending'?'Exit submitted · position retained until bid fill':r.j.broker_status?('Broker: '+r.j.broker_status):('Paper sold '+r.j.symbol+' ('+r.j.pnl_pct+'%)'));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'sell failed'));});}
 function wlRow(w){
   var up=w.chg>0,dn=w.chg<0,cl=up?'up':(dn?'dn':'mut'),a=up?'▲ ':(dn?'▼ ':'');

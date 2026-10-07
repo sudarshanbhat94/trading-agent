@@ -5,6 +5,9 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 | Module | Review status | Finding evidence |
 |---|---|---|
 | app/__init__.py | Inventoried; full semantic review pending |  |
+| app/executable_quotes.py | Narrow source normalization/storage/identity/time/depth boundaries reviewed; production feed certification pending | F25 |
+| app/paper_exchange.py | New owned paper reservation/later-event fill/exit path and runtime outage tests reviewed; partial fills/other routes not implemented | F01, F05, F25 |
+| app/login_guard.py | Narrow shared login reservations/concurrency/restart boundaries reviewed; production security review pending | F38 |
 | app/account.py | Inventoried; full semantic review pending |  |
 | app/account_safety.py | Targeted cited runtime boundary; other functions not certified | F12:36 |
 | app/account_ui.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending |  |
@@ -369,3 +372,5 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 | app/schema_migrations.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F40 |
 
 Current release safety boundaries reviewed: sourced entry/approval/catalogue, actual broker ledger/reconciliation, native partial recovery, atomic billing/migration, incident ownership, request origin/proxy, recovery frames and PIT immutability. This does not turn all inventoried legacy files into semantically reviewed files.
+
+The corrected source added the no-op runtime-settings preservation regression. Inventory now includes 179 test modules. Actual pinned-runtime app startup was checked against fresh copied production originals after the reproduced timestamp defect; this verifies those stated preservation boundaries, not full semantic review of every settings consumer.

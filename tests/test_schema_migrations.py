@@ -20,7 +20,7 @@ class TransactionalMigrationTest(unittest.TestCase):
         self.assertEqual(self.con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[])
         self.assertFalse(self.con.in_transaction)
         v2_live.ensure_schema(self.con)
-        self.assertEqual(self.con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'trading-schema-v3')
+        self.assertEqual(self.con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'trading-schema-v4')
 
     def test_existing_book_epoch_capital_inventory_and_nested_transaction_preserved(self):
         v2_live.ensure_schema(self.con);books.ensure_book(self.con,2);self.con.commit()
@@ -34,7 +34,7 @@ class TransactionalMigrationTest(unittest.TestCase):
         v2_live.ensure_schema(self.con)
         self.assertTrue(self.con.in_transaction);self.con.rollback()
         self.assertFalse(self.con.execute("SELECT 1 FROM sqlite_master WHERE name='parent_fixture'").fetchone())
-        with self.assertRaises(RuntimeError):schema_migrations.apply(self.con,'trading-schema-v3',{'changed':True},lambda c:None,lambda c:None)
+        with self.assertRaises(RuntimeError):schema_migrations.apply(self.con,'trading-schema-v4',{'changed':True},lambda c:None,lambda c:None)
         with self.assertRaises(sqlite3.IntegrityError):self.con.execute('DELETE FROM schema_migration_receipts')
 
     def test_script_parses_trigger_and_literal_semicolons_without_commit(self):
@@ -54,4 +54,4 @@ class TransactionalMigrationTest(unittest.TestCase):
             with db.connect() as con:self.assertEqual(con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[])
             db.init()
             with db.connect() as con:
-                self.assertEqual(con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'account-schema-v2')
+                self.assertEqual(con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'account-schema-v3')

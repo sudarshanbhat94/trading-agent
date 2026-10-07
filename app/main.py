@@ -4779,6 +4779,12 @@ async def auth_logout(response: Response, request: Request) -> dict[str, bool]:
     return logout_user(response, request, settings, db)
 
 
+@app.post('/api/auth/logout-all')
+async def auth_logout_all(response: Response, request: Request) -> dict[str, bool]:
+    from .auth import logout_all
+    return logout_all(response, request, settings, db)
+
+
 @app.get("/api/users")
 async def list_users(request: Request) -> dict[str, Any]:
     require_admin(request, settings, db)

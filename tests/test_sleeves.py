@@ -513,8 +513,12 @@ class WiringTest(ContractStorageCase):
         import inspect
         from app import v2_live
         src = inspect.getsource(v2_live.sleeve_pass)
-        self.assertIn("sleeve=c.sleeve", src)
+        self.assertIn("paper_exchange.enqueue_house(", src)
         self.assertIn("regime=result.regime.state", src)
+        from app import paper_exchange
+        writer = inspect.getsource(paper_exchange.service_house)
+        self.assertIn("sleeve=plan['sleeve']", writer)
+        self.assertIn('regime=regime', writer)
 
     def test_sleeve_pass_routes_equity_only(self) -> None:
         import inspect

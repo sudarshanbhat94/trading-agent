@@ -127,7 +127,19 @@ class BoundaryTest(unittest.TestCase):
                 v2_live.sleeve_pass("IN")
                 con = sqlite3.connect(path)
                 rows = con.execute("SELECT symbol,sleeve,regime,shares,entry_price,risk_amt FROM v2_positions").fetchall()
+                self.assertEqual(rows,[])  # Allocation/submission is not a fill.
                 if regime == "ON":
+                    from app import paper_exchange, executable_quotes
+                    self.assertEqual(len(paper_exchange.pending(con,0)),1)
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM execution_outbox').fetchone()[0],0)
+                    at=now+timedelta(seconds=1)
+                    snapshot=executable_quotes.normalize_upstox(dict(instrument_token='NSE_EQ|NIFTYBEES',symbol='NIFTYBEES',timestamp=at.isoformat(),
+                        lower_circuit_limit=50,upper_circuit_limit=200,depth=dict(buy=[dict(price=99.95,quantity=10000)],sell=[dict(price=100,quantity=10000)])),
+                        'NSE_EQ|NIFTYBEES','NIFTYBEES',observed_at=at.isoformat())
+                    outcomes=paper_exchange.service_house(con,source,{'NIFTYBEES':dict(price=100,ts=at.isoformat(),execution=snapshot)},regime=regime,now=at)
+                    self.assertEqual(len(outcomes),1)
+                    self.assertEqual(outcomes[0]['status'],'filled')
+                    rows = con.execute("SELECT symbol,sleeve,regime,shares,entry_price,risk_amt FROM v2_positions").fetchall()
                     self.assertEqual(len(rows),1)
                     self.assertEqual(rows[0][:3],("NIFTYBEES","index_directional","ON"))
                     self.assertLessEqual(float(rows[0][5]),875)
@@ -138,6 +150,8 @@ class BoundaryTest(unittest.TestCase):
                     self.assertEqual(json.loads(event[1])["symbol"], "NIFTYBEES")
                 else:
                     self.assertEqual(rows,[])
+                    from app import paper_exchange
+                    self.assertEqual(paper_exchange.pending(con,0),[])
                     live_mirror.assert_not_called()
                 self.assertEqual(con.execute("SELECT budget FROM v2_book WHERE market='IN'").fetchone()[0],10000)
                 broker_send.assert_not_called()

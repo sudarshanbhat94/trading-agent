@@ -14,7 +14,7 @@ class AccountPreflightTest(unittest.TestCase):
     def setUp(self):
         self.fixture = ApprovedPaperPipelineTest(); self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
-        self.quote = {'TEST': dict(price=100, ts=self.fixture.now.isoformat())}
+        self.quote = {'TEST': dict(price=100, ts=self.fixture.now.isoformat(),execution=self.fixture.snapshot(self.fixture.now))}
 
     def report(self, **kwargs):
         params = dict(symbols=['TEST'], regime='ON', regime_current=True,

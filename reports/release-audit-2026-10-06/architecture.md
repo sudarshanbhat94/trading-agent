@@ -193,3 +193,7 @@ erDiagram
 ```
 
 `manual_plan_bindings`, broker ledger events/postings, subscription receipts, incident acknowledgements, PIT facts and migration receipts are immutable where they express history. Final net/margin and additional-asset execution remain unavailable rather than invented. The paper approval path and live durable journal share contract/risk gates, but are not yet one complete all-adapter plan/settlement orchestration.
+
+## Implemented paper journal scope — October 7
+
+The current NSE delivery paper worker uses `paper_order_intents`, `paper_order_state`, immutable `paper_order_events` and per-side `paper_depth_usage`. Pending commitments are derived under the same serialized book/risk transaction; they affect available cash, slots, sleeve notional and stop risk, not recorded equity or P&L. House, manual and approved personal entries use this journal, with subscriber approval tied to the original allowlisted house fill. A later fresh sourced ask confirms a whole-order paper entry; a later bid confirms an owned exit. No partial-fill or queue model is claimed. Runtime protection runs before entry catalogue checks. Other rows/diagrams above remain the complete target, not a claim that all asset or broker contracts are implemented.

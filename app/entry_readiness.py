@@ -74,7 +74,7 @@ def report(book, catalogue, user_id, quotes, *, symbols, regime, regime_current,
         try:
             if catalogue is None:
                 raise ValueError('Reviewed daily instrument catalogue unavailable')
-            spec, _ = instrument_catalog.resolve(catalogue, symbol=symbol, venue='NSE', segment='NSE_EQ', now=now)
+            spec, key = instrument_catalog.resolve(catalogue, symbol=symbol, venue='NSE', segment='NSE_EQ', now=now)
             quote = fresh_quotes({symbol: quotes.get(symbol, {})}, now).get(symbol)
             # Rule coverage can be assessed outside the session without
             # inventing a current quote. Read the rules separately first.
@@ -95,7 +95,9 @@ def report(book, catalogue, user_id, quotes, *, symbols, regime, regime_current,
             else:
                 price = quote['price']
                 execution_contracts.order_contract(catalogue, instrument_id=spec.id, quantity=rules['lot_size'], price=price, now=now)
-                row.update(status='ready', quote_status='fresh', reason='Current contract, session and reference quote pass')
+                from .executable_quotes import top
+                top(quote.get('execution'), 'BUY', key=key, symbol=symbol, now=now)
+                row.update(status='ready', quote_status='fresh', reason='Current contract, session, reference quote and executable ask pass')
         except ValueError as exc:
             row['reason'] = str(exc)
         except (sqlite3.Error, KeyError, TypeError):

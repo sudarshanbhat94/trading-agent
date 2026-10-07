@@ -93,6 +93,8 @@ def ensure_schema(con):
             if field not in existing:con.execute('ALTER TABLE '+table+' ADD COLUMN '+field+' TEXT')
     from . import account_safety
     account_safety.ensure_schema(con)
+    from .paper_exchange import ensure_schema as exchange_schema
+    exchange_schema(con)
     from . import paper_ledger
     paper_ledger.ensure_schema(con)
     con.execute("CREATE TABLE IF NOT EXISTS user_book_decisions("
@@ -386,6 +388,10 @@ def risk_state(con, user_id, market="IN", quotes=None):
     from . import account_safety
     from .sleeves.risk import BookState, stop_loss_including_costs
     from .sleeves.feeds import fresh_quotes
+    if market=='IN':
+        from .paper_exchange import integrity_reason
+        issue=integrity_reason(con)
+        if issue:return None,issue
     pos = positions(con, user_id, market)
     if quotes is None and pos:
         from .v2_live import _live
@@ -429,10 +435,12 @@ def risk_state(con, user_id, market="IN", quotes=None):
         mark = quotes[p["symbol"]]["price"]
         risk = stop_loss_including_costs(mark, min(mark, p["stop"]), p["shares"], p["product"])
         risks.append((sleeve, risk))
-    return BookState(st["budget"], st["cash"], sum(notional.values()), len(pos), counts,
+    state = BookState(st["budget"], st["cash"], sum(notional.values()), len(pos), counts,
                      st["equity"], max(peak, st["equity"]), st["equity"] - opening,
                      notional, sum(r for _, r in risks),
-                     sum(r for s, r in risks if s == "index_directional")), ""
+                     sum(r for s, r in risks if s == "index_directional"))
+    from .paper_exchange import reserved_state
+    return (reserved_state(con, user_id, epoch, state) if market=='IN' else state), ""
 
 
 def sell(con, user_id, market, symbol, price, reason="manual", position_id=None):
@@ -524,7 +532,10 @@ def stats(con, user_id, market, live):
     wins = [r for r in rets if r > 0]
     fees = sum(float(p["entry_fee"] or 0) for p in pos)
     free = budget - sum(p["entry_price"] * p["shares"] for p in pos) - fees + realised
+    from .paper_exchange import reservation_summary
+    commitments = reservation_summary(con, user_id, ep) if market=='IN' else dict(pending_orders=0,reserved_cash=0)
     return dict(market=market, budget=budget, cash=round(free, 2),
+                available_cash=round(free-commitments['reserved_cash'], 2), **commitments,
                 deployed=round(mtm, 2), equity=round(free + mtm, 2),
                 overall_pnl=round(realised + unreal - fees, 2), realised=round(realised, 2),
                 unrealised=round(unreal - fees, 2), positions=len(pos), trades=len(rets),
@@ -634,7 +645,11 @@ def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None, 
                                " WHERE market=? AND symbol=? AND src_id=?",
                                (market, symbol, src_id)).fetchall():
         try:
-            if sell(con, uid, market, symbol, price, reason, position_id=pid):
+            from . import paper_exchange
+            if market=='IN' and paper_exchange.managed_position(con,uid,pid):
+                paper_exchange.queue_exit(con,uid,pid,reason)
+                done += 1
+            elif sell(con, uid, market, symbol, price, reason, position_id=pid):
                 done += 1
         except Exception:
             _LOG.exception("book mirror exit failed for user %s", uid)
@@ -678,7 +693,11 @@ def monitor_positions(con, market, quotes, today=None, regime_view=None):
                     if monthly_rebalance(date.fromisoformat(regime_view["asof"][:10]), today):
                         price, reason = quote["price"], "regime_off"
                 if price is not None:
-                    if _sell_locked(con, uid, market, row["symbol"], price, reason, row["id"]):
+                    from . import paper_exchange
+                    if market=='IN' and paper_exchange.managed_position(con,uid,row['id']):
+                        paper_exchange.queue_exit(con,uid,row['id'],reason,now=now)
+                        done += 1
+                    elif _sell_locked(con, uid, market, row["symbol"], price, reason, row["id"]):
                         done += 1
                 else:
                     con.execute("UPDATE user_positions SET peak=? WHERE id=? AND user_id=?",

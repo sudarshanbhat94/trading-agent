@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2409,
-    "passed": 2276,
+    "run": 2453,
+    "passed": 2320,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 18.761,
-    "note": "Frozen source; final run with localhost fixture permission. First run had only a sandbox socket refusal; no source edits between runs."
+    "seconds": 19.221,
+    "note": "Final frozen source after actual OCI startup reproduced no-op configuration timestamp rewriting; invariant repair and full permitted mock suite passed."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -23,7 +23,11 @@
     "approved_order_api": "3 passed",
     "account_ui": "4 passed",
     "native_stop_fault_tests": "11 passed",
-    "journal_observations": "3 passed"
+    "journal_observations": "3 passed",
+    "paper_exchange_simulation": "nse-top-depth-next-event-aon-v1",
+    "catalogue_outage_protection": "production-cycle test passed",
+    "persistent_login_guard": "6 invariant tests passed",
+    "runtime_setting_preservation": "No-op preserves all rows; genuine single-key change changes one row"
   },
   "initial_full_run": {
     "run": 2268,
@@ -41,12 +45,16 @@
       "horizontal_overflow": false
     },
     "production_journeys_certified": false,
-    "approved_paper_scope": "actual account UI components + selected production handlers; synthetic session/book/calendar/quotes",
+    "approved_paper_scope": "Actual shared account/order components and selected real handlers; disposable synthetic session/calendar/full-depth quotes; pending then later fill then later-bid exit",
     "approved_paper_mobile_width": 390,
     "approved_paper_horizontal_overflow": false,
     "actual_paper_fixture_close": true,
     "full_production_journeys_certified": false,
-    "current_mobile_proof": "ui-evidence/paper-lifecycle-mobile-current.png"
+    "current_mobile_proof": "ui-evidence/exchange-lifecycle-mobile-2026-10-07.png",
+    "cancelled_buy_stays_cancelled_after_later_depth": true,
+    "cancelled_fixture_cash_equity": 10000,
+    "cancelled_fixture_positions": 0,
+    "cancellation_proof": "ui-evidence/exchange-cancel-desktop-2026-10-07.png"
   },
   "real_orders": 0,
   "production_resets": 0,
@@ -54,14 +62,14 @@
   "profitability_established": false,
   "commercial_readiness": "NO-GO",
   "previous_milestone_full_unittest": {
-    "run": 2321,
-    "passed": 2188,
+    "run": 2409,
+    "passed": 2276,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 129.423,
-    "note": "Final frozen-source run after authorization fixtures, paid-route mapping, native recovery and worker fencing fixes."
+    "seconds": 18.761,
+    "note": "Frozen source; final run with localhost fixture permission. First run had only a sandbox socket refusal; no source edits between runs."
   },
   "resumed_initial_full_run": {
     "run": 2311,
@@ -73,19 +81,26 @@
   },
   "paper_snapshot": {
     "budget": 10000,
-    "cash": 10000,
-    "equity": 10000,
+    "cash": 10000.0,
+    "equity": 10000.0,
     "positions": 0,
     "realised": 0,
     "epoch": "2026-09-22T13:34:11.273061+00:00",
     "read_only": true,
     "peak_drawdown_keys": "unavailable in queried deployed report",
     "protocol_sha256": "1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2",
-    "observed_date": "2026-10-06"
+    "observed_date": "2026-10-07",
+    "checked_at": "2026-10-07T04:13:02.585047+00:00",
+    "build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "capital": 10000.0,
+    "closed_trades": 0,
+    "house_positions": 0,
+    "regime": null,
+    "production_modified": false
   },
   "entire_release_plan_complete": false,
-  "working_parent": "9f526de4a3a88182cd36dfc8eaf1afaf7f3f990e",
-  "refreshed_at": "2026-10-06T18:39:38.611750+00:00",
+  "working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+  "refreshed_at": "2026-10-07T05:11:31.298855+00:00",
   "this_turn_initial_full_run": {
     "run": 2353,
     "failures": 3,
@@ -104,7 +119,7 @@
   "functions": {
     "passed": 102,
     "exit_code": 0,
-    "seconds": 0.85
+    "seconds": 0.8
   },
   "dependencies": {
     "locked_packages": 39,
@@ -261,5 +276,52 @@
     "source_hashes_matched": true,
     "execution_disabled": true,
     "production_cutover": false
+  },
+  "runtime_initial_full_run": {
+    "run": 2438,
+    "failures": 10,
+    "errors": 1,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "Old instant-fill/retired fan-out expectations, missing route mappings and sandbox socket refusal; repaired meaningful fixture expectations and route controls before final run."
+  },
+  "durable_paper_candidate": {
+    "archive_sha256": "139ad3bcb67c0631014c044f8f977dca3ec019d9765270fc3cb059d9cd898cbc",
+    "source_files_verified": 406,
+    "hash_pinned_oci_runtime": true,
+    "production_copy_migration": {
+      "passed": true,
+      "original_paper_tables": 18,
+      "original_selected_account_tables": 2,
+      "original_values_preserved": true,
+      "epoch_protocol_preserved": true
+    },
+    "boot": {
+      "status": "passed",
+      "actual_app_startup": true,
+      "unauthenticated_positions": 401,
+      "capital": 10000,
+      "cash": 10000,
+      "equity": 10000,
+      "positions": 0,
+      "original_values_preserved": true,
+      "outbound_http_blocked": true,
+      "workers_disabled": true,
+      "production_modified": false,
+      "real_orders": 0
+    },
+    "earlier_failures": [
+      {
+        "kind": "harness",
+        "reason": "Attempted to patch optional requests library absent from pinned runtime; use installed HTTP/socket boundaries instead."
+      },
+      {
+        "kind": "application",
+        "reason": "Actual startup rewrote 234 runtime-setting timestamps with zero changed values; conditional no-op UPSERT repaired, then fresh-copy startup preserved all checked rows."
+      }
+    ],
+    "production_cycle_executed": false,
+    "production_ui_certified": false,
+    "deployed": false
   }
 }

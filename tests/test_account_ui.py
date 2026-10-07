@@ -8,6 +8,17 @@ from app import account_ui,v2_web
 
 @unittest.skipUnless(shutil.which('node'),'node required for JavaScript renderer checks')
 class AccountUIContractTest(unittest.TestCase):
+    def test_pending_order_is_not_a_fill_and_escapes_owned_evidence(self):
+        order=dict(order_id='ord_fixture',symbol='<img src=x>',status='pending',side='BUY',sleeve='manual',regime='ON',
+                   qty=0,requested_qty=20,stop=99,target=110,reason='Awaiting later liquidity')
+        html=self.render('paperOrderCards',[order])
+        self.assertIn('20 requested',html);self.assertIn('Awaiting later liquidity',html);self.assertIn('Cancel order',html)
+        self.assertNotIn('filled at',html);self.assertNotIn('<img',html);self.assertIn('&lt;img',html)
+        order['side']='SELL'
+        html=self.render('paperOrderCards',[order])
+        self.assertIn('exposure remain',html);self.assertNotIn('Cancel order',html)
+        self.assertIn('token===PAPER_ORDERS_LOAD',account_ui.JS)
+
     def test_readiness_shows_actual_blockers_and_escapes_hostile_evidence(self):
         html=self.render('tradingReadinessHtml',dict(symbols=['<img src=x>'],checked_at='fixture',
             paper=dict(status='blocked',production_sleeves=['index_directional'],observation_sleeves=['quality_momentum']),

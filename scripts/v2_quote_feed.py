@@ -93,6 +93,8 @@ def _held(path=None):
         queries = {
             'house': 'SELECT market,symbol FROM v2_positions',
             'personal': 'SELECT market,symbol FROM user_positions',
+            'paper-pending': "SELECT 'IN',json_extract(i.payload,'$.plan.symbol') FROM paper_order_intents i "
+                             "JOIN paper_order_state s ON s.order_id=i.id WHERE s.status='pending'",
             'broker': "SELECT market,symbol FROM v2_live_orders WHERE status IN "
                       "('pending','submitted','partial','unknown','sent') UNION "
                       "SELECT market,symbol FROM v2_live_orders GROUP BY user_id,market,symbol,instrument_key "
@@ -187,6 +189,14 @@ def _poll(db, providers, rows_for, label, benchmarks=False):
             # never discard or delay delivery of already fetched equity quotes.
             if quotes:
                 db.upsert_quotes(quotes)
+            execution = getattr(providers[m], 'execution_quotes', {})
+            if execution:
+                from app import executable_quotes
+                try:
+                    with db.connect() as con:
+                        for snapshot in execution.values(): executable_quotes.write(con, snapshot)
+                except sqlite3.Error:
+                    print('executable depth capture unavailable; valuation quotes delivered', flush=True)
             if indices:
                 from app.screening import tracking
                 try:

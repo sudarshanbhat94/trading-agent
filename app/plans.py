@@ -204,6 +204,9 @@ ROUTE_FEATURES = {
     "/v2/api/paper-performance": "paper_book",
     "/v2/api/approved-plans": "paper_book",
     "/v2/api/approved-orders": "manual_trade",
+    # Owners can inspect/cancel unfilled commitments after a plan lapses.
+    "/v2/api/paper-orders": None,
+    "/v2/api/paper-orders/{order_id}/cancel": None,
     "/v2/api/instrument": "market_internals",
     # Read-only account safety remains available after a subscription lapses.
     "/v2/api/execution-health": None,

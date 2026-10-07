@@ -1254,6 +1254,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
         requested = len(universe)
         quotes: dict[str, Quote] = {}
         errors: list[str] = []
+        self.execution_quotes = {}
         async with httpx.AsyncClient(timeout=10, headers=self._headers()) as client:
             resolution = await self._ensure_instrument_keys(client, universe)
             missing_key_symbols = [row["symbol"] for row in universe if not row.get("upstox_instrument_key")]
@@ -1278,6 +1279,12 @@ class UpstoxMarketDataProvider(MarketDataProvider):
                     price = item.get("last_price") or item.get("ltp")
                     if price is None:
                         continue
+                    from .executable_quotes import normalize_upstox
+                    try:
+                        self.execution_quotes[row['symbol']] = normalize_upstox(item, self._instrument_key(row),
+                            row['symbol'], observed_at=datetime.now(timezone.utc).isoformat())
+                    except (ValueError, KeyError, TypeError):
+                        pass  # Valuation can still be useful; it cannot certify liquidity.
                     ohlc = item.get("ohlc") or {}
                     asof = _upstox_quote_asof(item)
                     quote_source = self.source_name if _is_nse_regular_session_now() and not _is_stale_quote(asof) else "upstox-last-traded"
@@ -1301,6 +1308,7 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             "missing_symbols": [row["symbol"] for row in universe if row["symbol"] not in quotes][:20],
             "errors": _unique_errors(errors)[:5],
             "source": "upstox_market_quote_quotes",
+            "executable_depth_returned": len(self.execution_quotes),
         }
         if requested and not quotes:
             raise MarketDataError(f"Upstox returned no quotes; diagnostics={self.last_quote_diagnostics}")
@@ -1589,8 +1597,11 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             # Nifty Bank). Match the identity, including segment, first.
             if instrument and (key == instrument or key == instrument.replace('|',':',1)
                                or item.get('instrument_token') == instrument):
+                if item.get('instrument_token') != instrument and not (
+                        segment=='NSE_INDEX' and item.get('instrument_token') is None):
+                    return None
                 return item
-            if key.startswith(segment+':') and (key.endswith(f":{symbol}") or item.get("symbol") == symbol):
+            if not instrument and key.startswith(segment+':') and (key.endswith(f":{symbol}") or item.get("symbol") == symbol):
                 return item
         # A partial batch containing one OTHER instrument is not this quote.
         return None

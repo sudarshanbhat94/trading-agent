@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime,timedelta,timezone
 from unittest.mock import patch
 
-from app import approved_execution as pipeline,books,v2_live,paper_ledger,execution_contracts
+from app import approved_execution as pipeline,books,v2_live,paper_ledger,execution_contracts,paper_exchange,executable_quotes
 from app.instrument_catalog import Instrument,import_snapshot
 
 
@@ -27,12 +27,27 @@ class ApprovedPaperPipelineTest(unittest.TestCase):
             lower_circuit=80,upper_circuit=120,calendar=calendar,banned=False,corporate_action_pending=False,actions_reviewed_at=self.now.isoformat()),**attrs)
         self.plan=dict(user_id=2,market='IN',mode='paper',side='BUY',product='D',epoch=books.current_epoch(self.con,2),
             instrument_id=self.spec.id,symbol='TEST',model_version='manual-fixture-v1',evidence_reference='synthetic fixture, not alpha validation',
-            quantity=20,stop=99,entry_low=100,entry_high=101,target=110,evidence_at=self.now.isoformat(),expires_at=(self.now+timedelta(hours=1)).isoformat(),
+            quantity=20,stop=99,entry_low=100,entry_high=100,target=110,evidence_at=self.now.isoformat(),expires_at=(self.now+timedelta(hours=1)).isoformat(),
             approval_kind='manual',sleeve='manual')
         self.plan_id=pipeline.approve(self.con,self.plan,approved_by='fixture account owner',approval_reference='explicit isolated manual fixture',now=self.now)
 
     def submit(self,uid=2,key='request-0001',regime='ON',price=100):
-        return pipeline.submit(self.con,self.catalogue,uid,self.plan_id,key,{'TEST':dict(price=price,ts=self.now.isoformat())},regime=regime,now=self.now)
+        result=pipeline.submit(self.con,self.catalogue,uid,self.plan_id,key,{'TEST':dict(price=price,ts=self.now.isoformat())},regime=regime,now=self.now)
+        if result.get('status')=='pending':
+            self.fill_pending(regime=regime)
+            return paper_exchange.status(self.con,uid,result['order_id'])
+        return result
+
+    def snapshot(self,at=None,price=100,quantity=1000):
+        at=at or self.now+timedelta(seconds=1)
+        return executable_quotes.normalize_upstox(dict(instrument_token='NSE_EQ|TEST',symbol='TEST',timestamp=at.isoformat(),
+            lower_circuit_limit=80,upper_circuit_limit=120,
+            depth=dict(buy=[dict(price=price-.05,quantity=quantity)],sell=[dict(price=price,quantity=quantity)])),
+            'NSE_EQ|TEST','TEST',observed_at=at.isoformat())
+
+    def fill_pending(self,regime='ON',snapshot=None,now=None):
+        now=now or self.now+timedelta(seconds=1);snapshot=snapshot or self.snapshot(now)
+        return paper_exchange.service(self.con,self.catalogue,{'TEST':dict(price=100,ts=now.isoformat(),execution=snapshot)},regime=regime,now=now)
 
     def test_entry_restart_protection_exit_pnl_and_immutable_identity(self):
         before=books.cash(self.con,2);result=self.submit();self.assertTrue(result['ok']);self.assertEqual(result['qty'],20)
@@ -42,6 +57,9 @@ class ApprovedPaperPipelineTest(unittest.TestCase):
         self.assertEqual(self.submit(),result)
         self.assertEqual(len(books.positions(self.con,2)),1)
         self.assertEqual(books.monitor_positions(self.con,quotes={'TEST':dict(price=110,ts=self.now.isoformat())},market='IN'),1)
+        self.assertEqual(len(books.positions(self.con,2)),1)  # Stop/target request is not a sale.
+        at=self.now+timedelta(seconds=2)
+        paper_exchange.service_exits(self.con,{'TEST':dict(price=110,ts=at.isoformat(),execution=self.snapshot(at,price=110.05))},now=at)
         self.assertEqual(books.positions(self.con,2),[])
         self.assertEqual(self.con.execute('SELECT plan_id,instrument_id,model_version FROM user_trades WHERE user_id=2').fetchone(),
                          (self.plan_id,self.spec.id,'manual-fixture-v1'))
@@ -73,6 +91,7 @@ class ApprovedPaperPipelineTest(unittest.TestCase):
         with patch.object(paper_ledger,'entry',side_effect=RuntimeError('disk fault')):
             with self.assertRaises(RuntimeError):self.submit()
         self.assertEqual(books.positions(self.con,2),[])
-        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM approved_execution_events').fetchone()[0],0)
+        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM approved_execution_events WHERE kind='FILLED'").fetchone()[0],0)
+        self.assertEqual(len(paper_exchange.pending(self.con,2)),1)
         books.reset_book(self.con,2,'IN',budget=100)
         self.assertFalse(self.submit()['ok']);self.assertEqual(books.cash(self.con,2),100)

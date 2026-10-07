@@ -26,10 +26,8 @@ _LOGGER = logging.getLogger("openstocks.auth")
 _GENERATED_SECRET_KEY = "auth_session_secret_generated"
 _SECRET_CACHE: dict[str, bytes] = {}
 
-# Login throttling. In-process only: this app runs as a single uvicorn worker,
-# so a shared store is unnecessary today. Scaling to multiple workers or hosts
-# means moving this to Redis or the database, otherwise the limit multiplies by
-# the worker count.
+# Production login work is reserved in SQLite across workers and restarts.
+# These in-memory helpers remain only for lightweight non-database test doubles.
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 300
 LOGIN_LOCKOUT_SECONDS = 900
@@ -239,7 +237,17 @@ def login_user(
     # deliberately expensive, so unthrottled attempts are also a CPU DoS.
     now = time.time()
     throttle_key = _client_key(request, normalized)
-    blocked_for = _login_blocked_for(throttle_key, now)
+    persistent = callable(getattr(db, 'connect', None))
+    ticket = None
+    if persistent:
+        from . import login_guard
+        try:
+            with db.connect() as con:
+                ticket, blocked_for = login_guard.reserve(con, throttle_key, now)
+        except sqlite3.Error:
+            raise HTTPException(503, 'Login security store unavailable') from None
+    else:
+        blocked_for = _login_blocked_for(throttle_key, now)
     if blocked_for:
         raise HTTPException(
             status_code=429,
@@ -252,10 +260,18 @@ def login_user(
         db.ensure_default_admin_user(normalized, hash_password(settings.admin_password))
         user = db.user_by_username(normalized)
     if not user or not user.get("active") or not verify_password(password, user.get("password_hash") or ""):
-        _record_failed_login(throttle_key, now)
+        if persistent:
+            with db.connect() as con:
+                login_guard.finish(con, ticket, False, time.time())
+        else:
+            _record_failed_login(throttle_key, now)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    _clear_login_attempts(throttle_key)
+    if persistent:
+        with db.connect() as con:
+            login_guard.finish(con, ticket, True, time.time())
+    else:
+        _clear_login_attempts(throttle_key)
     db.mark_user_login(int(user["id"]))
     public_user = _public_user(db.user_by_id(int(user["id"])) or user)
     return _issue_session(public_user, response, settings, db, request)
@@ -471,6 +487,23 @@ def _make_token(user: dict[str, Any], settings: Settings, db: Any = None) -> str
 def _session_schema(con):
     con.execute("CREATE TABLE IF NOT EXISTS auth_sessions(session_hash TEXT PRIMARY KEY,"
                 "user_id INTEGER NOT NULL,issued_at REAL NOT NULL,expires_at REAL NOT NULL,revoked_at REAL)")
+    con.execute('CREATE INDEX IF NOT EXISTS auth_sessions_owner ON auth_sessions(user_id,revoked_at)')
+    from .login_guard import ensure_schema
+    ensure_schema(con)
+
+
+def revoke_sessions(con, user_id):
+    """Call inside the transaction that changes password/role/account access."""
+    con.execute('UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL',
+                (time.time(), int(user_id)))
+
+
+def logout_all(response, request, settings, db):
+    user = require_user(request, settings, db)
+    with db.connect() as con:
+        revoke_sessions(con, user['id'])
+    response.delete_cookie(SESSION_COOKIE)
+    return {'authenticated': False, 'admin': False}
 
 
 def _active_session(db, payload):

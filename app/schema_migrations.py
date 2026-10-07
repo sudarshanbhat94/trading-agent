@@ -55,11 +55,14 @@ def validate_trading(connection):
         'entry_contract_records':{'scope','user_id','position_id','payload'},
         'approved_execution_plans':{'id','user_id','epoch','payload'},
         'manual_plan_bindings':{'user_id','epoch','request_key','fingerprint','plan_id'},
+        'paper_order_intents':{'id','user_id','epoch','plan_id','payload'},
+        'paper_order_state':{'order_id','status','result'},
+        'paper_order_events':{'order_id','kind','payload','observed_at'},
     }
     for table,columns in required.items():
         missing=columns-{r[1] for r in connection.execute('PRAGMA table_info('+table+')')}
         if missing:raise RuntimeError('Required migration contract incomplete: '+table+' '+str(sorted(missing)))
-    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings'):
+    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings','paper_order_intents','paper_order_events'):
         triggers=[(r[0] or '').upper() for r in connection.execute('SELECT sql FROM sqlite_master WHERE type=? AND tbl_name=?',('trigger',table))]
         if any(not any(('BEFORE '+operation) in sql and 'RAISE(ABORT' in sql for sql in triggers) for operation in ('UPDATE','DELETE')):
             raise RuntimeError('Required immutable table protection unavailable: '+table)
@@ -75,6 +78,9 @@ TRADING_CONTRACT={'version':3,'scope':'canonical-entry-actual-broker-ledger',
 def validate_accounts(connection):
     for table,fields in {'users':{'id','username','active','account_plan'},
                          'auth_sessions':{'user_id','session_hash','revoked_at'},
+                         'auth_login_reservations':{'id','key_hash','started_at','outcome'},
+                         'auth_login_locks':{'key_hash','locked_until'},
+                         'market_execution_quotes':{'instrument_key','snapshot_at','payload'},
                          'subscription_receipts':{'user_id','request_id','payment_reference','amount_minor'}}.items():
         missing=fields-{r[1] for r in connection.execute('PRAGMA table_info('+table+')')}
         if missing:raise RuntimeError('Account migration incomplete: '+table+' '+str(sorted(missing)))

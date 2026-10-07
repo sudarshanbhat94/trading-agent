@@ -2,6 +2,8 @@
 
 **TRADING BEHAVIOUR CHANGED locally.** New broker entries require reviewed, build/account/route/model-specific release evidence. A connected or armed account does not bypass it. Strategy thresholds, enabled sleeves, capital and the registered experiment are unchanged. None of these changes has been deployed.
 
+New paper execution now reserves pending commitments and fills on later sourced bid/ask snapshots; see [the current lifecycle and API semantics](paper-exchange-lifecycle.md). An HTTP 202 is not a paper fill.
+
 ## Supported implementation
 
 The new approved-plan route implements an owned NSE cash-equity/ETF delivery **paper** lifecycle. It freezes quantity, canonical identity, model version, evidence date, entry zone, stop and target before account risk is checked. An approved plan may fill once. A network retry uses the same request identity; a confirmed refusal needs a new request. A changed epoch invalidates the approval. No public endpoint promotes research. Legacy `/v2/api/buy` in paper mode freezes an explicitly human-owned manual request, labels it `human-manual-v1`, and calls the same approved execution pipeline. Its stable owner/epoch/request binding cannot be changed on retry; this is not a model approval.

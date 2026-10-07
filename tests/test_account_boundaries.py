@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,19 +18,36 @@ class AccountBoundaryTest(unittest.TestCase):
         self.user={'id':7,'account_plan':'auto'}
         from tests.contract_source_fixtures import catalogue
         from app import entry_contracts
-        source=catalogue();self.addCleanup(source.close)
+        source=self.source=catalogue();self.addCleanup(source.close)
         context=entry_contracts.using(source);context.__enter__();self.addCleanup(context.__exit__,None,None,None)
         regime=patch.object(v2_web,'_regime_state',return_value='ON');regime.start();self.addCleanup(regime.stop)
 
+    def quote(self, now=None):
+        from app import executable_quotes
+        now=now or datetime.now(timezone.utc)
+        item=dict(instrument_token='NSE_EQ|TEST',symbol='TEST',timestamp=now.isoformat(),
+                  lower_circuit_limit=50,upper_circuit_limit=200,
+                  depth=dict(buy=[dict(price=99.95,quantity=10000)],sell=[dict(price=100,quantity=10000)]))
+        snapshot=executable_quotes.normalize_upstox(item,'NSE_EQ|TEST','TEST',observed_at=now.isoformat())
+        return {'TEST':dict(price=100,ts=now.isoformat(),execution=snapshot)}
+
+    def fill(self):
+        from app import paper_exchange
+        now=datetime.now(timezone.utc)+timedelta(seconds=1)
+        with sqlite3.connect(self.path) as con:
+            return paper_exchange.service(con,self.source,self.quote(now),regime='ON',now=now)
+
     def test_paper_buy_never_calls_broker_even_if_armed(self):
-        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        quote=self.quote()
         with patch.object(v2_web,'_market_shut',return_value=None), \
              patch.object(v2_web,'_live_map',return_value=quote), \
              patch('app.broker.state',return_value={'live_ready':True}), \
              patch('app.live_trade.mirror_entry',side_effect=AssertionError('real order')):
             r=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110},self.user)
-        self.assertEqual(r.status_code,200)
-        self.assertTrue(json.loads(r.body)['paper_recorded'])
+        self.assertEqual(r.status_code,202)
+        self.assertFalse(json.loads(r.body)['paper_recorded'])
+        with sqlite3.connect(self.path) as con:self.assertEqual(books.positions(con,7),[])
+        self.assertEqual(len(self.fill()),1)
         with sqlite3.connect(self.path) as con:
             owned=con.execute('SELECT user_id,plan_id,instrument_id FROM user_positions').fetchone()
             self.assertEqual(owned[0],7);self.assertTrue(owned[1].startswith('plan_'));self.assertTrue(owned[2].startswith('ins_'))
@@ -48,12 +65,14 @@ class AccountBoundaryTest(unittest.TestCase):
             self.assertEqual(books.open_symbols(c,7,'IN'),set())
 
     def test_api_preserves_requested_quantity_and_original_receipt(self):
-        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        quote=self.quote()
         request={'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':20,'request_key':'stable-click-identity'}
         with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
             first=v2_web.api_buy(request,self.user)
-            self.assertEqual(first.status_code,200)
-            self.assertEqual(json.loads(first.body)['qty'],20)
+            self.assertEqual(first.status_code,202)
+            self.assertEqual(json.loads(first.body)['requested_qty'],20)
+            self.assertEqual(json.loads(first.body)['qty'],0)
+            self.assertEqual(len(self.fill()),1)
             with sqlite3.connect(self.path) as con:books.sell(con,7,'IN','TEST',110)
             quote['TEST']['price']=101
             retry=v2_web.api_buy(request,self.user)
@@ -64,29 +83,28 @@ class AccountBoundaryTest(unittest.TestCase):
         with sqlite3.connect(self.path) as con:self.assertEqual(books.positions(con,7),[])
 
     def test_retried_manual_plan_does_not_require_a_new_quote_or_rebind_default_levels(self):
-        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        quote=self.quote()
         request={'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':20,'request_key':'manual-stable-after-close'}
         with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
             first=v2_web.api_buy(request,self.user)
-            self.assertEqual(first.status_code,200)
-            with sqlite3.connect(self.path) as con:books.sell(con,7,'IN','TEST',110)
+            self.assertEqual(first.status_code,202)
             quote.clear()
             repeated=v2_web.api_buy(request,self.user)
-            self.assertEqual(repeated.status_code,200)
+            self.assertEqual(repeated.status_code,202)
             self.assertEqual(json.loads(first.body),json.loads(repeated.body))
 
     def test_immutable_manual_binding_cannot_be_deleted_or_reassigned(self):
-        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        quote=self.quote()
         with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
             result=v2_web.api_buy({'symbol':'TEST','stop':99,'target':110,'qty':20,'request_key':'immutable-manual-request'},self.user)
-        self.assertEqual(result.status_code,200)
+        self.assertEqual(result.status_code,202)
         with sqlite3.connect(self.path) as con:
             for statement in ('DELETE FROM manual_plan_bindings','UPDATE manual_plan_bindings SET user_id=8'):
                 with self.assertRaises(sqlite3.IntegrityError):con.execute(statement)
                 con.rollback()
 
     def test_api_rejects_fractional_quantity_and_does_not_resize_large_request(self):
-        quote={'TEST':{'price':100,'ts':datetime.now(timezone.utc).isoformat()}}
+        quote=self.quote()
         with patch.object(v2_web,'_market_shut',return_value=None),patch.object(v2_web,'_live_map',return_value=quote):
             for qty in (1.5,True,-1):
                 result=v2_web.api_buy({'symbol':'TEST','mode':'paper','stop':99,'target':110,'qty':qty},self.user)

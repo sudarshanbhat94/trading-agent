@@ -33,7 +33,7 @@ def test_index_identity_and_partial_batch_cannot_assign_another_instruments_pric
     assert provider._find_quote_item(data,feed.BENCHMARK_ROWS[1])['last_price']==55000
     equity={'symbol':'TEST','upstox_instrument_key':'NSE_EQ|ISIN'}
     assert provider._find_quote_item({'NSE_EQ:OTHER':{'last_price':100}},equity) is None
-    assert provider._find_quote_item({'NSE_EQ:TEST':{'last_price':101}},equity)['last_price']==101
+    assert provider._find_quote_item({'NSE_EQ:TEST':{'last_price':101,'instrument_token':equity['upstox_instrument_key']}},equity)['last_price']==101
 
 
 def test_slow_response_cannot_replace_newer_quote_even_with_different_timezone(tmp_path):

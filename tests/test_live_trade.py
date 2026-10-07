@@ -311,7 +311,7 @@ class RoundTripThroughTheEngineTest(ApprovedFixtureCase):
         # a FRESH connection each call, like production — the caller closes it
         return sqlite3.connect(self.main_path)
 
-    def test_a_full_buy_then_exit_places_both_real_orders(self) -> None:
+    def test_retired_house_entry_never_creates_broker_inventory(self) -> None:
         with mock.patch.object(_broker_mod, "place_order", side_effect=self.fake_place), \
              mock.patch.object(live_trade, "available_margin", return_value=9115.0), \
              mock.patch.object(v2_live, "_ro", self._ro):
@@ -327,14 +327,8 @@ class RoundTripThroughTheEngineTest(ApprovedFixtureCase):
             v2_live.record_exit(self.v2, "IN", pid, "2026-08-05", 1400.0, 12, "target")
             execution_outbox.drain(self.v2)
 
-        self.assertEqual(len(self.sent), 2, self.sent)
-        (b_side, b_key, b_qty), (s_side, s_key, s_qty) = self.sent
-        self.assertEqual((b_side, b_key), ("BUY", "NSE_EQ|INE002A01018"))
-        self.assertEqual((s_side, s_key), ("SELL", "NSE_EQ|INE002A01018"))
-        # THE assertion: the sleeve bought 2 and sold 2, while paper did 12
-        self.assertEqual(b_qty, 2)
-        self.assertEqual(s_qty, 2)
-        _fill_all(self.v2)
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.v2.execute("SELECT COUNT(*) FROM execution_incidents WHERE code='RETIRED_ENTRY_PATH'").fetchone()[0],1)
         self.assertEqual(live_trade.live_qty(self.v2, UID, "RELIANCE"), 0)
 
     def test_the_exit_reads_the_symbol_before_the_row_is_deleted(self) -> None:
@@ -372,6 +366,10 @@ class RoundTripThroughTheEngineTest(ApprovedFixtureCase):
                                  "2026-08-04", 1305.0, 12, 1292.0, 1500.0, 0.0, 0.5, None)
             pid = self.v2.execute("SELECT id FROM v2_positions").fetchone()[0]
             from app import execution_outbox
+            # Seed previously owned live inventory explicitly. The retired
+            # house entry event must not create any new broker exposure.
+            live_trade.mirror_entry(self.v2,self.main,UID,'IN','RELIANCE',1305,'manual',
+                stop=1292,target=1500,origin_position_id=pid,request_key='existing-owned-inventory')
             with mock.patch.object(v2_live,"_live",return_value={"RELIANCE":dict(price=1305,ts=datetime.now(timezone.utc).isoformat())}):
                 execution_outbox.drain(self.v2)
             _fill_all(self.v2)
