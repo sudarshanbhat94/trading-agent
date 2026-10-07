@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2502,
-    "passed": 2369,
+    "run": 2511,
+    "passed": 2378,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 21.233,
-    "note": "Frozen runtime source after six exact-parent reconciliation regressions; package-aware isolation."
+    "seconds": 19.932,
+    "note": "Frozen source after provider-time, exact-depth, conflict and provider-to-paper regressions; package-aware external HTTP isolation."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -101,7 +101,7 @@
   },
   "entire_release_plan_complete": false,
   "working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
-  "refreshed_at": "2026-10-07T05:25:46.360440+00:00",
+  "refreshed_at": "2026-10-07T09:56:32.194158+00:00",
   "this_turn_initial_full_run": {
     "run": 2353,
     "failures": 3,
@@ -473,5 +473,58 @@
       "unittest (3.14)",
       "dependencies"
     ]
+  },
+  "previous_full_unittest_de4fb8a": {
+    "run": 2502,
+    "passed": 2369,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 21.233,
+    "note": "Frozen runtime source after six exact-parent reconciliation regressions; package-aware isolation."
+  },
+  "executable_depth_review": {
+    "parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "new_checks": 9,
+    "focused_checks": 29,
+    "parent_regressions": {
+      "run": 7,
+      "failures": 4,
+      "errors": 2,
+      "exit_code": 1,
+      "note": "Two millisecond-input subcases error; distinct ordering, conflict, rollback and concurrency assertions fail."
+    },
+    "account_schema": "account-schema-v4",
+    "function_fixtures": 102,
+    "paper_fault_rehearsal": "passed; balanced ledger, zero duplicate/ownership errors/negative cash, zero broker orders",
+    "final_oci_source": {
+      "source_files_verified": 443,
+      "archive_sha256": "e66200cc1affc8f61c3093d48421a5d0a3caf6e40358ec2a49b99cf2ff017f62",
+      "production_modified": false,
+      "real_orders": 0,
+      "regression_exit": 0,
+      "migration_exit": 0,
+      "boot_exit": 0,
+      "boot": {
+        "status": "passed",
+        "actual_app_startup": true,
+        "unauthenticated_positions": 401,
+        "capital": 10000,
+        "cash": 10000,
+        "equity": 10000,
+        "positions": 0,
+        "original_values_preserved": true,
+        "outbound_http_blocked": true,
+        "workers_disabled": true,
+        "production_modified": false,
+        "real_orders": 0
+      }
+    },
+    "production_modified": false,
+    "deployed": false,
+    "profitability_evidence": false,
+    "interim_fixture_error": "Provider-to-paper fixture initially put source time after the real observation clock. Fixed the fixture with an explicit deterministic observation clock; production future rejection was retained.",
+    "source_probe": "One current public NSE master request from OCI timed out; no source archive or invented rules imported."
   }
 }

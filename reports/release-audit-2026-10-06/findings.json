@@ -2769,5 +2769,89 @@
     "revalidation_method": "Exact parent disposable regression plus current risk/journal path, locked snapshot tests and complete suite",
     "revalidation_source": "inventory.json hashes; private exact candidate startup",
     "release_certification": false
+  },
+  {
+    "id": "F70",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Valid provider millisecond timestamps are discarded",
+    "evidence": [
+      "app/executable_quotes.py:40"
+    ],
+    "rootCause": "Full quote depth accepted ISO only, despite the provider documenting epoch milliseconds. Valuation could arrive while executable liquidity was silently absent.",
+    "fix": "Decode only integer/digit epoch milliseconds or aware ISO; canonicalize UTC, reject ambiguous units, floats, naive and future inputs.",
+    "acceptance": "Integer and string provider milliseconds produce identical ISO snapshot fingerprints; actual provider-to-pending-paper fill and balanced ledger pass; invalid timestamps retain valuation but no executable permission.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Decode only integer/digit epoch milliseconds or aware ISO; canonicalize UTC, reject ambiguous units, floats, naive and future inputs.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F71",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded depth ordering can retain obsolete liquidity",
+    "evidence": [
+      "app/executable_quotes.py:102"
+    ],
+    "rootCause": "SQLite Julian-day ordering collapses distinct submillisecond source instants; superseded ask quantity can remain eligible for paper fills.",
+    "fix": "Serialize exact aware source-time comparison and update under a parent-preserving atomic boundary; older workers cannot restore old depth.",
+    "acceptance": "Ten-microsecond updates replace depth; two workers retain the latest source snapshot; enclosing rollback retains ownership.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Serialize exact aware source-time comparison and update under a parent-preserving atomic boundary; older workers cannot restore old depth.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F72",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Equal-time contradictory depth retains first executable quote",
+    "evidence": [
+      "app/executable_quotes.py:133"
+    ],
+    "rootCause": "The first same-time response stayed executable when another response contradicted its depth, authorizing uncertain liquidity.",
+    "fix": "Append immutable conflict evidence and withhold the conflicting snapshot from readers until strictly newer source evidence arrives; repeating either response cannot clear it. Account-schema-v4 validates the additive structure.",
+    "acceptance": "Same-time conflicting depth is unavailable, original replay cannot clear it, strictly later evidence restores permission, conflicts are immutable and outer rollback is respected.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Append immutable conflict evidence and withhold the conflicting snapshot from readers until strictly newer source evidence arrives; repeating either response cannot clear it. Account-schema-v4 validates the additive structure.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
   }
 ]

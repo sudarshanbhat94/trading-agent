@@ -89,7 +89,13 @@ def validate_accounts(connection):
                          'auth_login_reservations':{'id','key_hash','started_at','outcome'},
                          'auth_login_locks':{'key_hash','locked_until'},
                          'market_execution_quotes':{'instrument_key','snapshot_at','payload'},
+                         'market_execution_quote_conflicts':{'instrument_key','snapshot_at','first_snapshot_id','conflicting_snapshot_id','payload'},
                          'subscription_receipts':{'user_id','request_id','payment_reference','amount_minor'}}.items():
         missing=fields-{r[1] for r in connection.execute('PRAGMA table_info('+table+')')}
         if missing:raise RuntimeError('Account migration incomplete: '+table+' '+str(sorted(missing)))
+    triggers=[(r[0] or '').upper() for r in connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='market_execution_quote_conflicts'")]
+    if any(not any(('BEFORE '+operation) in sql and 'RAISE(ABORT' in sql for sql in triggers)
+           for operation in ('UPDATE','DELETE')):
+        raise RuntimeError('Executable quote conflict protection unavailable')
     if connection.execute('PRAGMA foreign_key_check').fetchone():raise RuntimeError('Account foreign-key integrity failed')

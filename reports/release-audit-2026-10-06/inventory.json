@@ -183,6 +183,7 @@
     "docs/broker-protection-recovery.md",
     "docs/equity_factor_research.md",
     "docs/evidence_screen.md",
+    "docs/executable-quote-evidence.md",
     "docs/idea-tracking.md",
     "docs/next-session-readiness.md",
     "docs/paper-candidate-rollout.md",
@@ -194,6 +195,7 @@
     "reports/dependencies/lock.json",
     "reports/dependencies/pre-patch-advisories.json",
     "reports/dependencies/sbom.cdx.json",
+    "reports/executable-depth-review-2026-10-07.md",
     "reports/execution-hardening-2026-10-06.md",
     "reports/idea-hardening-2026-10-06.md",
     "reports/idea-review-2026-10-01.md",
@@ -223,6 +225,7 @@
     "reports/release-audit-2026-10-06/key-diffs.patch",
     "reports/release-audit-2026-10-06/native-key-diffs.patch",
     "reports/release-audit-2026-10-06/next-session-key-diffs.patch",
+    "reports/release-audit-2026-10-06/quote-key-diffs.patch",
     "reports/release-audit-2026-10-06/release-evidence.json",
     "reports/release-audit-2026-10-06/release-gate-result.json",
     "reports/release-audit-2026-10-06/reproduce_known_defects.py",
@@ -372,6 +375,7 @@
     "tests/test_equity_option_book_isolation.py",
     "tests/test_event_calendar.py",
     "tests/test_evidence_screen.py",
+    "tests/test_executable_quote_times.py",
     "tests/test_executable_quotes.py",
     "tests/test_executable_replay_calibration.py",
     "tests/test_execution_capabilities.py",
@@ -3048,7 +3052,7 @@
     },
     {
       "file": "app/db.py",
-      "lines": 8830,
+      "lines": 8831,
       "imports": [
         "__future__",
         "csv",
@@ -3294,182 +3298,182 @@
         },
         {
           "name": "_row_dict",
-          "line": 7566,
+          "line": 7567,
           "kind": "FunctionDef"
         },
         {
           "name": "_first_event_source",
-          "line": 7570,
+          "line": 7571,
           "kind": "FunctionDef"
         },
         {
           "name": "_return_pct",
-          "line": 7579,
+          "line": 7580,
           "kind": "FunctionDef"
         },
         {
           "name": "_follow_realized_pnl",
-          "line": 7590,
+          "line": 7591,
           "kind": "FunctionDef"
         },
         {
           "name": "_performance_feedback_record",
-          "line": 7613,
+          "line": 7614,
           "kind": "FunctionDef"
         },
         {
           "name": "_empty_performance_group",
-          "line": 7696,
+          "line": 7697,
           "kind": "FunctionDef"
         },
         {
           "name": "_add_performance_record",
-          "line": 7725,
+          "line": 7726,
           "kind": "FunctionDef"
         },
         {
           "name": "_finalize_performance_group",
-          "line": 7757,
+          "line": 7758,
           "kind": "FunctionDef"
         },
         {
           "name": "_compact_performance_record",
-          "line": 7790,
+          "line": 7791,
           "kind": "FunctionDef"
         },
         {
           "name": "_avg",
-          "line": 7807,
+          "line": 7808,
           "kind": "FunctionDef"
         },
         {
           "name": "_performance_feedback_score",
-          "line": 7811,
+          "line": 7812,
           "kind": "FunctionDef"
         },
         {
           "name": "_performance_evidence_quality",
-          "line": 7825,
+          "line": 7826,
           "kind": "FunctionDef"
         },
         {
           "name": "_paper_exit_action",
-          "line": 7835,
+          "line": 7836,
           "kind": "FunctionDef"
         },
         {
           "name": "_exit_action",
-          "line": 7932,
+          "line": 7933,
           "kind": "FunctionDef"
         },
         {
           "name": "_target_hit",
-          "line": 7943,
+          "line": 7944,
           "kind": "FunctionDef"
         },
         {
           "name": "_target_exit_pct",
-          "line": 7954,
+          "line": 7955,
           "kind": "FunctionDef"
         },
         {
           "name": "_short_reason",
-          "line": 7969,
+          "line": 7970,
           "kind": "FunctionDef"
         },
         {
           "name": "_why_changed_payload",
-          "line": 7976,
+          "line": 7977,
           "kind": "FunctionDef"
         },
         {
           "name": "_drawdown_review_state",
-          "line": 8007,
+          "line": 8008,
           "kind": "FunctionDef"
         },
         {
           "name": "_signal_state_payload",
-          "line": 8029,
+          "line": 8030,
           "kind": "FunctionDef"
         },
         {
           "name": "_decorate_signal_idea_item",
-          "line": 8184,
+          "line": 8185,
           "kind": "FunctionDef"
         },
         {
           "name": "_setup_bucket_payload",
-          "line": 8248,
+          "line": 8249,
           "kind": "FunctionDef"
         },
         {
           "name": "_execution_state_payload",
-          "line": 8300,
+          "line": 8301,
           "kind": "FunctionDef"
         },
         {
           "name": "_signal_idea_from_decision",
-          "line": 8332,
+          "line": 8333,
           "kind": "FunctionDef"
         },
         {
           "name": "_apply_top_gainers_playbook_signal_details",
-          "line": 8567,
+          "line": 8568,
           "kind": "FunctionDef"
         },
         {
           "name": "_apply_btst_signal_details",
-          "line": 8627,
+          "line": 8628,
           "kind": "FunctionDef"
         },
         {
           "name": "_canonical_trade_gate_from_audit",
-          "line": 8686,
+          "line": 8687,
           "kind": "FunctionDef"
         },
         {
           "name": "_follow_qty_from_amount",
-          "line": 8697,
+          "line": 8698,
           "kind": "FunctionDef"
         },
         {
           "name": "_empty_candle_coverage",
-          "line": 8709,
+          "line": 8710,
           "kind": "FunctionDef"
         },
         {
           "name": "_candle_source_bucket",
-          "line": 8719,
+          "line": 8720,
           "kind": "FunctionDef"
         },
         {
           "name": "_latest_ts",
-          "line": 8740,
+          "line": 8741,
           "kind": "FunctionDef"
         },
         {
           "name": "_chunks",
-          "line": 8748,
+          "line": 8749,
           "kind": "FunctionDef"
         },
         {
           "name": "_should_preserve_active_buy",
-          "line": 8753,
+          "line": 8754,
           "kind": "FunctionDef"
         },
         {
           "name": "_is_duplicate_active_buy_refresh",
-          "line": 8777,
+          "line": 8778,
           "kind": "FunctionDef"
         },
         {
           "name": "_row_has_buy_refresh_intent",
-          "line": 8795,
+          "line": 8796,
           "kind": "FunctionDef"
         },
         {
           "name": "_strategy_plan_code",
-          "line": 8809,
+          "line": 8810,
           "kind": "FunctionDef"
         },
         {
@@ -3494,687 +3498,687 @@
         },
         {
           "name": "_init_schema",
-          "line": 1136,
+          "line": 1137,
           "kind": "FunctionDef"
         },
         {
           "name": "_ensure_column",
-          "line": 1667,
+          "line": 1668,
           "kind": "FunctionDef"
         },
         {
           "name": "_backfill_universe_metadata",
-          "line": 1672,
+          "line": 1673,
           "kind": "FunctionDef"
         },
         {
           "name": "_seed_strategy_plans",
-          "line": 1692,
+          "line": 1693,
           "kind": "FunctionDef"
         },
         {
           "name": "_backfill_signal_plan_codes",
-          "line": 1769,
+          "line": 1770,
           "kind": "FunctionDef"
         },
         {
           "name": "_demote_non_actionable_buy_signal_ideas",
-          "line": 1785,
+          "line": 1786,
           "kind": "FunctionDef"
         },
         {
           "name": "ensure_default_admin_user",
-          "line": 1895,
+          "line": 1896,
           "kind": "FunctionDef"
         },
         {
           "name": "has_active_users",
-          "line": 1918,
+          "line": 1919,
           "kind": "FunctionDef"
         },
         {
           "name": "has_admin_user",
-          "line": 1923,
+          "line": 1924,
           "kind": "FunctionDef"
         },
         {
           "name": "active_admin_count",
-          "line": 1928,
+          "line": 1929,
           "kind": "FunctionDef"
         },
         {
           "name": "user_by_username",
-          "line": 1933,
+          "line": 1934,
           "kind": "FunctionDef"
         },
         {
           "name": "user_by_id",
-          "line": 1941,
+          "line": 1942,
           "kind": "FunctionDef"
         },
         {
           "name": "list_users",
-          "line": 1946,
+          "line": 1947,
           "kind": "FunctionDef"
         },
         {
           "name": "create_user",
-          "line": 1962,
+          "line": 1963,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user",
-          "line": 2004,
+          "line": 2005,
           "kind": "FunctionDef"
         },
         {
           "name": "start_trial",
-          "line": 2060,
+          "line": 2061,
           "kind": "FunctionDef"
         },
         {
           "name": "create_plan_request",
-          "line": 2074,
+          "line": 2075,
           "kind": "FunctionDef"
         },
         {
           "name": "open_plan_request",
-          "line": 2099,
+          "line": 2100,
           "kind": "FunctionDef"
         },
         {
           "name": "plan_requests",
-          "line": 2106,
+          "line": 2107,
           "kind": "FunctionDef"
         },
         {
           "name": "decide_plan_request",
-          "line": 2117,
+          "line": 2118,
           "kind": "FunctionDef"
         },
         {
           "name": "plan_request",
-          "line": 2157,
+          "line": 2158,
           "kind": "FunctionDef"
         },
         {
           "name": "mark_user_login",
-          "line": 2162,
+          "line": 2163,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_profile",
-          "line": 2170,
+          "line": 2171,
           "kind": "FunctionDef"
         },
         {
           "name": "user_profile",
-          "line": 2189,
+          "line": 2190,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_daily_credit_limit",
-          "line": 2198,
+          "line": 2199,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_signal_execution_mode",
-          "line": 2207,
+          "line": 2208,
           "kind": "FunctionDef"
         },
         {
           "name": "normalize_monitor_symbols",
-          "line": 2217,
+          "line": 2218,
           "kind": "FunctionDef"
         },
         {
           "name": "user_monitor_symbols",
-          "line": 2220,
+          "line": 2221,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_monitor_symbols",
-          "line": 2226,
+          "line": 2227,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_whatsapp_subscription",
-          "line": 2236,
+          "line": 2237,
           "kind": "FunctionDef"
         },
         {
           "name": "user_whatsapp_subscription",
-          "line": 2289,
+          "line": 2290,
           "kind": "FunctionDef"
         },
         {
           "name": "subscribed_whatsapp_users",
-          "line": 2299,
+          "line": 2300,
           "kind": "FunctionDef"
         },
         {
           "name": "recent_whatsapp_alert",
-          "line": 2321,
+          "line": 2322,
           "kind": "FunctionDef"
         },
         {
           "name": "record_whatsapp_alert",
-          "line": 2339,
+          "line": 2340,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_paper_cash",
-          "line": 2374,
+          "line": 2375,
           "kind": "FunctionDef"
         },
         {
           "name": "adjust_user_credits",
-          "line": 2394,
+          "line": 2395,
           "kind": "FunctionDef"
         },
         {
           "name": "charge_user_credits",
-          "line": 2423,
+          "line": 2424,
           "kind": "FunctionDef"
         },
         {
           "name": "user_credit_summary",
-          "line": 2468,
+          "line": 2469,
           "kind": "FunctionDef"
         },
         {
           "name": "admin_credit_usage_summary",
-          "line": 2550,
+          "line": 2551,
           "kind": "FunctionDef"
         },
         {
           "name": "user_has_credit_for",
-          "line": 2593,
+          "line": 2594,
           "kind": "FunctionDef"
         },
         {
           "name": "average_signal_credit_charge",
-          "line": 2602,
+          "line": 2603,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_llm_usage_id",
-          "line": 2653,
+          "line": 2654,
           "kind": "FunctionDef"
         },
         {
           "name": "llm_usage_cost_since",
-          "line": 2658,
+          "line": 2659,
           "kind": "FunctionDef"
         },
         {
           "name": "llm_usage_cost_for_scope",
-          "line": 2680,
+          "line": 2681,
           "kind": "FunctionDef"
         },
         {
           "name": "llm_usage_cost_for_system_scope",
-          "line": 2704,
+          "line": 2705,
           "kind": "FunctionDef"
         },
         {
           "name": "update_user_broker",
-          "line": 2740,
+          "line": 2741,
           "kind": "FunctionDef"
         },
         {
           "name": "assign_runtime_upstox_to_user",
-          "line": 2769,
+          "line": 2770,
           "kind": "FunctionDef"
         },
         {
           "name": "assign_runtime_indstocks_to_user",
-          "line": 2782,
+          "line": 2783,
           "kind": "FunctionDef"
         },
         {
           "name": "seed_universe",
-          "line": 2791,
+          "line": 2792,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_universe_rows",
-          "line": 2798,
+          "line": 2799,
           "kind": "FunctionDef"
         },
         {
           "name": "_normalize_universe_row",
-          "line": 2866,
+          "line": 2867,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_candles",
-          "line": 2892,
+          "line": 2893,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_delivery_data",
-          "line": 2911,
+          "line": 2912,
           "kind": "FunctionDef"
         },
         {
           "name": "delivery_rows",
-          "line": 2944,
+          "line": 2945,
           "kind": "FunctionDef"
         },
         {
           "name": "candles_for_symbols",
-          "line": 2957,
+          "line": 2958,
           "kind": "FunctionDef"
         },
         {
           "name": "recent_candles_by_symbol",
-          "line": 2990,
+          "line": 2991,
           "kind": "FunctionDef"
         },
         {
           "name": "candle_coverage_by_symbol",
-          "line": 3005,
+          "line": 3006,
           "kind": "FunctionDef"
         },
         {
           "name": "recent_candle_sets_by_symbol",
-          "line": 3052,
+          "line": 3053,
           "kind": "FunctionDef"
         },
         {
           "name": "_candle_rows_to_models",
-          "line": 3087,
+          "line": 3088,
           "kind": "FunctionDef"
         },
         {
           "name": "_resample_daily",
-          "line": 3111,
+          "line": 3112,
           "kind": "FunctionDef"
         },
         {
           "name": "_resample_weekly",
-          "line": 3114,
+          "line": 3115,
           "kind": "FunctionDef"
         },
         {
           "name": "_resample_candles",
-          "line": 3117,
+          "line": 3118,
           "kind": "FunctionDef"
         },
         {
           "name": "_candle_bucket",
-          "line": 3143,
+          "line": 3144,
           "kind": "FunctionDef"
         },
         {
           "name": "get_universe",
-          "line": 3158,
+          "line": 3159,
           "kind": "FunctionDef"
         },
         {
           "name": "universe_summary",
-          "line": 3179,
+          "line": 3180,
           "kind": "FunctionDef"
         },
         {
           "name": "universe_row",
-          "line": 3225,
+          "line": 3226,
           "kind": "FunctionDef"
         },
         {
           "name": "active_position_universe",
-          "line": 3237,
+          "line": 3238,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_quotes",
-          "line": 3269,
+          "line": 3270,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_decisions",
-          "line": 3337,
+          "line": 3338,
           "kind": "FunctionDef"
         },
         {
           "name": "suppress_repeated_buy_decisions",
-          "line": 3360,
+          "line": 3361,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_signal_ideas_from_decisions",
-          "line": 3459,
+          "line": 3460,
           "kind": "FunctionDef"
         },
         {
           "name": "refresh_signal_idea_marks",
-          "line": 3654,
+          "line": 3655,
           "kind": "FunctionDef"
         },
         {
           "name": "refresh_active_position_marks",
-          "line": 3701,
+          "line": 3702,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_signal_ideas",
-          "line": 3770,
+          "line": 3771,
           "kind": "FunctionDef"
         },
         {
           "name": "monitor_watchlist_rows",
-          "line": 3863,
+          "line": 3864,
           "kind": "FunctionDef"
         },
         {
           "name": "user_followed_signal_ideas",
-          "line": 3982,
+          "line": 3983,
           "kind": "FunctionDef"
         },
         {
           "name": "user_follow_history",
-          "line": 4099,
+          "line": 4100,
           "kind": "FunctionDef"
         },
         {
           "name": "user_follow_realized_pnl_by_market",
-          "line": 4254,
+          "line": 4255,
           "kind": "FunctionDef"
         },
         {
           "name": "strategy_plans",
-          "line": 4277,
+          "line": 4278,
           "kind": "FunctionDef"
         },
         {
           "name": "follow_signal_idea",
-          "line": 4382,
+          "line": 4383,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_unsafe_active_follows",
-          "line": 4698,
+          "line": 4699,
           "kind": "FunctionDef"
         },
         {
           "name": "backfill_missing_follow_exit_audits",
-          "line": 4905,
+          "line": 4906,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_subfloor_paper_follows",
-          "line": 4990,
+          "line": 4991,
           "kind": "FunctionDef"
         },
         {
           "name": "downgrade_non_tradeable_buy_ideas",
-          "line": 5098,
+          "line": 5099,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_user_follow_position",
-          "line": 5240,
+          "line": 5241,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_active_follows_outside_monitor_scope",
-          "line": 5323,
+          "line": 5324,
           "kind": "FunctionDef"
         },
         {
           "name": "recent_user_symbol_exit",
-          "line": 5403,
+          "line": 5404,
           "kind": "FunctionDef"
         },
         {
           "name": "manage_user_follow_exits",
-          "line": 5486,
+          "line": 5487,
           "kind": "FunctionDef"
         },
         {
           "name": "_refresh_user_follow_marks",
-          "line": 5764,
+          "line": 5765,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_order",
-          "line": 5813,
+          "line": 5814,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_trade_audit_event",
-          "line": 5859,
+          "line": 5860,
           "kind": "FunctionDef"
         },
         {
           "name": "record_paper_probe_validation_event",
-          "line": 5892,
+          "line": 5893,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_trade_audit_events",
-          "line": 5975,
+          "line": 5976,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_order_fill_event",
-          "line": 5988,
+          "line": 5989,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_order_fill_events",
-          "line": 6021,
+          "line": 6022,
           "kind": "FunctionDef"
         },
         {
           "name": "zero_qty_active_records",
-          "line": 6034,
+          "line": 6035,
           "kind": "FunctionDef"
         },
         {
           "name": "cleanup_zero_qty_active_follows",
-          "line": 6067,
+          "line": 6068,
           "kind": "FunctionDef"
         },
         {
           "name": "get_state",
-          "line": 6097,
+          "line": 6098,
           "kind": "FunctionDef"
         },
         {
           "name": "set_state",
-          "line": 6107,
+          "line": 6108,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_missed_move_review",
-          "line": 6118,
+          "line": 6119,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_missed_move_reviews",
-          "line": 6141,
+          "line": 6142,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_tomorrow_plan",
-          "line": 6158,
+          "line": 6159,
           "kind": "FunctionDef"
         },
         {
           "name": "latest_tomorrow_plan",
-          "line": 6248,
+          "line": 6249,
           "kind": "FunctionDef"
         },
         {
           "name": "_tomorrow_plan_from_rows",
-          "line": 6267,
+          "line": 6268,
           "kind": "FunctionDef"
         },
         {
           "name": "get_pattern_state",
-          "line": 6307,
+          "line": 6308,
           "kind": "FunctionDef"
         },
         {
           "name": "pattern_states_for_symbols",
-          "line": 6317,
+          "line": 6318,
           "kind": "FunctionDef"
         },
         {
           "name": "upsert_pattern_state",
-          "line": 6334,
+          "line": 6335,
           "kind": "FunctionDef"
         },
         {
           "name": "runtime_settings",
-          "line": 6349,
+          "line": 6350,
           "kind": "FunctionDef"
         },
         {
           "name": "update_runtime_settings",
-          "line": 6360,
+          "line": 6361,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_agent_log",
-          "line": 6377,
+          "line": 6378,
           "kind": "FunctionDef"
         },
         {
           "name": "insert_llm_usage",
-          "line": 6409,
+          "line": 6410,
           "kind": "FunctionDef"
         },
         {
           "name": "llm_usage_summary",
-          "line": 6442,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_agent_logs",
-          "line": 6564,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "run_data_retention",
-          "line": 6576,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "storage_summary",
-          "line": 6742,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "vacuum",
-          "line": 6759,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "reset_trading_ledger",
-          "line": 6768,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_quotes",
-          "line": 6790,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_decisions",
-          "line": 6817,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_decision_summaries",
-          "line": 6850,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "search_decision_summaries",
-          "line": 6889,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "decision_by_id",
-          "line": 6939,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_orders",
-          "line": 6952,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_order_summaries",
-          "line": 6966,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "order_by_id",
-          "line": 6983,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "cancel_order",
-          "line": 6998,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "positions",
-          "line": 7024,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_portfolio",
-          "line": 7040,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "recent_equity",
-          "line": 7047,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "strategy_metrics",
-          "line": 7055,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "performance_summary",
-          "line": 7137,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "strategy_performance_feedback",
-          "line": 7208,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "post_trade_learning_summary",
-          "line": 7334,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_sentiment",
-          "line": 7515,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "latest_sentiment_by_symbol",
-          "line": 7529,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "aggregate",
           "line": 6443,
           "kind": "FunctionDef"
         },
         {
+          "name": "latest_agent_logs",
+          "line": 6565,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "run_data_retention",
+          "line": 6577,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "storage_summary",
+          "line": 6743,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "vacuum",
+          "line": 6760,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reset_trading_ledger",
+          "line": 6769,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_quotes",
+          "line": 6791,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_decisions",
+          "line": 6818,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_decision_summaries",
+          "line": 6851,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "search_decision_summaries",
+          "line": 6890,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "decision_by_id",
+          "line": 6940,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_orders",
+          "line": 6953,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_order_summaries",
+          "line": 6967,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "order_by_id",
+          "line": 6984,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cancel_order",
+          "line": 6999,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "positions",
+          "line": 7025,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_portfolio",
+          "line": 7041,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "recent_equity",
+          "line": 7048,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "strategy_metrics",
+          "line": 7056,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "performance_summary",
+          "line": 7138,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "strategy_performance_feedback",
+          "line": 7209,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "post_trade_learning_summary",
+          "line": 7335,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_sentiment",
+          "line": 7516,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest_sentiment_by_symbol",
+          "line": 7530,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "aggregate",
+          "line": 6444,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "avg",
-          "line": 7475,
+          "line": 7476,
           "kind": "FunctionDef"
         }
       ]
@@ -4690,58 +4694,64 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "lines": 121,
+      "lines": 170,
       "imports": [
         "datetime",
         "decimal",
         "hashlib",
         "json",
-        "math"
+        "math",
+        "account_safety"
       ],
       "symbols": [
         {
           "name": "ensure_schema",
-          "line": 17,
+          "line": 18,
           "kind": "FunctionDef"
         },
         {
           "name": "moment",
-          "line": 24,
+          "line": 33,
           "kind": "FunctionDef"
         },
         {
-          "name": "_price",
-          "line": 31,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "_levels",
+          "name": "_upstox_moment",
           "line": 40,
           "kind": "FunctionDef"
         },
         {
+          "name": "_price",
+          "line": 56,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_levels",
+          "line": 65,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "normalize_upstox",
-          "line": 55,
+          "line": 80,
           "kind": "FunctionDef"
         },
         {
           "name": "write",
-          "line": 77,
+          "line": 102,
           "kind": "FunctionDef"
         },
         {
           "name": "read",
-          "line": 87,
+          "line": 133,
           "kind": "FunctionDef"
         },
         {
           "name": "top",
-          "line": 98,
+          "line": 147,
           "kind": "FunctionDef"
         },
         {
           "name": "_verify_fingerprint",
-          "line": 117,
+          "line": 166,
           "kind": "FunctionDef"
         }
       ]
@@ -9185,7 +9195,7 @@
     },
     {
       "file": "app/market_data.py",
-      "lines": 2108,
+      "lines": 2110,
       "imports": [
         "__future__",
         "asyncio",
@@ -9292,122 +9302,122 @@
         },
         {
           "name": "_upstox_quote_asof",
-          "line": 1622,
+          "line": 1624,
           "kind": "FunctionDef"
         },
         {
           "name": "_nse_market_date",
-          "line": 1642,
+          "line": 1644,
           "kind": "FunctionDef"
         },
         {
           "name": "_upstox_interval_is_intraday",
-          "line": 1646,
+          "line": 1648,
           "kind": "FunctionDef"
         },
         {
           "name": "_parse_market_timestamp",
-          "line": 1650,
+          "line": 1652,
           "kind": "FunctionDef"
         },
         {
           "name": "_parse_epoch",
-          "line": 1665,
+          "line": 1667,
           "kind": "FunctionDef"
         },
         {
           "name": "_is_stale_quote",
-          "line": 1674,
+          "line": 1676,
           "kind": "FunctionDef"
         },
         {
           "name": "_is_nse_regular_session_now",
-          "line": 1684,
+          "line": 1686,
           "kind": "FunctionDef"
         },
         {
           "name": "UpstoxSetupRequiredProvider",
-          "line": 1692,
+          "line": 1694,
           "kind": "ClassDef"
         },
         {
           "name": "KiteSetupRequiredProvider",
-          "line": 1706,
+          "line": 1708,
           "kind": "ClassDef"
         },
         {
           "name": "NubraMarketDataProvider",
-          "line": 1720,
+          "line": 1722,
           "kind": "ClassDef"
         },
         {
           "name": "_market_data_error_summary",
-          "line": 1938,
+          "line": 1940,
           "kind": "FunctionDef"
         },
         {
           "name": "_provider_diagnostics",
-          "line": 1945,
+          "line": 1947,
           "kind": "FunctionDef"
         },
         {
           "name": "_unique_errors",
-          "line": 1952,
+          "line": 1954,
           "kind": "FunctionDef"
         },
         {
           "name": "_chunks",
-          "line": 1963,
+          "line": 1965,
           "kind": "FunctionDef"
         },
         {
           "name": "_float_any",
-          "line": 1968,
+          "line": 1970,
           "kind": "FunctionDef"
         },
         {
           "name": "_alpaca_bar_to_candle",
-          "line": 1977,
+          "line": 1979,
           "kind": "FunctionDef"
         },
         {
           "name": "_polygon_bar_to_candle",
-          "line": 1993,
+          "line": 1995,
           "kind": "FunctionDef"
         },
         {
           "name": "_polygon_ts_to_iso",
-          "line": 2009,
+          "line": 2011,
           "kind": "FunctionDef"
         },
         {
           "name": "_normalize_trade_symbol",
-          "line": 2023,
+          "line": 2025,
           "kind": "FunctionDef"
         },
         {
           "name": "IndStocksSetupRequiredProvider",
-          "line": 2031,
+          "line": 2033,
           "kind": "ClassDef"
         },
         {
           "name": "build_market_data_provider",
-          "line": 2045,
+          "line": 2047,
           "kind": "FunctionDef"
         },
         {
           "name": "_build_us_market_data_provider",
-          "line": 2061,
+          "line": 2063,
           "kind": "FunctionDef"
         },
         {
           "name": "_build_india_market_data_provider",
-          "line": 2078,
+          "line": 2080,
           "kind": "FunctionDef"
         },
         {
           "name": "_build_indstocks_market_data_provider",
-          "line": 2099,
+          "line": 2101,
           "kind": "FunctionDef"
         },
         {
@@ -9722,162 +9732,162 @@
         },
         {
           "name": "get_candles",
-          "line": 1317,
+          "line": 1319,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_candle_specs",
-          "line": 1387,
+          "line": 1389,
           "kind": "FunctionDef"
         },
         {
           "name": "_fetch_candle_series",
-          "line": 1414,
+          "line": 1416,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_fetch_upstox_raw_candles",
-          "line": 1454,
+          "line": 1456,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_dedupe_candles_by_timestamp",
-          "line": 1469,
+          "line": 1471,
           "kind": "FunctionDef"
         },
         {
           "name": "_headers",
-          "line": 1475,
+          "line": 1477,
           "kind": "FunctionDef"
         },
         {
           "name": "_ensure_instrument_keys",
-          "line": 1481,
+          "line": 1483,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_resolve_instrument_key",
-          "line": 1523,
+          "line": 1525,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_select_instrument_search_result",
-          "line": 1551,
+          "line": 1553,
           "kind": "FunctionDef"
         },
         {
           "name": "_instrument_key",
-          "line": 1585,
+          "line": 1587,
           "kind": "FunctionDef"
         },
         {
           "name": "_find_quote_item",
-          "line": 1591,
+          "line": 1593,
           "kind": "FunctionDef"
         },
         {
           "name": "_parse_candle",
-          "line": 1609,
+          "line": 1611,
           "kind": "FunctionDef"
         },
         {
           "name": "get_quotes",
-          "line": 1695,
+          "line": 1697,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "get_candles",
-          "line": 1700,
+          "line": 1702,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "get_quotes",
-          "line": 1709,
+          "line": 1711,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "get_candles",
-          "line": 1714,
+          "line": 1716,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "__init__",
-          "line": 1723,
+          "line": 1725,
           "kind": "FunctionDef"
         },
         {
           "name": "get_quotes",
-          "line": 1737,
+          "line": 1739,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "get_candles",
-          "line": 1765,
+          "line": 1767,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_select_candle_universe",
-          "line": 1789,
+          "line": 1791,
           "kind": "FunctionDef"
         },
         {
           "name": "_current_price",
-          "line": 1800,
+          "line": 1802,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_candles_for_chunk",
-          "line": 1834,
+          "line": 1836,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "_parse_candle_series",
-          "line": 1876,
+          "line": 1878,
           "kind": "FunctionDef"
         },
         {
           "name": "_headers",
-          "line": 1906,
+          "line": 1908,
           "kind": "FunctionDef"
         },
         {
           "name": "_nubra_symbol",
-          "line": 1914,
+          "line": 1916,
           "kind": "FunctionDef"
         },
         {
           "name": "_scaled",
-          "line": 1917,
+          "line": 1919,
           "kind": "FunctionDef"
         },
         {
           "name": "_point_ts",
-          "line": 1923,
+          "line": 1925,
           "kind": "FunctionDef"
         },
         {
           "name": "_point_value",
-          "line": 1930,
+          "line": 1932,
           "kind": "FunctionDef"
         },
         {
           "name": "get_quotes",
-          "line": 2034,
+          "line": 2036,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "get_candles",
-          "line": 2039,
+          "line": 2041,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "resolve_one",
-          "line": 1507,
+          "line": 1509,
           "kind": "AsyncFunctionDef"
         },
         {
           "name": "score",
-          "line": 1559,
+          "line": 1561,
           "kind": "FunctionDef"
         },
         {
@@ -9892,7 +9902,7 @@
         },
         {
           "name": "fetch",
-          "line": 1742,
+          "line": 1744,
           "kind": "AsyncFunctionDef"
         }
       ]
@@ -13327,7 +13337,7 @@
     },
     {
       "file": "app/schema_migrations.py",
-      "lines": 95,
+      "lines": 101,
       "imports": [
         "hashlib",
         "json",
@@ -26522,6 +26532,142 @@
         {
           "name": "get",
           "line": 243,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_executable_quote_times.py",
+      "lines": 155,
+      "imports": [
+        "sqlite3",
+        "asyncio",
+        "json",
+        "pathlib",
+        "tempfile",
+        "concurrent.futures",
+        "datetime",
+        "unittest",
+        "unittest.mock",
+        "app",
+        "app.market_data",
+        "tests",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "ExecutableTimestampTest",
+          "line": 17,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ProviderToPaperDepthTest",
+          "line": 107,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "snapshot",
+          "line": 24,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_provider_epoch_milliseconds_equal_the_same_iso_instant",
+          "line": 29,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_submillisecond_update_replaces_earlier_depth_exactly",
+          "line": 40,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_equal_source_time_conflict_removes_executable_permission",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_ambiguous_units_future_floats_and_naive_values_refuse",
+          "line": 69,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_quote_write_never_commits_its_parent_transaction",
+          "line": 75,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_two_workers_cannot_restore_older_depth",
+          "line": 82,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_equal_time_conflict_respects_outer_rollback",
+          "line": 96,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "setUp",
+          "line": 108,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "fetch",
+          "line": 116,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_millisecond_depth_reaches_actual_pending_order_fill_and_ledger",
+          "line": 133,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_executable_timestamp_keeps_mark_but_refuses_fill",
+          "line": 151,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "Client",
+          "line": 117,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "worker",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "__aenter__",
+          "line": 118,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "__aexit__",
+          "line": 119,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "get",
+          "line": 120,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "Response",
+          "line": 121,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "raise_for_status",
+          "line": 122,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "json",
+          "line": 123,
           "kind": "FunctionDef"
         }
       ]
@@ -48481,7 +48627,7 @@
     {
       "name": "universe",
       "file": "app/db.py",
-      "line": 1145,
+      "line": 1146,
       "columns": [
         {
           "name": "symbol",
@@ -48544,7 +48690,7 @@
     {
       "name": "latest_quotes",
       "file": "app/db.py",
-      "line": 1162,
+      "line": 1163,
       "columns": [
         {
           "name": "symbol",
@@ -48587,7 +48733,7 @@
     {
       "name": "market_ticks",
       "file": "app/db.py",
-      "line": 1174,
+      "line": 1175,
       "columns": [
         {
           "name": "id",
@@ -48614,7 +48760,7 @@
     {
       "name": "candles",
       "file": "app/db.py",
-      "line": 1182,
+      "line": 1183,
       "columns": [
         {
           "name": "symbol",
@@ -48653,7 +48799,7 @@
     {
       "name": "decisions",
       "file": "app/db.py",
-      "line": 1194,
+      "line": 1195,
       "columns": [
         {
           "name": "id",
@@ -48704,7 +48850,7 @@
     {
       "name": "orders",
       "file": "app/db.py",
-      "line": 1208,
+      "line": 1209,
       "columns": [
         {
           "name": "id",
@@ -48755,7 +48901,7 @@
     {
       "name": "positions",
       "file": "app/db.py",
-      "line": 1222,
+      "line": 1223,
       "columns": [
         {
           "name": "symbol",
@@ -48794,7 +48940,7 @@
     {
       "name": "portfolio_snapshots",
       "file": "app/db.py",
-      "line": 1233,
+      "line": 1234,
       "columns": [
         {
           "name": "id",
@@ -48833,7 +48979,7 @@
     {
       "name": "signal_ideas",
       "file": "app/db.py",
-      "line": 1244,
+      "line": 1245,
       "columns": [
         {
           "name": "id",
@@ -48928,7 +49074,7 @@
     {
       "name": "user_idea_follows",
       "file": "app/db.py",
-      "line": 1269,
+      "line": 1270,
       "columns": [
         {
           "name": "id",
@@ -48991,7 +49137,7 @@
     {
       "name": "strategy_plans",
       "file": "app/db.py",
-      "line": 1286,
+      "line": 1287,
       "columns": [
         {
           "name": "id",
@@ -49038,7 +49184,7 @@
     {
       "name": "tomorrow_plan_items",
       "file": "app/db.py",
-      "line": 1299,
+      "line": 1300,
       "columns": [
         {
           "name": "id",
@@ -49121,7 +49267,7 @@
     {
       "name": "agent_state",
       "file": "app/db.py",
-      "line": 1322,
+      "line": 1323,
       "columns": [
         {
           "name": "key",
@@ -49136,7 +49282,7 @@
     {
       "name": "runtime_settings",
       "file": "app/db.py",
-      "line": 1327,
+      "line": 1328,
       "columns": [
         {
           "name": "key",
@@ -49155,7 +49301,7 @@
     {
       "name": "users",
       "file": "app/db.py",
-      "line": 1333,
+      "line": 1334,
       "columns": [
         {
           "name": "id",
@@ -49274,7 +49420,7 @@
     {
       "name": "user_credit_ledger",
       "file": "app/db.py",
-      "line": 1364,
+      "line": 1365,
       "columns": [
         {
           "name": "id",
@@ -49321,7 +49467,7 @@
     {
       "name": "sentiment_events",
       "file": "app/db.py",
-      "line": 1378,
+      "line": 1379,
       "columns": [
         {
           "name": "id",
@@ -49360,7 +49506,7 @@
     {
       "name": "agent_logs",
       "file": "app/db.py",
-      "line": 1389,
+      "line": 1390,
       "columns": [
         {
           "name": "id",
@@ -49395,7 +49541,7 @@
     {
       "name": "llm_usage_events",
       "file": "app/db.py",
-      "line": 1399,
+      "line": 1400,
       "columns": [
         {
           "name": "id",
@@ -49478,7 +49624,7 @@
     {
       "name": "delivery_data",
       "file": "app/db.py",
-      "line": 1421,
+      "line": 1422,
       "columns": [
         {
           "name": "symbol",
@@ -49509,7 +49655,7 @@
     {
       "name": "pattern_states",
       "file": "app/db.py",
-      "line": 1431,
+      "line": 1432,
       "columns": [
         {
           "name": "symbol",
@@ -49532,7 +49678,7 @@
     {
       "name": "trade_audit_events",
       "file": "app/db.py",
-      "line": 1439,
+      "line": 1440,
       "columns": [
         {
           "name": "id",
@@ -49579,7 +49725,7 @@
     {
       "name": "order_fill_events",
       "file": "app/db.py",
-      "line": 1452,
+      "line": 1453,
       "columns": [
         {
           "name": "id",
@@ -49626,7 +49772,7 @@
     {
       "name": "readiness_snapshots",
       "file": "app/db.py",
-      "line": 1465,
+      "line": 1466,
       "columns": [
         {
           "name": "id",
@@ -49653,7 +49799,7 @@
     {
       "name": "broker_sync_results",
       "file": "app/db.py",
-      "line": 1473,
+      "line": 1474,
       "columns": [
         {
           "name": "id",
@@ -49680,7 +49826,7 @@
     {
       "name": "missed_move_reviews",
       "file": "app/db.py",
-      "line": 1481,
+      "line": 1482,
       "columns": [
         {
           "name": "id",
@@ -49707,7 +49853,7 @@
     {
       "name": "whatsapp_alert_events",
       "file": "app/db.py",
-      "line": 1489,
+      "line": 1490,
       "columns": [
         {
           "name": "id",
@@ -49754,7 +49900,7 @@
     {
       "name": "plan_requests",
       "file": "app/db.py",
-      "line": 1618,
+      "line": 1619,
       "columns": [
         {
           "name": "id",
@@ -49820,7 +49966,7 @@
     {
       "name": "market_execution_quotes",
       "file": "app/executable_quotes.py",
-      "line": 18,
+      "line": 19,
       "columns": [
         {
           "name": "instrument_key",
@@ -49840,6 +49986,37 @@
         },
         {
           "name": "snapshot_at",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "market_execution_quote_conflicts",
+      "file": "app/executable_quotes.py",
+      "line": 23,
+      "columns": [
+        {
+          "name": "instrument_key",
+          "type": "TEXT"
+        },
+        {
+          "name": "snapshot_at",
+          "type": "TEXT"
+        },
+        {
+          "name": "first_snapshot_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "conflicting_snapshot_id",
           "type": "TEXT"
         },
         {
@@ -58216,7 +58393,7 @@
     {
       "name": "OPENSTOCKS_LOG_TICKS",
       "file": "app/db.py",
-      "line": 3328
+      "line": 3329
     },
     {
       "name": "OPENSTOCKS_CATALOGUE_DB",
@@ -58919,7 +59096,7 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1341,
+      "line": 1343,
       "launcher": "asyncio.create_task",
       "target": "self._fetch_candle_series"
     },
@@ -60739,7 +60916,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 1148,
+      "line": 1149,
       "names": [
         "NSE"
       ],
@@ -60747,7 +60924,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 2143,
+      "line": 2144,
       "names": [],
       "fields": [
         "expiry"
@@ -60755,33 +60932,25 @@
     },
     {
       "file": "app/db.py",
-      "line": 2146,
+      "line": 2147,
       "names": [],
       "fields": [
         "expiry"
       ]
-    },
-    {
-      "file": "app/db.py",
-      "line": 2868,
-      "names": [
-        "NSE"
-      ],
-      "fields": []
     },
     {
       "file": "app/db.py",
       "line": 2869,
       "names": [
-        "BSE",
         "NSE"
       ],
       "fields": []
     },
     {
       "file": "app/db.py",
-      "line": 2873,
+      "line": 2870,
       "names": [
+        "BSE",
         "NSE"
       ],
       "fields": []
@@ -60796,7 +60965,15 @@
     },
     {
       "file": "app/db.py",
-      "line": 3184,
+      "line": 2875,
+      "names": [
+        "NSE"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/db.py",
+      "line": 3185,
       "names": [
         "BSE",
         "NSE"
@@ -60805,7 +60982,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 3187,
+      "line": 3188,
       "names": [
         "BSE",
         "NSE"
@@ -60814,7 +60991,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 3230,
+      "line": 3231,
       "names": [
         "BSE",
         "NSE"
@@ -60823,7 +61000,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 3232,
+      "line": 3233,
       "names": [
         "BSE",
         "NSE"
@@ -60832,7 +61009,7 @@
     },
     {
       "file": "app/db.py",
-      "line": 3527,
+      "line": 3528,
       "names": [],
       "fields": [
         "expiry"
@@ -61071,7 +61248,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 19,
+      "line": 20,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61079,7 +61256,23 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 56,
+      "line": 24,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/executable_quotes.py",
+      "line": 26,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/executable_quotes.py",
+      "line": 81,
       "names": [],
       "fields": [
         "instrument_token"
@@ -61087,7 +61280,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 58,
+      "line": 83,
       "names": [
         "NSE",
         "NSE_EQ"
@@ -61096,7 +61289,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 69,
+      "line": 94,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61104,7 +61297,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 80,
+      "line": 111,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61112,7 +61305,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 83,
+      "line": 122,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61120,7 +61313,7 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 101,
+      "line": 126,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61128,7 +61321,31 @@
     },
     {
       "file": "app/executable_quotes.py",
-      "line": 118,
+      "line": 129,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/executable_quotes.py",
+      "line": 138,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/executable_quotes.py",
+      "line": 150,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/executable_quotes.py",
+      "line": 167,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62115,31 +62332,7 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1536,
-      "names": [
-        "NSE"
-      ],
-      "fields": []
-    },
-    {
-      "file": "app/market_data.py",
-      "line": 1546,
-      "names": [],
-      "fields": [
-        "instrument_key"
-      ]
-    },
-    {
-      "file": "app/market_data.py",
-      "line": 1564,
-      "names": [],
-      "fields": [
-        "instrument_key"
-      ]
-    },
-    {
-      "file": "app/market_data.py",
-      "line": 1568,
+      "line": 1313,
       "names": [
         "NSE_EQ"
       ],
@@ -62147,27 +62340,43 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1596,
+      "line": 1538,
       "names": [
-        "BANKNIFTY"
+        "NSE"
       ],
       "fields": []
     },
     {
       "file": "app/market_data.py",
-      "line": 1599,
+      "line": 1548,
       "names": [],
       "fields": [
-        "instrument_token"
+        "instrument_key"
       ]
     },
     {
       "file": "app/market_data.py",
-      "line": 1600,
+      "line": 1566,
       "names": [],
       "fields": [
-        "instrument_token"
+        "instrument_key"
       ]
+    },
+    {
+      "file": "app/market_data.py",
+      "line": 1570,
+      "names": [
+        "NSE_EQ"
+      ],
+      "fields": []
+    },
+    {
+      "file": "app/market_data.py",
+      "line": 1598,
+      "names": [
+        "BANKNIFTY"
+      ],
+      "fields": []
     },
     {
       "file": "app/market_data.py",
@@ -62179,7 +62388,23 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1772,
+      "line": 1602,
+      "names": [],
+      "fields": [
+        "instrument_token"
+      ]
+    },
+    {
+      "file": "app/market_data.py",
+      "line": 1603,
+      "names": [],
+      "fields": [
+        "instrument_token"
+      ]
+    },
+    {
+      "file": "app/market_data.py",
+      "line": 1774,
       "names": [
         "NSE"
       ],
@@ -62187,7 +62412,7 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1803,
+      "line": 1805,
       "names": [
         "NSE"
       ],
@@ -62195,7 +62420,7 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1804,
+      "line": 1806,
       "names": [
         "BSE"
       ],
@@ -62203,7 +62428,7 @@
     },
     {
       "file": "app/market_data.py",
-      "line": 1805,
+      "line": 1807,
       "names": [
         "BSE"
       ],
@@ -63037,6 +63262,14 @@
     {
       "file": "app/schema_migrations.py",
       "line": 91,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/schema_migrations.py",
+      "line": 92,
       "names": [],
       "fields": [
         "instrument_key"
@@ -66912,37 +67145,37 @@
     },
     {
       "file": "app/db.py",
-      "line": 3006,
+      "line": 3007,
       "name": "normalized_symbols",
       "type": "list"
     },
     {
       "file": "app/db.py",
-      "line": 3703,
+      "line": 3704,
       "name": "symbol_sql",
       "type": "str"
     },
     {
       "file": "app/db.py",
-      "line": 3992,
+      "line": 3993,
       "name": "symbol_sql",
       "type": "str"
     },
     {
       "file": "app/db.py",
-      "line": 4109,
+      "line": 4110,
       "name": "symbol_sql",
       "type": "str"
     },
     {
       "file": "app/db.py",
-      "line": 5766,
+      "line": 5767,
       "name": "symbol_sql",
       "type": "str"
     },
     {
       "file": "app/db.py",
-      "line": 4364,
+      "line": 4365,
       "name": "market_stats",
       "type": "dict"
     },
@@ -67289,6 +67522,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/executable-depth-review-2026-10-07.md",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/execution-hardening-2026-10-06.md",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -67405,6 +67642,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/quote-key-diffs.patch",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/release-evidence.json",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -67490,8 +67731,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
-    "generated_at": "2026-10-07T09:23:21.266939+00:00",
+    "source_commit": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "generated_at": "2026-10-07T09:57:42.016443+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -67527,7 +67768,7 @@
     "app/costs.py": "f1ac241f221c1ebbf50c9267cb74c66367f0a65214464ba777ccd8e765414332",
     "app/credential_vault.py": "145f56e32ff3dac39eaaeb9bb3865a9a4dd8f112fc4502c37cbd7d8571fab104",
     "app/data_readiness.py": "9267c0e57ca1f4ed58a6eea8b103e3261bffa3044cc5bcb1b2e4e489f5e561dd",
-    "app/db.py": "422a5b000401236db6361c234c5787b16f1e3f3f5b0277f07a2dbbb1a9c96416",
+    "app/db.py": "3fb7c3936fb455fc6387fd3dfb6df27c62fdd6e21ebf6b0b46bef9cc79ae8e0f",
     "app/decision_contract.py": "72b8d6c9e575c4105859eac8c313a06561ff6761af6df13dff0e9c55addf099c",
     "app/decision_diagnostics.py": "b6549216e04b763e282cf448c4b73c351cfd637eb3c0b534d8b3478355b663e0",
     "app/delivery_data.py": "2df7872e7a90cfdf650118a28df9339de5eba75aa6da605f190ee7fae54a809f",
@@ -67535,7 +67776,7 @@
     "app/entry_contracts.py": "bb863effe743ab2b0d6c6255aaaa3307e60fd95c6cb54d96202603feb2fa1e25",
     "app/entry_readiness.py": "21c5802b20d83c2acd6b76f8eb51d5ad0310d691d54ad0465f48f6dfbbddb827",
     "app/event_calendar.py": "dcd68af1759b6f7cd42872c6a705cb93e8a8bf87677951d227241fa712cf237f",
-    "app/executable_quotes.py": "6e5f92368d83aaac059c66b6b9a2d8c31eca442e5aecb54ceeaac3a12f774fb2",
+    "app/executable_quotes.py": "f3323062782340a553fab9d1deb7881306224be460e00a0c11e05182d3cb29b1",
     "app/execution_contracts.py": "ae4f5e288f0fd27768ec39bed003258f2829936ca04388465c5c7d3d4ab8e5f1",
     "app/execution_events.py": "b06436ec19f1599b154987984ffc22c241c20c69358ba8537fc47d4a0b1a6afe",
     "app/execution_outbox.py": "ac66ddf6b6b86f75028ab4e5a7578db2ad27e6ab78d438d1df4dfebb6d1c240f",
@@ -67565,7 +67806,7 @@
     "app/manual_execution.py": "c8f2ce8ba454784ce07dee88dec8ae41d8ce192922cd7c0d375df613ce1d1f4d",
     "app/market_action_radar.py": "fc11d2db3938cca8fd603f93500eae856e319dc4409d233f4698d1d635d3a07f",
     "app/market_breadth.py": "c18943c2eed68c7336bfc5e186e1e6f8741fb93e08f4b1d1cfee564750535f67",
-    "app/market_data.py": "d8a935b297ab13999d4fe534c97a344b626a70b952e6418cd82dbf08f8edf300",
+    "app/market_data.py": "3780fe7f8629587c5523f61b97972a0323f1220369ba0d117176037223883372",
     "app/market_day_regime.py": "716992804ef6011096856be9cf4ad676b7502caeb1f8261656fd2018dcc2cd4c",
     "app/market_internals.py": "6fca021eb393c9edc3536f13ec820c1371ab5a7b0d327d1029e3b00e7b90cb80",
     "app/market_regions.py": "a1899357242f68cddbf080b78563846adf634d3669553f2aca82d973aeef558d",
@@ -67603,7 +67844,7 @@
     "app/request_context.py": "ee3bc252a3c3b0d972cb732e52d6e44bb8fcff9b964fdfa9b94601bd1a437069",
     "app/request_security.py": "f56d143c958d912e4c5a67944268fd6e92966c7f47803b8cf6ff5a6af4132777",
     "app/research_data.py": "2c70ec25d17130317b9e3a31b6ba652abfbb0edb453b768f0897ce2430492b9f",
-    "app/schema_migrations.py": "209b87d64ad8761c9d8f1a2250a1059714f294d82bd6478a278af3ddf37036b4",
+    "app/schema_migrations.py": "a72ba9adb7bea02150fecc7bed40997cdbd91ab859aff8ef639df0ec35db44bd",
     "app/screening/__init__.py": "19385a317dd043fc1325cf805633775273bf33b0119fbd01cc4898e2e6a2f1d7",
     "app/screening/confirmation.py": "ff838d73232dcce0652d16ad617ee51e603539847850b78eada4b6f14aca69ed",
     "app/screening/plans.py": "bd0f2b86edf9436adbe5dae004a8398a64f324d1265c97cf7cbd4a4582e4dc23",
@@ -67673,6 +67914,7 @@
     "docs/broker-protection-recovery.md": "87aa86c6b2253016e114499cdf68deb58a61c48186d3e128b8d8e10f89474877",
     "docs/equity_factor_research.md": "ac457cd2c8ce6f0e7fd4db670690fc6805d312b6250d8ae04f5641e7202f4a86",
     "docs/evidence_screen.md": "6e4c96a7287bd73952880b2d61777a5c4dbeca0dc7b6044e86089def30a7681f",
+    "docs/executable-quote-evidence.md": "cb77e524ad2893b34885ba2d8c1b4663d53dc54275c978e8d5660ff7d82974c3",
     "docs/idea-tracking.md": "afe21d4d03f2e62fe06d19594299d1c1912fd575ddf8abf7430af74065d02a07",
     "docs/next-session-readiness.md": "03182898ea35eb38431d74ce4bac19199625d52c910e9e5c3632987269037f85",
     "docs/paper-candidate-rollout.md": "8bcf12c58424199f37748606d90105e6824691c52d9465736dc722e47bc4f660",
@@ -67807,6 +68049,7 @@
     "tests/test_equity_option_book_isolation.py": "0d2d14997fe55ee3a3b138e91411245665d628086dee14f13e6b88a8678754ce",
     "tests/test_event_calendar.py": "78306455792e98e139474d23df6b5664836edf8d0ac65d5df6f0ac3e12563a9a",
     "tests/test_evidence_screen.py": "b94969e56367d1bee36bb003c17eb995f5747161f8898c207cb7ca0501dfd45f",
+    "tests/test_executable_quote_times.py": "c511a2df932b96f9335079d1b5daf8744e18a161a3d55182fd1210764620f42d",
     "tests/test_executable_quotes.py": "8edecb29377b286be4c588403696c1c512a5bcf72c466c4fab2f0c26f3330be5",
     "tests/test_executable_replay_calibration.py": "817a0a27089f6032e4b766d64d3aa22655b32f98e554be0646a84b33756c7cb2",
     "tests/test_execution_capabilities.py": "3ef137563bb8401afecad4caa76d774709219fefc0413bbd544f74e5f5f88ed4",
@@ -67917,7 +68160,7 @@
     "tests/test_reset_is_shared.py": "9a0ded709a31589086e7e3301ffe031ed7e2b0fba5d4f99fabf5cc24e3a889cf",
     "tests/test_retired_entry_controls.py": "781f861acd9972ca606e288d61994cf923284178f9b91671b6014e54cf8e379f",
     "tests/test_runtime_settings_preservation.py": "0761489e8713b1c9279d66995477df9e22e2ea5b609076f6af907e0b0b6d08e8",
-    "tests/test_schema_migrations.py": "efb3945fa544a6896729ce6c18c940ff3c734069a91da69d11b41b4e3885e0bc",
+    "tests/test_schema_migrations.py": "0dc92cd5c389ad732c30fd22403878e0ac08b4d38855f1efec6675b1b7886fc3",
     "tests/test_shareholding_ingest.py": "341595b407de3699b6d76b0379faf98fe31426d6aaf692ee2a46658aa78be859",
     "tests/test_sleeve_cold_imports.py": "ea2eb6b78994dd204dc529b87df0d9d7dabdca6a2ab44a84baafcde4a39f47e9",
     "tests/test_sleeve_data_integrity.py": "f33aeafb2bc800556aaab5bacada937cd37cd21a6597c7270562cf5e07f5749b",

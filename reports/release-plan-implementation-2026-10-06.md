@@ -20,7 +20,7 @@
 
 ## Verification
 
-Final frozen-source verification is recorded in [verification.json](release-audit-2026-10-06/verification.json). 2,502 unittest checks: 2,369 passed, 133 skipped, zero failures/errors; separate research/UI runner 102 passed. Isolated actual-handler paper lifecycle rehearsals pass with balanced cash, no duplicates, no negative cash and zero broker orders. Linux CPython 3.12 exact hash/wheel dry-run passed; actual remote matrix results are separate evidence.
+Final frozen-source verification is recorded in [verification.json](release-audit-2026-10-06/verification.json). 2,511 unittest checks: 2,378 passed, 133 skipped, zero failures/errors; separate research/UI runner 102 passed. Isolated actual-handler paper lifecycle rehearsals pass with balanced cash, no duplicates, no negative cash and zero broker orders. Linux CPython 3.12 exact hash/wheel dry-run passed; actual remote matrix results are separate evidence.
 
 Selected production handlers and actual account components were exercised with disposable synthetic session/account/calendar/quotes at 390×844. The browser displayed ₹10,000 cash/equity/zero positions, reviewed 20-share plan, post-fee fill, target exit and owned sleeve/regime/R report without horizontal overflow. [Current screenshot](release-audit-2026-10-06/ui-evidence/paper-lifecycle-mobile-current.png). This is not full deployed authentication/billing/accessibility or strategy validation.
 
@@ -55,3 +55,5 @@ Sourced-session follow-up closes two additional local defects, F58/F59. Paper fi
 7 October additional recheck: F60–F68 are locally repaired; exact protection/accounting/source/capability scope, reproductions and current evidence are in [broker review](broker-protection-review-2026-10-07.md). Full programme remains incomplete/NO-GO. Production and registered strategy/epoch/protocol are unchanged.
 
 F69 binds broker readiness to the owned financial/order snapshot and serializes its complete comparison/write path. A fill, commitment or closed round trip requires fresh broker evidence; changed inventory cannot reuse old funds permission. Six exact-parent regressions, 40 focused checks and the complete current-source suite passed. This is another locally repaired critical defect, not completion of the outstanding phases.
+
+F70–F72 now preserve executable provider millisecond times, exact rapid-depth ordering and immutable same-time conflict refusals. Current provider-to-paper/ledger, two-worker and rollback regressions pass; a fresh production-copy account-schema-v4 migration and actual app startup preserve all checked original values. Discovery/source rights and independent stock-model promotion remain unresolved.

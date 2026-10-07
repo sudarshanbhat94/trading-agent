@@ -54,4 +54,4 @@ class TransactionalMigrationTest(unittest.TestCase):
             with db.connect() as con:self.assertEqual(con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[])
             db.init()
             with db.connect() as con:
-                self.assertEqual(con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'account-schema-v3')
+                self.assertEqual(con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'account-schema-v4')

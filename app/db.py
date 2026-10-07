@@ -1131,7 +1131,8 @@ class Database:
     def init(self) -> None:
         from .schema_migrations import apply,validate_accounts
         with self.connect() as conn:
-            apply(conn,'account-schema-v3',{'version':3,'scope':'owned-sessions-shared-login-reservations'},self._init_schema,validate_accounts)
+            apply(conn,'account-schema-v4',{'version':4,'scope':'owned-sessions-exact-executable-quotes',
+                                          'required':['immutable-quote-conflicts']},self._init_schema,validate_accounts)
 
     def _init_schema(self, conn) -> None:
         from .billing_ledger import ensure_schema as _billing_schema

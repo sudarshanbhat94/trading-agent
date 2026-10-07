@@ -1309,6 +1309,8 @@ class UpstoxMarketDataProvider(MarketDataProvider):
             "errors": _unique_errors(errors)[:5],
             "source": "upstox_market_quote_quotes",
             "executable_depth_returned": len(self.execution_quotes),
+            "executable_depth_missing_symbols": [row['symbol'] for row in universe
+                if self._instrument_key(row).startswith('NSE_EQ|') and row['symbol'] not in self.execution_quotes][:20],
         }
         if requested and not quotes:
             raise MarketDataError(f"Upstox returned no quotes; diagnostics={self.last_quote_diagnostics}")

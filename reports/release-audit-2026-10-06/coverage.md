@@ -384,3 +384,5 @@ Protection status/activation/fill/cancellation, amendment claims/resolution, own
 F69 received targeted semantic review of the complete reconciliation comparison/write path and its journal/native-maintenance callers. Six exact-parent regressions cover competing commits, cash-changing zero-inventory round trips, stale fills/commitments, malformed legacy evidence and cross-owner/nonfinancial observations. This adds narrow reviewed scope, not full semantic review of every inventoried file.
 
 Current refreshed static inventory includes 182 test modules. Only explicitly described boundaries are semantically reviewed.
+
+F70–F72: narrowly reviewed provider normalization, exact serialized depth updates, immutable conflict withholding, account-schema-v4 and actual provider → stored depth → owned pending paper order → ledger fixture. Current-date public NSE source retrieval timed out; no full raw-source or production execution coverage is claimed.

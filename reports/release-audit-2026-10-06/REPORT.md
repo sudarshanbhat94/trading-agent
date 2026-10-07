@@ -2,15 +2,15 @@
 
 **TRADING BEHAVIOUR CHANGED locally.** All three entry writers now require sourced canonical cash contracts and an available ON/NEUTRAL regime. Automatic trigger rounding uses sourced ticks without increasing initial risk. Manual paper requests freeze immutable owned approvals before the shared serialized risk/fill pipeline. New broker exposure needs exact build/account/route/model release and native-protection policy evidence. Strategy thresholds, production allowlist, ₹10,000 epoch and registered forward protocol are preserved. Nothing was deployed; no real order, production reset or credential change occurred.
 
-**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 69 findings: 35 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
+**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 72 findings: 38 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
 
 ## Baseline and scope
 
-Original audit `b588ffdca0e0309500a6bc0e74699d5c1c586c2e`; this implementation parent `e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a` plus the exact source hashes in [inventory.json](inventory.json). A report committed with its implementation cannot contain its own future commit SHA; the source hashes and parent identify the reviewed source without circular claims. The release manifest intentionally remains incomplete, rather than treating this audit as permission to execute.
+Original audit `b588ffdca0e0309500a6bc0e74699d5c1c586c2e`; latest implementation parent `de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b` plus the exact source hashes in [inventory.json](inventory.json). A report committed with its implementation cannot contain its own future commit SHA; the source hashes and parent identify the reviewed source without circular claims. The release manifest intentionally remains incomplete, rather than treating this audit as permission to execute.
 
 Read-only production evidence from 7 October at 04:13 UTC: build `2b300b4e7de90157362f104bf3654de7cde6215e`, service active; user 2 capital/cash/equity ₹10,000, zero positions; epoch `2026-09-22T13:34:11.273061+00:00`. Forward protocol SHA-256 `1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2`. Peak/drawdown were not queried. This is a dated observation, not a deployed repair or browser-visible production assurance.
 
-The current static inventory contains 147 app modules (89,028 lines), 79 scripts, 182 test modules, 163 decorated routes, 30 model declarations, 192 SQL declaration sites, 287 config fields, 320 unique environment **names**, 41 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
+The current static inventory contains 147 app modules (89,086 lines), 79 scripts, 183 test modules, 163 decorated routes, 30 model declarations, 193 SQL declaration sites, 287 config fields, 320 unique environment **names**, 41 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
 
 ## A. Readiness scores and top risks
 
@@ -107,6 +107,10 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 | F68 | Medium | Locally repaired | Not deployed / uncertified | Capability response advertises unsupported paper intraday lifecycle — app/execution_ports.py:123 | 1–4 |
 | F69 | Critical | Locally repaired | Not deployed / uncertified | Broker permission survives changed owned state — app/broker_reconciliation.py:54, :172 | 1–4 |
 
+| F70 | High | Locally repaired | Not deployed / uncertified | Valid provider millisecond timestamps are discarded — app/executable_quotes.py:40 | 1–4 |
+| F71 | High | Locally repaired | Not deployed / uncertified | Rounded depth ordering can retain obsolete liquidity — app/executable_quotes.py:102 | 1–4 |
+| F72 | High | Locally repaired | Not deployed / uncertified | Equal-time contradictory depth retains first executable quote — app/executable_quotes.py:133 | 1–4 |
+
 ## C. Architecture/data models
 
 [Mermaid architecture, instrument/plan/account/epoch identities, actual versus target paths and entity invariants](architecture.md). Paper human requests and trusted approved plans now share the same fill pipeline. Broker/house adapters do not yet share all approved-plan and final accounting semantics. Unsupported instruments/routes refuse instead of pretending index levels are orderable.
@@ -129,7 +133,7 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 
 ## Verification and limits
 
-Final frozen source: **2,502 unittest checks run; 2,369 passed, 133 skipped, zero failures/errors**, 21.233 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
+Final frozen source: **2,511 unittest checks run; 2,378 passed, 133 skipped, zero failures/errors**, 19.932 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
 
 [verification.json](verification.json) retains earlier failed runs, the initial local-test isolation defect and its repair, dependency evidence and browser scope. Legacy storage fixtures explicitly replace external contract/native authorization evidence; new boundary tests use actual dated synthetic catalogues and real risk/ledger/approval code. No source was edited during the final broad run.
 
@@ -172,3 +176,5 @@ The final sourced-session candidate also passed actual app startup and migration
 F60–F68 record nine additional safety/accounting/interface defects. F08 gains exact completed-child recovery and claim-once quantity maintenance; F09 gains source-complete closed-unit net P&L. Production remains unchanged and uncertified. See [reproductions and remaining work](../broker-protection-review-2026-10-07.md) and [operating contract](../../docs/broker-protection-recovery.md).
 
 F69 additionally closes stale owned-order reconciliation permission. Six regressions fail against exact `984d36a` and pass on the current code; actual entry refuses stale pre-round-trip funds evidence. Exact final candidate startup passed on guarded OCI copies, preserving all checked original values and ₹10,000 balances. Full release remains incomplete; production is unchanged.
+
+F70–F72 close executable-depth timestamp, precision and conflict defects. [Provider-to-paper and fresh-copy evidence](../executable-depth-review-2026-10-07.md) preserves the book and does not certify live data, an approved model or commercial readiness.
