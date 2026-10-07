@@ -510,15 +510,12 @@
         "status": "passed",
         "actual_app_startup": true,
         "unauthenticated_positions": 401,
-        "capital": 10000,
-        "cash": 10000,
-        "equity": 10000,
-        "positions": 0,
         "original_values_preserved": true,
         "outbound_http_blocked": true,
         "workers_disabled": true,
         "production_modified": false,
-        "real_orders": 0
+        "real_orders": 0,
+        "paper_values_preserved": true
       }
     },
     "production_modified": false,
