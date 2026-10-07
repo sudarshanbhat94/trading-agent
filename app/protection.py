@@ -13,11 +13,15 @@ from datetime import datetime,timezone
 from .account_safety import atomic
 from .live_release import authorized as live_scope_authorized
 
-BLOCKING = {'app_only','required','submitting','unknown','failed','triggered','cancelling'}
+BLOCKING = {'app_only','required','submitting','amending','unknown','failed','triggered','cancelling'}
 SAFE_TO_SELL = {'app_only','cancelled','closed'}
 
 
 def ensure_schema(con):
+    from .protection_amendments import ensure_schema as amendments_schema
+    amendments_schema(con)
+    from .portfolio_stream import ensure_schema as stream_schema
+    stream_schema(con)
     con.execute('''CREATE TABLE IF NOT EXISTS protection_obligations(
       entry_id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,symbol TEXT NOT NULL,
       instrument_key TEXT NOT NULL,product TEXT NOT NULL,quantity INTEGER NOT NULL,
@@ -27,6 +31,9 @@ def ensure_schema(con):
         con.execute('ALTER TABLE protection_obligations ADD COLUMN submission_attempted INTEGER NOT NULL DEFAULT 0')
         con.execute("UPDATE protection_obligations SET submission_attempted=1 WHERE native_id IS NOT NULL "
                     "OR (authorization_reference IS NOT NULL AND state IN ('submitting','unknown','armed','triggered','cancelling'))")
+    if 'coverage_quantity' not in {r[1] for r in con.execute('PRAGMA table_info(protection_obligations)')}:
+        con.execute('ALTER TABLE protection_obligations ADD COLUMN coverage_quantity INTEGER')
+        con.execute('UPDATE protection_obligations SET coverage_quantity=quantity WHERE native_id IS NOT NULL')
     con.execute('''CREATE TABLE IF NOT EXISTS protection_events(
       id INTEGER PRIMARY KEY,entry_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
       state TEXT NOT NULL,detail TEXT NOT NULL,observed_at REAL NOT NULL)''')
@@ -37,17 +44,17 @@ def ensure_schema(con):
 
 def _row(con,uid,entry_id):
     row=con.execute('SELECT entry_id,user_id,symbol,instrument_key,product,quantity,stop,state,native_id,'
-                    'exit_order_id,authorization_reference,cancel_requested_at,submission_attempted FROM protection_obligations '
+                    'exit_order_id,authorization_reference,cancel_requested_at,submission_attempted,coverage_quantity FROM protection_obligations '
                     'WHERE entry_id=? AND user_id=?',(entry_id,uid)).fetchone()
     return dict(zip(('entry_id','user_id','symbol','instrument_key','product','quantity','stop','state',
-                     'native_id','exit_order_id','authorization_reference','cancel_requested_at','submission_attempted'),row)) if row else None
+                     'native_id','exit_order_id','authorization_reference','cancel_requested_at','submission_attempted','coverage_quantity'),row)) if row else None
 
 
-def _event(con,row,state,detail,now=None):
+def _event(con,row,state,detail,now=None,*,observed=False):
     from .worker_fencing import require_current
     require_current(con)
     now=time.time() if now is None else now
-    if row['state']==state:return
+    if row['state']==state and not observed:return
     con.execute('UPDATE protection_obligations SET state=?,updated_at=? WHERE entry_id=? AND user_id=?',
                 (state,now,row['entry_id'],row['user_id']))
     con.execute('INSERT INTO protection_events(entry_id,user_id,state,detail,observed_at) VALUES(?,?,?,?,?)',
@@ -96,12 +103,15 @@ def _activation_contract(con,uid,row):
     if not entry or entry[0] not in {'filled','cancelled','rejected'} or entry[1]!=row['quantity'] or \
             _owned_remaining(con,uid).get(row['entry_id'],0)!=row['quantity']:
         raise ValueError('Entry fills or remaining owned inventory are unresolved')
+    if _pending_exit(con,uid,row):raise ValueError('Pending owned exit prevents native activation')
     from .entry_contracts import protective_contract
     protective_contract(row['symbol'],row['quantity'],row['stop'],row['product'],row['instrument_key'])
 
 
 def observe_fills(con,uid):
     """Inside fill transaction; import ownership from exact journal entries only."""
+    from .worker_fencing import require_current
+    require_current(con)
     ensure_schema(con)
     remaining=_owned_remaining(con,uid)
     entries=con.execute("SELECT o.id,o.symbol,o.instrument_key,o.product,o.filled_qty,p.stop "
@@ -131,6 +141,12 @@ def observe_fills(con,uid):
         exit_filled=con.execute("SELECT status FROM v2_live_orders WHERE user_id=? AND broker_order_id=?",(uid,row['exit_order_id'])).fetchone() if row['exit_order_id'] else None
         if held==0 and (row['state'] in SAFE_TO_SELL or (exit_filled and exit_filled[0]=='filled')):
             _event(con,row,'closed','Owned journal inventory is flat')
+        elif exit_filled and exit_filled[0] in {'cancelled','rejected'} and not _pending_exit(con,uid,row):
+            _event(con,row,'closed' if held==0 else 'cancelled',
+                   'Native child is terminal; any remaining inventory is unprotected and blocks new entries')
+        elif row['native_id'] and not row['exit_order_id'] and row['state'] not in {'closed','cancelled'} and \
+                held!=row['coverage_quantity']:
+            _event(con,row,'unknown','Remaining owned inventory differs from native stop quantity')
 
 
 def request_native(con,uid,entry_id,*,authorization_reference):
@@ -216,8 +232,8 @@ def submit_stop(con,uid,entry_id,port):
         except ValueError:
             _event(con,row,'failed','Native authorization/contract/ownership no longer valid; no transmission')
             return 'failed'
-        con.execute('UPDATE protection_obligations SET submission_attempted=1 WHERE entry_id=? AND user_id=?',
-                    (entry_id,uid))
+        con.execute('UPDATE protection_obligations SET submission_attempted=1,coverage_quantity=? WHERE entry_id=? AND user_id=?',
+                    (row['quantity'],entry_id,uid))
         _event(con,row,'submitting','Stop submission reserved before broker I/O')
     # atomic() uses a savepoint if called inside an existing transaction. Do
     # not transmit from a caller's uncommitted transaction.
@@ -240,8 +256,41 @@ def submit_stop(con,uid,entry_id,port):
     return state
 
 
+def _pending_exit(con,uid,row):
+    return bool(con.execute("SELECT 1 FROM v2_live_orders WHERE user_id=? AND instrument_key=? AND product=? "
+                            "AND side='SELL' AND status IN ('pending','submitted','partial','unknown','sent') LIMIT 1",
+                            (uid,row['instrument_key'],row['product'])).fetchone())
+
+
+def _native_evidence(row,rows,*,quantity=None):
+    """Strict identity/trigger binding; a trigger is never evidence of a fill."""
+    if not isinstance(rows,list):raise ValueError('native evidence unavailable')
+    matches=[r for r in rows if isinstance(r,dict) and r.get('gtt_order_id')==row['native_id']]
+    if len(matches)!=1:raise ValueError('missing/ambiguous native stop')
+    evidence=matches[0];rules=evidence.get('rules',[])
+    expected=row['coverage_quantity'] if quantity is None else quantity
+    if evidence.get('type')!='SINGLE' or evidence.get('instrument_token')!=row['instrument_key'] or \
+            evidence.get('product')!=row['product'] or type(evidence.get('quantity')) is not int or \
+            evidence['quantity']!=expected or not isinstance(rules,list) or len(rules)!=1:
+        raise ValueError('native contract changed')
+    rule=rules[0]
+    if not isinstance(rule,dict) or rule.get('transaction_type')!='SELL' or rule.get('strategy')!='ENTRY' or \
+            rule.get('trigger_type')!='BELOW' or isinstance(rule.get('trigger_price'),bool) or rule.get('trigger_price')!=row['stop']:
+        raise ValueError('native trigger changed')
+    expires=evidence.get('expires_at')
+    if isinstance(expires,bool) or not isinstance(expires,(int,float)) or not math.isfinite(expires):
+        raise ValueError('native expiry unavailable')
+    oid=rule.get('order_id')
+    if oid is not None and (not isinstance(oid,str) or not oid.strip()):raise ValueError('invalid native child identity')
+    status=rule.get('status')
+    if status not in {'SCHEDULED','TRIGGERED','EXPIRED','OPEN','COMPLETED','CANCELLED','PENDING','FAILED','INACTIVE'}:
+        raise ValueError('unknown native status')
+    return rule,expires
+
+
 def refresh(con,uid,port):
     """Missing GTT is unknown: this endpoint omits completed triggers."""
+    from .worker_fencing import require_current
     ensure_schema(con)
     ids=[r[0] for r in con.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? "
                                    "AND state NOT IN ('app_only','closed','cancelled')",(uid,))]
@@ -251,46 +300,54 @@ def refresh(con,uid,port):
             if row['state']=='submitting':
                 with atomic(con):_event(con,row,'unknown','Worker resumed after uncertain submission')
             continue
-        try:
-            rows=port.protection_status(uid,row['native_id'])
-            matches=[r for r in rows if r.get('gtt_order_id')==row['native_id']]
-            if len(matches)!=1:raise ValueError('missing/ambiguous native stop')
-            evidence=matches[0];rules=evidence.get('rules',[])
-            if evidence.get('type')!='SINGLE' or evidence.get('instrument_token')!=row['instrument_key'] or \
-                    evidence.get('product')!=row['product'] or type(evidence.get('quantity')) is not int or \
-                    evidence['quantity']!=row['quantity'] or len(rules)!=1:
-                raise ValueError('native contract changed')
-            rule=rules[0]
-            if rule.get('transaction_type')!='SELL' or rule.get('strategy')!='ENTRY' or rule.get('trigger_type')!='BELOW' or \
-                    rule.get('trigger_price')!=row['stop']:
-                raise ValueError('native trigger changed')
-            status=rule.get('status');oid=rule.get('order_id')
-            expires=evidence.get('expires_at')
-            if isinstance(expires,bool) or not isinstance(expires,(int,float)) or not math.isfinite(expires):
-                raise ValueError('native expiry unavailable')
-            state='armed' if status=='SCHEDULED' and expires>time.time()*1_000_000 else \
-                  'cancelled' if status=='CANCELLED' and not oid else \
-                  'failed' if status in {'EXPIRED','FAILED'} and not oid else 'unknown'
-            if oid:
-                state='triggered'
-                with atomic(con):
+        try:rows=port.protection_status(uid,row['native_id'])
+        except Exception:rows=[]  # No response cannot release inventory or a sell reservation.
+        from .portfolio_stream import child_evidence
+        # Missing completed triggers can be bound only by an exact observation
+        # received on this account's authenticated outbound portfolio socket.
+        if rows==[]:
+            try:rows=child_evidence(con,uid,row)
+            except ValueError:rows=[]
+        with atomic(con):
+            # Network I/O may outlive our lease or change the obligation. All
+            # child binding and status writes share this fenced transaction.
+            require_current(con)
+            current=_row(con,uid,entry_id)
+            if not current or current['native_id']!=row['native_id'] or current['state'] in {'closed','cancelled'}:continue
+            row=current
+            from .protection_amendments import resolve,latest
+            row=resolve(con,row,rows)
+            try:
+                rule,expires=_native_evidence(row,rows)
+                status=rule['status'];oid=rule.get('order_id')
+                state='armed' if status=='SCHEDULED' and expires>time.time()*1_000_000 else \
+                      'cancelled' if status=='CANCELLED' and not oid else \
+                      'failed' if status in {'EXPIRED','FAILED'} and not oid else 'unknown'
+                if row['exit_order_id'] and str(oid or '')!=row['exit_order_id']:
+                    raise ValueError('previous native child identity disappeared or changed')
+                if oid:
                     existing=con.execute('SELECT id,instrument_key,side,product,qty FROM v2_live_orders '
                                          'WHERE user_id=? AND broker_order_id=?',(uid,str(oid))).fetchall()
-                    if existing and (len(existing)!=1 or tuple(existing[0][1:])!=(row['instrument_key'],'SELL',row['product'],row['quantity'])):
+                    if existing and (len(existing)!=1 or tuple(existing[0][1:])!=(row['instrument_key'],'SELL',row['product'],row['coverage_quantity'])):
                         raise ValueError('native exit ownership conflict')
+                    if row['exit_order_id'] and row['exit_order_id']!=oid:raise ValueError('native child identity changed')
                     if not existing:
                         con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,notional,"
                                     "product,status,reason,broker_order_id,semantic_key,origin_position_id,filled_qty) "
                                     "VALUES(?,?,'IN',?,?,'SELL',?,?,?,?, 'submitted','native stop',?,?,?,0)",
-                                    (datetime.now(timezone.utc).isoformat(),uid,row['symbol'],row['instrument_key'],row['quantity'],
-                                     row['stop'],row['quantity']*row['stop'],row['product'],str(oid),
+                                    (datetime.now(timezone.utc).isoformat(),uid,row['symbol'],row['instrument_key'],row['coverage_quantity'],
+                                     row['stop'],row['coverage_quantity']*row['stop'],row['product'],str(oid),
                                      f"protection:{entry_id}:{oid}",entry_id))
                     con.execute('UPDATE protection_obligations SET exit_order_id=? WHERE entry_id=? AND user_id=?',
                                 (str(oid),entry_id,uid))
-            if row['cancel_requested_at'] and state=='armed':state='cancelling'
-        except Exception:
-            state='unknown'
-        with atomic(con):_event(con,row,state,'Native status observed; trigger is not an exchange fill')
+                    state='triggered'
+                elif state=='armed' and (_owned_remaining(con,uid).get(entry_id,0)!=row['coverage_quantity'] or _pending_exit(con,uid,row)):
+                    state='unknown'
+                amendment=latest(con,uid,entry_id)
+                if state=='armed' and amendment and amendment['state']!='confirmed':state='unknown'
+                if row['cancel_requested_at'] and state=='armed':state='cancelling'
+            except (ValueError,TypeError,KeyError):state='unknown'
+            _event(con,row,state,'Native status observed; trigger is not an exchange fill',observed=True)
 
 
 def prepare_exit(con,uid,symbol,port):
@@ -323,20 +380,55 @@ def prepare_exit(con,uid,symbol,port):
     return all(row['state'] in SAFE_TO_SELL or (row['state'] in {'failed','unknown'} and not row['native_id'] and not row['submission_attempted']) for row in rows)
 
 
+def cancel_overreserved_children(con,uid,port):
+    """A triggered child may win a quantity-reduction race. Cancel once.
+
+    Inventory remains reserved through ambiguity; an acknowledgement never
+    makes another exit safe. Actual terminal child evidence is required.
+    """
+    from .worker_fencing import require_current
+    from .recovery_guard import assert_database_execution_allowed
+    from .execution_outbox import incident
+    assert_database_execution_allowed(con)
+    if con.in_transaction:raise RuntimeError('Child cancellation requires a committed claim')
+    rows=con.execute("SELECT p.entry_id,p.exit_order_id FROM protection_obligations p WHERE p.user_id=? "
+                     "AND p.exit_order_id IS NOT NULL AND p.state NOT IN ('closed','cancelled')",(uid,)).fetchall()
+    for entry_id,oid in rows:
+        with atomic(con):
+            require_current(con)
+            child=con.execute('SELECT id,qty,filled_qty,status,cancel_requested_at FROM v2_live_orders '
+                              'WHERE user_id=? AND broker_order_id=?',(uid,oid)).fetchall()
+            if len(child)!=1:continue
+            rid,quantity,filled,status,requested=child[0]
+            held=_owned_remaining(con,uid).get(entry_id,0)
+            if status not in {'pending','submitted','partial','unknown','sent'} or quantity-filled<=held:continue
+            incident(con,uid,'NATIVE_EXIT_OVERRESERVED',entry_id,'Triggered child exceeds remaining owned inventory; cancellation and reconciliation required')
+            if requested:continue
+            con.execute('UPDATE v2_live_orders SET cancel_requested_at=? WHERE id=? AND user_id=?',
+                        (datetime.now(timezone.utc).isoformat(),rid,uid))
+        try:port.cancel(uid,oid)
+        except Exception:pass  # Reservation persists until actual terminal evidence.
+
+
 def blocks_entry(con,uid):
     marks=','.join('?' for _ in BLOCKING)
-    return bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN ("+marks+") "
+    blocked=bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN ("+marks+") "
                             "OR (state='armed' AND updated_at<?)) LIMIT 1",
                             (uid,*sorted(BLOCKING),time.time()-120)).fetchone())
+    if blocked:return True
+    remaining=_owned_remaining(con,uid)
+    return any(remaining.get(entry_id,0)>0 for entry_id, in con.execute(
+        "SELECT entry_id FROM protection_obligations WHERE user_id=? AND state IN ('cancelled','closed')",(uid,)))
 
 
 def report(con,uid):
-    rows=con.execute('SELECT entry_id,symbol,quantity,stop,state,native_id,exit_order_id,updated_at FROM protection_obligations '
+    from .portfolio_stream import report as stream_report
+    rows=con.execute('SELECT entry_id,symbol,quantity,stop,state,native_id,exit_order_id,updated_at,coverage_quantity FROM protection_obligations '
                      'WHERE user_id=? ORDER BY entry_id DESC LIMIT 100',(uid,)).fetchall()
     remaining=_owned_remaining(con,uid)
-    result=[dict(zip(('entry_id','symbol','quantity','stop','state','native_id','exit_order_id','updated_at'),r)) for r in rows]
+    result=[dict(zip(('entry_id','symbol','quantity','stop','state','native_id','exit_order_id','updated_at','coverage_quantity'),r)) for r in rows]
     for row in result:row['remaining_quantity']=remaining.get(row['entry_id'],0)
     from .live_release import native_policy
     return dict(rows=result,native_guarantees_fill=False,
                 activation_automatic=bool(native_policy(uid,'D') or native_policy(uid,'I')),
-                activation_requires_separate_review=True,live_certified=False)
+                activation_requires_separate_review=True,live_certified=False,portfolio_stream=stream_report(con,uid))

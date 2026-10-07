@@ -694,3 +694,40 @@ def cancel_protection(user_id,protection_id):
     if not isinstance(protection_id,str) or not protection_id.startswith('GTT-'):
         raise ValueError('invalid protection identity')
     return _execution_request(user_id,'DELETE','/order/gtt/cancel',payload={'gtt_order_id':protection_id})
+
+
+def modify_protection(user_id,protection_id,*,quantity,stop):
+    """Scheduled SINGLE trigger only; lifecycle verifies identity and ownership."""
+    import math
+    if not isinstance(protection_id,str) or not protection_id.startswith('GTT-') or len(protection_id)<=4 or \
+            type(quantity) is not int or quantity<1 or isinstance(stop,bool) or not isinstance(stop,(int,float)) or \
+            not math.isfinite(stop) or stop<=0:
+        raise ValueError('invalid native protection modification')
+    return _execution_request(user_id,'PUT','/order/gtt/modify',payload=dict(type='SINGLE',gtt_order_id=protection_id,
+        quantity=quantity,rules=[dict(strategy='ENTRY',trigger_type='BELOW',trigger_price=stop,market_protection=5)]))
+
+
+def portfolio_stream_access(user_id):
+    """Owner credential -> verified profile and one-use outbound socket URI.
+
+    The returned URI contains authentication material. Never log/store it or
+    return it to a public route. Redirect hosts are restricted to Upstox.
+    """
+    import httpx
+    from urllib.parse import urlsplit
+    headers=_headers(user_id)
+    profile=httpx.get(f'{API_BASE}/user/profile',headers=headers,timeout=15)
+    profile.raise_for_status();body=profile.json()
+    account=(body.get('data') or {}).get('user_id')
+    if body.get('status')!='success' or not isinstance(account,str) or not account.strip():
+        raise ValueError('Verified broker profile unavailable')
+    response=httpx.get(f'{API_BASE}/feed/portfolio-stream-feed/authorize',headers=headers,
+                       params={'update_types':'order,gtt_order'},timeout=15)
+    response.raise_for_status();body=response.json()
+    uri=(body.get('data') or {}).get('authorized_redirect_uri')
+    parsed=urlsplit(uri) if isinstance(uri,str) else None
+    if body.get('status')!='success' or not parsed or parsed.scheme!='wss' or \
+            not parsed.hostname or not parsed.hostname.endswith('.upstox.com') or parsed.username or parsed.password or \
+            parsed.fragment or parsed.port not in (None,443):
+        raise ValueError('Invalid authenticated portfolio socket URI')
+    return account,uri

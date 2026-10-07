@@ -205,9 +205,11 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             con.rollback()
             return "pending: broker reconciliation required"
         held = con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty "
-                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND symbol=?",
-                           (uid, symbol)).fetchone()[0]
-        if (side == "BUY" and held > 0) or (side == "SELL" and qty > held):
+                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND instrument_key=? AND product=?",
+                           (uid,key,product)).fetchone()[0]
+        symbol_held=con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END),0) "
+                                "FROM v2_live_orders WHERE user_id=? AND symbol=?",(uid,symbol)).fetchone()[0]
+        if (side == "BUY" and symbol_held > 0) or (side == "SELL" and qty > held):
             con.rollback()
             return "rejected: position changed before submission"
         if side == "BUY":
@@ -298,14 +300,20 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
 
 
 def protect(con, uid, symbol, stop, target):
-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
-                "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
-                "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
-    con.commit()
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
+                    "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
+                    "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
 
 
 def request_exit(con, uid, symbol, reason):
-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
-                "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
-                (uid, symbol, reason))
-    con.commit()
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
+                    "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
+                    (uid, symbol, reason))

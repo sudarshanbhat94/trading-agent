@@ -94,10 +94,12 @@
     "app/personal_performance.py",
     "app/plans.py",
     "app/portfolio.py",
+    "app/portfolio_stream.py",
     "app/pre_catalyst_engine.py",
     "app/preopen.py",
     "app/price_action.py",
     "app/protection.py",
+    "app/protection_amendments.py",
     "app/rally_plan.py",
     "app/raw_entry_model.py",
     "app/recommendation.py",
@@ -172,11 +174,13 @@
     "deploy/opentrade-news.service",
     "deploy/opentrade-news.timer",
     "deploy/opentrade-nse-ann.service",
+    "deploy/opentrade-portfolio-feed.service",
     "deploy/opentrade-screening.service",
     "deploy/opentrade-screening.timer",
     "deploy/opentrade-shareholding.service",
     "deploy/opentrade-shareholding.timer",
     "deploy/trading-agent.service",
+    "docs/broker-protection-recovery.md",
     "docs/equity_factor_research.md",
     "docs/evidence_screen.md",
     "docs/idea-tracking.md",
@@ -185,6 +189,7 @@
     "docs/paper-exchange-lifecycle.md",
     "docs/recovery-and-approved-paper.md",
     "docs/trading-integrity.md",
+    "reports/broker-protection-review-2026-10-07.md",
     "reports/dependencies/advisories.json",
     "reports/dependencies/lock.json",
     "reports/dependencies/pre-patch-advisories.json",
@@ -259,6 +264,7 @@
     "scripts/backup_db.py",
     "scripts/bigmove_detector.py",
     "scripts/breakout_target_bt.py",
+    "scripts/broker_portfolio_feed.py",
     "scripts/btst_bt.py",
     "scripts/candle_ingest.py",
     "scripts/check_paper_readiness.py",
@@ -345,6 +351,7 @@
     "tests/test_broker_ledger.py",
     "tests/test_broker_privacy.py",
     "tests/test_broker_wire.py",
+    "tests/test_broker_worker_fencing.py",
     "tests/test_candle_ingest_freshness.py",
     "tests/test_candle_job_completion.py",
     "tests/test_canonical_trade_contract.py",
@@ -445,12 +452,16 @@
     "tests/test_plan_enforcement.py",
     "tests/test_point_in_time_universe.py",
     "tests/test_portfolio.py",
+    "tests/test_portfolio_collector_wire.py",
+    "tests/test_portfolio_stream.py",
     "tests/test_portfolio_ui_render.py",
     "tests/test_position_exit_terms_ui.py",
     "tests/test_position_mark_refresh.py",
     "tests/test_pre_catalyst_engine.py",
     "tests/test_preopen.py",
+    "tests/test_protection_amendments.py",
     "tests/test_protection_lifecycle.py",
+    "tests/test_protection_races.py",
     "tests/test_quality_forward_watch.py",
     "tests/test_rally_plan.py",
     "tests/test_real_money_readiness.py",
@@ -2184,7 +2195,7 @@
     },
     {
       "file": "app/broker.py",
-      "lines": 696,
+      "lines": 733,
       "imports": [
         "__future__",
         "json",
@@ -2210,6 +2221,9 @@
         "httpx",
         "math",
         "math",
+        "math",
+        "httpx",
+        "urllib.parse",
         "credential_vault",
         "httpx",
         "credential_vault"
@@ -2384,6 +2398,16 @@
           "name": "cancel_protection",
           "line": 693,
           "kind": "FunctionDef"
+        },
+        {
+          "name": "modify_protection",
+          "line": 699,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "portfolio_stream_access",
+          "line": 710,
+          "kind": "FunctionDef"
         }
       ]
     },
@@ -2408,7 +2432,7 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "lines": 201,
+      "lines": 237,
       "imports": [
         "datetime",
         "decimal",
@@ -2416,6 +2440,7 @@
         "json",
         "account_safety",
         "paper_ledger",
+        "worker_fencing",
         "collections",
         "worker_fencing",
         "zoneinfo"
@@ -2443,34 +2468,34 @@
         },
         {
           "name": "ingest_trades",
-          "line": 74,
+          "line": 76,
           "kind": "FunctionDef"
         },
         {
           "name": "record_fee",
-          "line": 126,
+          "line": 128,
           "kind": "FunctionDef"
         },
         {
           "name": "settle",
-          "line": 141,
+          "line": 146,
           "kind": "FunctionDef"
         },
         {
           "name": "reverse",
-          "line": 161,
+          "line": 166,
           "kind": "FunctionDef"
         },
         {
           "name": "report",
-          "line": 176,
+          "line": 182,
           "kind": "FunctionDef"
         }
       ]
     },
     {
       "file": "app/broker_reconciliation.py",
-      "lines": 149,
+      "lines": 151,
       "imports": [
         "json",
         "math",
@@ -2481,6 +2506,7 @@
         "execution_outbox",
         "execution_ports",
         null,
+        "worker_fencing",
         null
       ],
       "symbols": [
@@ -2506,12 +2532,12 @@
         },
         {
           "name": "refresh",
-          "line": 128,
+          "line": 130,
           "kind": "FunctionDef"
         },
         {
           "name": "ready",
-          "line": 146,
+          "line": 148,
           "kind": "FunctionDef"
         }
       ]
@@ -4824,13 +4850,14 @@
     },
     {
       "file": "app/execution_ports.py",
-      "lines": 126,
+      "lines": 131,
       "imports": [
         "__future__",
         "dataclasses",
         "typing",
         "instrument_catalog",
         "angelone_port",
+        null,
         null,
         null,
         null,
@@ -4862,12 +4889,12 @@
         },
         {
           "name": "UpstoxPort",
-          "line": 54,
+          "line": 55,
           "kind": "ClassDef"
         },
         {
           "name": "capability_report",
-          "line": 117,
+          "line": 122,
           "kind": "FunctionDef"
         },
         {
@@ -4936,68 +4963,78 @@
           "kind": "FunctionDef"
         },
         {
+          "name": "modify_protection",
+          "line": 52,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "submit",
-          "line": 56,
+          "line": 57,
           "kind": "FunctionDef"
         },
         {
           "name": "order_status",
-          "line": 66,
+          "line": 67,
           "kind": "FunctionDef"
         },
         {
           "name": "orders",
-          "line": 72,
+          "line": 73,
           "kind": "FunctionDef"
         },
         {
           "name": "positions",
-          "line": 76,
+          "line": 77,
           "kind": "FunctionDef"
         },
         {
           "name": "holdings",
-          "line": 80,
+          "line": 81,
           "kind": "FunctionDef"
         },
         {
           "name": "funds",
-          "line": 84,
+          "line": 85,
           "kind": "FunctionDef"
         },
         {
           "name": "trades",
-          "line": 88,
+          "line": 89,
           "kind": "FunctionDef"
         },
         {
           "name": "cancel",
-          "line": 92,
+          "line": 93,
           "kind": "FunctionDef"
         },
         {
           "name": "modify",
-          "line": 96,
+          "line": 97,
           "kind": "FunctionDef"
         },
         {
           "name": "margin",
-          "line": 100,
+          "line": 101,
           "kind": "FunctionDef"
         },
         {
           "name": "place_stop",
-          "line": 104,
+          "line": 105,
           "kind": "FunctionDef"
         },
         {
           "name": "protection_status",
-          "line": 108,
+          "line": 109,
           "kind": "FunctionDef"
         },
         {
           "name": "cancel_protection",
-          "line": 112,
+          "line": 113,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "modify_protection",
+          "line": 117,
           "kind": "FunctionDef"
         }
       ]
@@ -6419,7 +6456,7 @@
     },
     {
       "file": "app/live_trade.py",
-      "lines": 502,
+      "lines": 511,
       "imports": [
         "__future__",
         "json",
@@ -6448,7 +6485,9 @@
         null,
         null,
         "execution_ports",
+        "portfolio_stream",
         null,
+        "protection_amendments",
         "instrument_catalog",
         "execution_ports"
       ],
@@ -11209,7 +11248,7 @@
     },
     {
       "file": "app/order_journal.py",
-      "lines": 311,
+      "lines": 319,
       "imports": [
         "json",
         "math",
@@ -11229,6 +11268,10 @@
         "recovery_guard",
         null,
         "account_safety",
+        "account_safety",
+        "worker_fencing",
+        "account_safety",
+        "worker_fencing",
         "execution_events",
         "protection",
         "execution_ports",
@@ -11283,12 +11326,12 @@
         },
         {
           "name": "protect",
-          "line": 300,
+          "line": 302,
           "kind": "FunctionDef"
         },
         {
           "name": "request_exit",
-          "line": 307,
+          "line": 312,
           "kind": "FunctionDef"
         }
       ]
@@ -11947,6 +11990,77 @@
       ]
     },
     {
+      "file": "app/portfolio_stream.py",
+      "lines": 176,
+      "imports": [
+        "hashlib",
+        "json",
+        "math",
+        "time",
+        "uuid",
+        "account_safety",
+        "protection",
+        "protection_amendments"
+      ],
+      "symbols": [
+        {
+          "name": "ensure_schema",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "account_hash",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "open_connection",
+          "line": 40,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_current",
+          "line": 60,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "heartbeat",
+          "line": 70,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "close_connection",
+          "line": 77,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_append",
+          "line": 86,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "ingest",
+          "line": 93,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "child_evidence",
+          "line": 131,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "order_updates",
+          "line": 159,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "report",
+          "line": 166,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "app/pre_catalyst_engine.py",
       "lines": 2204,
       "imports": [
@@ -12393,7 +12507,7 @@
     },
     {
       "file": "app/protection.py",
-      "lines": 342,
+      "lines": 434,
       "imports": [
         "json",
         "math",
@@ -12401,9 +12515,12 @@
         "datetime",
         "account_safety",
         "live_release",
+        "protection_amendments",
+        "portfolio_stream",
         "worker_fencing",
         "execution_outbox",
         "entry_contracts",
+        "worker_fencing",
         "recovery_guard",
         "live_release",
         "live_release",
@@ -12413,8 +12530,15 @@
         "recovery_guard",
         "worker_fencing",
         "worker_fencing",
+        "worker_fencing",
         "recovery_guard",
-        "live_release"
+        "worker_fencing",
+        "recovery_guard",
+        "execution_outbox",
+        "portfolio_stream",
+        "live_release",
+        "portfolio_stream",
+        "protection_amendments"
       ],
       "symbols": [
         {
@@ -12424,72 +12548,127 @@
         },
         {
           "name": "_row",
-          "line": 38,
+          "line": 45,
           "kind": "FunctionDef"
         },
         {
           "name": "_event",
-          "line": 46,
+          "line": 53,
           "kind": "FunctionDef"
         },
         {
           "name": "_incident",
-          "line": 58,
+          "line": 65,
           "kind": "FunctionDef"
         },
         {
           "name": "_owned_remaining",
-          "line": 70,
+          "line": 77,
           "kind": "FunctionDef"
         },
         {
           "name": "_activation_contract",
-          "line": 91,
+          "line": 98,
           "kind": "FunctionDef"
         },
         {
           "name": "observe_fills",
-          "line": 103,
+          "line": 111,
           "kind": "FunctionDef"
         },
         {
           "name": "request_native",
-          "line": 136,
+          "line": 152,
           "kind": "FunctionDef"
         },
         {
           "name": "activate_reviewed_fills",
-          "line": 155,
+          "line": 171,
           "kind": "FunctionDef"
         },
         {
           "name": "settle_partial_entries",
-          "line": 180,
+          "line": 196,
           "kind": "FunctionDef"
         },
         {
           "name": "submit_stop",
-          "line": 204,
+          "line": 220,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_pending_exit",
+          "line": 259,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_native_evidence",
+          "line": 265,
           "kind": "FunctionDef"
         },
         {
           "name": "refresh",
-          "line": 243,
+          "line": 291,
           "kind": "FunctionDef"
         },
         {
           "name": "prepare_exit",
-          "line": 296,
+          "line": 353,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "cancel_overreserved_children",
+          "line": 383,
           "kind": "FunctionDef"
         },
         {
           "name": "blocks_entry",
-          "line": 326,
+          "line": 413,
           "kind": "FunctionDef"
         },
         {
           "name": "report",
-          "line": 333,
+          "line": 424,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "app/protection_amendments.py",
+      "lines": 115,
+      "imports": [
+        "time",
+        "account_safety",
+        "worker_fencing",
+        null,
+        null,
+        "entry_contracts",
+        "recovery_guard"
+      ],
+      "symbols": [
+        {
+          "name": "ensure_schema",
+          "line": 12,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "latest",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_event",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "resolve",
+          "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reduce",
+          "line": 60,
           "kind": "FunctionDef"
         }
       ]
@@ -13135,7 +13314,7 @@
     },
     {
       "file": "app/schema_migrations.py",
-      "lines": 88,
+      "lines": 95,
       "imports": [
         "hashlib",
         "json",
@@ -13161,7 +13340,7 @@
         },
         {
           "name": "validate_accounts",
-          "line": 79,
+          "line": 86,
           "kind": "FunctionDef"
         },
         {
@@ -19331,6 +19510,39 @@
       ]
     },
     {
+      "file": "scripts/broker_portfolio_feed.py",
+      "lines": 85,
+      "imports": [
+        "argparse",
+        "asyncio",
+        "json",
+        "os",
+        "pathlib",
+        "sqlite3",
+        "sys",
+        "time",
+        "app",
+        "websockets.asyncio.client"
+      ],
+      "symbols": [
+        {
+          "name": "collect",
+          "line": 21,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "run",
+          "line": 48,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "main",
+          "line": 75,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "scripts/btst_bt.py",
       "lines": 129,
       "imports": [
@@ -23916,7 +24128,7 @@
     },
     {
       "file": "tests/test_broker_ledger.py",
-      "lines": 52,
+      "lines": 100,
       "imports": [
         "sqlite3",
         "unittest",
@@ -23957,6 +24169,31 @@
         {
           "name": "test_sourced_fees_settlement_and_reversals_preserve_history",
           "line": 41,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_microsecond_execution_order_beats_arrival_and_julian_rounding",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_net_requires_terminal_exact_final_fee_coverage_and_allocates_only_closed_units",
+          "line": 63,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_tied_opposite_fills_or_ambiguous_fee_totals_do_not_publish_profits",
+          "line": 81,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_reversed_reversal_cannot_restore_cash_with_missing_active_trade",
+          "line": 87,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_indistinguishable_priced_buy_lots_do_not_invent_partial_fifo_profit",
+          "line": 95,
           "kind": "FunctionDef"
         }
       ]
@@ -24222,6 +24459,43 @@
         {
           "name": "test_reads_still_use_the_general_host",
           "line": 171,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_broker_worker_fencing.py",
+      "lines": 52,
+      "imports": [
+        "unittest",
+        "unittest.mock",
+        "app",
+        "tests"
+      ],
+      "symbols": [
+        {
+          "name": "BrokerWriteFenceTest",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "stale",
+          "line": 15,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_stale_worker_cannot_post_fees_settle_change_stops_or_request_exit",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_sell_cannot_use_another_product_or_contract_inventory",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_stop_or_exit_write_never_commits_parent_transaction",
+          "line": 47,
           "kind": "FunctionDef"
         }
       ]
@@ -26343,7 +26617,7 @@
     },
     {
       "file": "tests/test_execution_capabilities.py",
-      "lines": 25,
+      "lines": 32,
       "imports": [
         "unittest",
         "unittest.mock",
@@ -26357,18 +26631,23 @@
           "kind": "ClassDef"
         },
         {
-          "name": "test_unsupported_segments_never_reach_broker_or_account_reads",
+          "name": "test_capabilities_do_not_advertise_unimplemented_paper_intraday_lifecycle",
           "line": 8,
           "kind": "FunctionDef"
         },
         {
-          "name": "test_malformed_quantity_and_side_are_refused_before_transport",
+          "name": "test_unsupported_segments_never_reach_broker_or_account_reads",
           "line": 15,
           "kind": "FunctionDef"
         },
         {
+          "name": "test_malformed_quantity_and_side_are_refused_before_transport",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "test_cash_transport_preserves_identity_and_absent_status_is_unknown",
-          "line": 21,
+          "line": 28,
           "kind": "FunctionDef"
         }
       ]
@@ -36209,6 +36488,115 @@
       ]
     },
     {
+      "file": "tests/test_portfolio_collector_wire.py",
+      "lines": 42,
+      "imports": [
+        "asyncio",
+        "json",
+        "pathlib",
+        "sqlite3",
+        "tempfile",
+        "unittest",
+        "unittest.mock",
+        "app",
+        "scripts",
+        "websockets.asyncio.server",
+        "websockets.exceptions"
+      ],
+      "symbols": [
+        {
+          "name": "PortfolioCollectorWireTest",
+          "line": 14,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "test_authenticated_binding_real_frames_durable_gap_no_book_changes",
+          "line": 15,
+          "kind": "AsyncFunctionDef"
+        },
+        {
+          "name": "send",
+          "line": 26,
+          "kind": "AsyncFunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_portfolio_stream.py",
+      "lines": 124,
+      "imports": [
+        "copy",
+        "json",
+        "sqlite3",
+        "unittest",
+        "unittest.mock",
+        "app",
+        "tests"
+      ],
+      "symbols": [
+        {
+          "name": "OwnedPortfolioStreamTest",
+          "line": 11,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "PortfolioStreamTransportTest",
+          "line": 113,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "connect",
+          "line": 17,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "event",
+          "line": 20,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_completed_trigger_survives_gap_and_restart_without_inventing_fill",
+          "line": 26,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_authenticated_connection_and_payload_identity_are_owner_bound",
+          "line": 42,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_expired_replaced_connections_and_ambiguous_children_refuse",
+          "line": 55,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_notifications_never_arm_or_free_inventory_and_originals_are_immutable",
+          "line": 66,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_order_notification_preceding_child_can_reconcile_exact_owned_fill",
+          "line": 79,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_changed_contract_and_malformed_quantity_never_attach",
+          "line": 94,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_conflicting_connection_owner_or_backward_clock_cannot_ingest",
+          "line": 104,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_only_authenticated_upstox_uri_and_profile_allowed",
+          "line": 114,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_portfolio_ui_render.py",
       "lines": 131,
       "imports": [
@@ -36795,6 +37183,95 @@
       ]
     },
     {
+      "file": "tests/test_protection_amendments.py",
+      "lines": 148,
+      "imports": [
+        "sqlite3",
+        "unittest",
+        "unittest.mock",
+        "app",
+        "tests",
+        "app"
+      ],
+      "symbols": [
+        {
+          "name": "NativeAmendmentTest",
+          "line": 9,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "NativeAmendmentTransportTest",
+          "line": 139,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "ready",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_reduction_needs_later_exact_evidence_and_survives_restart",
+          "line": 22,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_timeout_does_not_retry_and_trigger_race_keeps_original_sell_reserved",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_open_trigger_revoked_scope_unreconciled_or_pending_sell_never_modify",
+          "line": 54,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_late_ack_cannot_revert_exact_confirmed_reduction",
+          "line": 67,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_takeover_during_amendment_claim_preserves_unknown_without_retry",
+          "line": 78,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_cancelled_coverage_with_remaining_inventory_blocks_new_risk",
+          "line": 94,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_trigger_winning_reduction_is_cancelled_once_before_another_exit",
+          "line": 102,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_unknown_child_cancellation_never_retries_or_frees_inventory",
+          "line": 119,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_confirmed_cancel_after_quantity_reduction_does_not_stick_unknown",
+          "line": 129,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_exact_scheduled_single_payload_and_no_transport_retry",
+          "line": 140,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "observed_before_ack",
+          "line": 69,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "takeover",
+          "line": 82,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_protection_lifecycle.py",
       "lines": 191,
       "imports": [
@@ -36907,6 +37384,62 @@
         {
           "name": "test_single_sell_stop_payload_and_no_retry_on_timeout",
           "line": 180,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
+      "file": "tests/test_protection_races.py",
+      "lines": 76,
+      "imports": [
+        "unittest",
+        "app",
+        "tests"
+      ],
+      "symbols": [
+        {
+          "name": "ProtectionRaceTest",
+          "line": 8,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 9,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "sell",
+          "line": 16,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_worker_takeover_during_status_read_cannot_attach_exit",
+          "line": 23,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_partial_owned_exit_cannot_leave_oversized_stop_armed",
+          "line": 43,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_pending_exit_prevents_native_activation",
+          "line": 53,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_repeated_valid_status_refreshes_coverage_age",
+          "line": 61,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_disappearing_or_changed_child_cannot_release_sell_reservation",
+          "line": 68,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "late_status",
+          "line": 30,
           "kind": "FunctionDef"
         }
       ]
@@ -49855,9 +50388,94 @@
       ]
     },
     {
+      "name": "broker_stream_accounts",
+      "file": "app/portfolio_stream.py",
+      "line": 18,
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "account_hash",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "broker_stream_connections",
+      "file": "app/portfolio_stream.py",
+      "line": 20,
+      "columns": [
+        {
+          "name": "id",
+          "type": "TEXT"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "account_hash",
+          "type": "TEXT"
+        },
+        {
+          "name": "generation",
+          "type": "INTEGER"
+        },
+        {
+          "name": "started_at",
+          "type": "REAL"
+        },
+        {
+          "name": "expires_at",
+          "type": "REAL"
+        },
+        {
+          "name": "state",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
+      "name": "broker_stream_events",
+      "file": "app/portfolio_stream.py",
+      "line": 24,
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "connection_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "kind",
+          "type": "TEXT"
+        },
+        {
+          "name": "payload",
+          "type": "TEXT"
+        },
+        {
+          "name": "received_at",
+          "type": "REAL"
+        },
+        {
+          "name": "fingerprint",
+          "type": "TEXT"
+        }
+      ]
+    },
+    {
       "name": "protection_obligations",
       "file": "app/protection.py",
-      "line": 21,
+      "line": 25,
       "columns": [
         {
           "name": "entry_id",
@@ -49916,7 +50534,7 @@
     {
       "name": "protection_events",
       "file": "app/protection.py",
-      "line": 30,
+      "line": 37,
       "columns": [
         {
           "name": "id",
@@ -49928,6 +50546,72 @@
         },
         {
           "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "state",
+          "type": "TEXT"
+        },
+        {
+          "name": "detail",
+          "type": "TEXT"
+        },
+        {
+          "name": "observed_at",
+          "type": "REAL"
+        }
+      ]
+    },
+    {
+      "name": "native_amendment_intents",
+      "file": "app/protection_amendments.py",
+      "line": 13,
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "entry_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "user_id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "native_id",
+          "type": "TEXT"
+        },
+        {
+          "name": "from_quantity",
+          "type": "INTEGER"
+        },
+        {
+          "name": "to_quantity",
+          "type": "INTEGER"
+        },
+        {
+          "name": "stop",
+          "type": "REAL"
+        },
+        {
+          "name": "created_at",
+          "type": "REAL"
+        }
+      ]
+    },
+    {
+      "name": "native_amendment_events",
+      "file": "app/protection_amendments.py",
+      "line": 17,
+      "columns": [
+        {
+          "name": "id",
+          "type": "INTEGER"
+        },
+        {
+          "name": "amendment_id",
           "type": "INTEGER"
         },
         {
@@ -57715,6 +58399,11 @@
     },
     {
       "name": "V2_PAPER_DB",
+      "file": "scripts/broker_portfolio_feed.py",
+      "line": 77
+    },
+    {
+      "name": "V2_PAPER_DB",
       "file": "scripts/candle_ingest.py",
       "line": 38
     },
@@ -58362,6 +59051,22 @@
       }
     },
     {
+      "file": "deploy/opentrade-portfolio-feed.service",
+      "line": 1,
+      "launcher": "systemd",
+      "target": [
+        "scripts/broker_portfolio_feed.py"
+      ],
+      "fields": {
+        "Description": "OpenStocks authenticated read-only portfolio observations",
+        "After": "network-online.target opentrade.service",
+        "Wants": "network-online.target",
+        "Type": "simple",
+        "User": "ubuntu",
+        "Restart": "always"
+      }
+    },
+    {
       "file": "deploy/opentrade-screening.service",
       "line": 1,
       "launcher": "systemd",
@@ -58432,6 +59137,12 @@
       "line": 324,
       "launcher": "asyncio.create_task",
       "target": "_fetch_symbol"
+    },
+    {
+      "file": "scripts/broker_portfolio_feed.py",
+      "line": 63,
+      "launcher": "asyncio.create_task",
+      "target": "collect"
     },
     {
       "file": "scripts/v2_quote_feed.py",
@@ -59701,14 +60412,6 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "line": 64,
-      "names": [],
-      "fields": [
-        "instrument_key"
-      ]
-    },
-    {
-      "file": "app/broker_ledger.py",
       "line": 66,
       "names": [],
       "fields": [
@@ -59717,7 +60420,7 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "line": 91,
+      "line": 68,
       "names": [],
       "fields": [
         "instrument_key"
@@ -59725,7 +60428,15 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "line": 95,
+      "line": 93,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/broker_ledger.py",
+      "line": 97,
       "names": [],
       "fields": [
         "instrument_token"
@@ -59733,7 +60444,7 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "line": 110,
+      "line": 112,
       "names": [],
       "fields": [
         "instrument_key"
@@ -59741,7 +60452,7 @@
     },
     {
       "file": "app/broker_ledger.py",
-      "line": 183,
+      "line": 189,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60420,7 +61131,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 56,
+      "line": 57,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60428,7 +61139,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 59,
+      "line": 60,
       "names": [
         "NSE_EQ"
       ],
@@ -60438,7 +61149,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 64,
+      "line": 65,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60446,7 +61157,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 104,
+      "line": 105,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60454,7 +61165,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 106,
+      "line": 107,
       "names": [],
       "fields": [
         "instrument_key"
@@ -60462,7 +61173,7 @@
     },
     {
       "file": "app/execution_ports.py",
-      "line": 124,
+      "line": 129,
       "names": [
         "BSE"
       ],
@@ -61839,7 +62550,15 @@
     },
     {
       "file": "app/order_journal.py",
-      "line": 268,
+      "line": 208,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/order_journal.py",
+      "line": 270,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62008,6 +62727,23 @@
       "fields": []
     },
     {
+      "file": "app/portfolio_stream.py",
+      "line": 105,
+      "names": [],
+      "fields": [
+        "instrument_token",
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/portfolio_stream.py",
+      "line": 117,
+      "names": [],
+      "fields": [
+        "instrument_token"
+      ]
+    },
+    {
       "file": "app/preopen.py",
       "line": 1,
       "names": [
@@ -62057,7 +62793,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 23,
+      "line": 27,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62065,7 +62801,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 39,
+      "line": 46,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62073,7 +62809,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 42,
+      "line": 49,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62081,7 +62817,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 78,
+      "line": 85,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62089,7 +62825,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 100,
+      "line": 108,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62097,7 +62833,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 107,
+      "line": 117,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62105,7 +62841,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 115,
+      "line": 125,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62113,7 +62849,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 226,
+      "line": 242,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62121,7 +62857,23 @@
     },
     {
       "file": "app/protection.py",
-      "line": 259,
+      "line": 260,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 262,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection.py",
+      "line": 272,
       "names": [],
       "fields": [
         "instrument_token",
@@ -62130,7 +62882,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 270,
+      "line": 282,
       "names": [],
       "fields": [
         "expiry"
@@ -62138,7 +62890,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 277,
+      "line": 329,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62146,7 +62898,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 279,
+      "line": 331,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62154,7 +62906,7 @@
     },
     {
       "file": "app/protection.py",
-      "line": 282,
+      "line": 335,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62162,7 +62914,15 @@
     },
     {
       "file": "app/protection.py",
-      "line": 285,
+      "line": 338,
+      "names": [],
+      "fields": [
+        "instrument_key"
+      ]
+    },
+    {
+      "file": "app/protection_amendments.py",
+      "line": 97,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62187,7 +62947,7 @@
     },
     {
       "file": "app/schema_migrations.py",
-      "line": 84,
+      "line": 91,
       "names": [],
       "fields": [
         "instrument_key"
@@ -66420,6 +67180,10 @@
       "reason": "non-source/binary; name only"
     },
     {
+      "file": "reports/broker-protection-review-2026-10-07.md",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/dependencies/advisories.json",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -66633,8 +67397,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
-    "generated_at": "2026-10-07T05:26:04.279526+00:00",
+    "source_commit": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "generated_at": "2026-10-07T07:14:16.625725+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -66643,7 +67407,7 @@
     "AGENTS.md": "71f8aea0b72b5992a0f94824d91cb56b13e919b1a699f975e81d0d53add744e7",
     "BACKLOG.md": "2e12e8643a56ed5b21c9bd6562caf3991feb5deb74f9cfdf1a64f4b90900dd0c",
     "Dockerfile": "1f9d001f92129a44be59a2f1f40ec7f5cf88560ecf1a33d040e89fbd42d5295c",
-    "HANDOFF.md": "e5604638f85763035d6ee1777568a48ce8d708e59eda05e609f106c5c746dab2",
+    "HANDOFF.md": "d2aa6f060733ab4cec60fbed8215f32ed0330a383d2b5284eafb8c21cd3de892",
     "README.md": "0b54fb4b0dcf1b9d74de46d55482266989e39baed507bea5d64102ef9e1fffb6",
     "app/__init__.py": "f2612cd63ebdd791933240e7cdd80f931c4316a73bc02e8956e68137f6ba1ce8",
     "app/account.py": "f78c9df6e75511b73c5793047e1a20a362291b2bb547dd681e4ed96a712d6f93",
@@ -66658,10 +67422,10 @@
     "app/bars5m.py": "988a2a1f5fe24f6deb816b88523a31aa23ed6ce2f4ae063adec8ef4c6e9af7a1",
     "app/billing_ledger.py": "2cf7c4449ea651fdcd91242bff0406fa3a9aa14924672358002d1a22a2f4e1ae",
     "app/books.py": "3cf380de3bb3fc1e18539b4c1338c9eb5ba67fa3038eeb02d33bb5bd0564b7cd",
-    "app/broker.py": "05d36e1f4283dff322e99542107fd57b4b02f12a7f614c33e41dc7cb92ff2054",
+    "app/broker.py": "b866998cf2055ebe8e5a9e1f11a6fb05990ee4b58c375d1064c5d0f6cd53a313",
     "app/broker_access.py": "c0fafef2e8f1134689713c13d1720083c666dbef0313d750d81218895cd10c56",
-    "app/broker_ledger.py": "da66cd87785514a89b2421c6230fee32731df94936f85c3f49b23e888240f1ae",
-    "app/broker_reconciliation.py": "fa81283d7c6eb8f4e7e11aa3a1a290f514bb0fd8333c9acfc0db7dcc5763cec7",
+    "app/broker_ledger.py": "7e656effdae083697dfcdee52a09aee10992f567f9e60826540987d87221a474",
+    "app/broker_reconciliation.py": "52f2fdc483faaa3f4e703005da04587c2afc32c314086af67e68b58fae265bbd",
     "app/canonical_trade.py": "f83e9392074c19add0483d6a403e4f4964dcd0d839e2b0816c2509773dcf83d7",
     "app/catalogue_ingestion.py": "56415d848320094844b9f177f2095e86918302a50e0c231affdb5de5ae9f444e",
     "app/catalogue_refresh.py": "a064b62feb2a9f2cf75be888dba83b35661d0889f06ba9d3442b637b2486a817",
@@ -66682,7 +67446,7 @@
     "app/execution_contracts.py": "ae4f5e288f0fd27768ec39bed003258f2829936ca04388465c5c7d3d4ab8e5f1",
     "app/execution_events.py": "b06436ec19f1599b154987984ffc22c241c20c69358ba8537fc47d4a0b1a6afe",
     "app/execution_outbox.py": "ac66ddf6b6b86f75028ab4e5a7578db2ad27e6ab78d438d1df4dfebb6d1c240f",
-    "app/execution_ports.py": "2e9f1d4fedd02c2800c5681074c108569f80a5f8bc258f37141679e44aa56c88",
+    "app/execution_ports.py": "29dd447616676d1072224f7eea0c4445ba83f11a74fd68104198e954335f57e8",
     "app/exit_policy.py": "61adf5136ae16b339b89eff386d255a5279478cf327cb9c8d488d3c9e08a268f",
     "app/factor_investigation.py": "c0f9c3bd15eb915a0744016adf55ce70776f111e340d4c931a347f886f172222",
     "app/full_spectrum.py": "79eeb2f31d619e6267a50ea7f7fa3aedd8b6aaa164afc6cdcc2cfdcf0d3dc8b3",
@@ -66697,7 +67461,7 @@
     "app/jobs_health.py": "f2acc9c725790c221089351417e7bb07592c646809dbaea1cfe36cba8e06a520",
     "app/levels.py": "071c44109caea4a5bc12c8b84f8d29fbe33c07976c5d7fcfe5f6ececc21ea8d2",
     "app/live_release.py": "b56da105a45f478264d51d0b6116776c1de8c68b0f4ed6ff3f23a1a0d49491bf",
-    "app/live_trade.py": "fe133cfc5b24852fd5dc954041d18d89fd65ed5a73a66320f621f092fbfe4d1d",
+    "app/live_trade.py": "4389bddbf0917262ad34f77d236b908dc6e6972bd7e4d8c2b589a6fe9b33a034",
     "app/llm_brain.py": "89075c530608d3fcd26be04691ba275e2a2e158328d7cf465f4f285ed6ff7a81",
     "app/llm_policy.py": "32864c51df12d5c685af0e485a172e2d314181aaad4cb467b767571fef32b83c",
     "app/llm_usage.py": "42624da2f683d2bafcc00db62e2ed7a14c6226fb91eab1f10dc69afd5830bc7d",
@@ -66721,7 +67485,7 @@
     "app/opportunity_state.py": "7b32494cc31e0dba47ceb6ebe8f99ad3c42915580bebb8e5b43dd23eda5a8a02",
     "app/option_chain.py": "009a5b1a3ec7b386469cb95aaafd1154cf24af17f0998411acc19e72b28a0321",
     "app/options_intelligence.py": "ebceee47b73f0d4ade3dee7f9cb2e820cd7c1558e6c50f3f946dfb952da2538c",
-    "app/order_journal.py": "182621ef3332c5120c205855eb7a6bc58bc8b7938cf49dc21d0744f51887c2fb",
+    "app/order_journal.py": "4f437c552b2f7e321a779025baf0fce5f45713c241212788dd8cfe313a9e7a21",
     "app/order_router.py": "6f3c1d575ddfed821fb4ad60f53a1a73d22c7f2ac2ed8a12c01b4a509946ca39",
     "app/paper_broker.py": "a7230d0f00fe35f2b42de26e6c8725121ecec4067ffac303aadafe27c19f99be",
     "app/paper_exchange.py": "6be653aa689a2e2401dcfe6ab9474a085e7fa5f69d1b871baba5b0d532fa9375",
@@ -66730,10 +67494,12 @@
     "app/personal_performance.py": "36cc664423e4f5df0d088b5b4d588e12e67cd3529ea40110a4852463843b4f3b",
     "app/plans.py": "61d2252ca465d37a01235a4a222e773bebbe6c549838a6664cdbbeedebded4eb",
     "app/portfolio.py": "a681cd297bd23b5033297e71113f5f0f1eb7744cbff6c1fcc0060b7c807eaef4",
+    "app/portfolio_stream.py": "8e878ea67c9d86109fddf75d0b62f9db6461dd3328c36062d7cbfe441bd21791",
     "app/pre_catalyst_engine.py": "6eabeb37c7679ba8dec0c685ff85ffbb41da4832c891f9b5a2ab2a311ade4138",
     "app/preopen.py": "6de1e90f40bb4515b3b9d61ee7656d601526957bb06b6a6da005916c00aa0fd5",
     "app/price_action.py": "ff00867a315ec646cbcf4a488b9e0e015c68f5a2889994d098f772ba601846b2",
-    "app/protection.py": "6ecfba20372950125a6e172f82bd9ef83848a66ef09cddf175e171b20708a76c",
+    "app/protection.py": "201aff672861364e6d33f20e9b49ee23a389885381bf3353dba9c83ae1b76e77",
+    "app/protection_amendments.py": "9f8b4e1d6b2db4f1b73813cd85c8a53d85c5748b7bc3e7234eff073d7606911f",
     "app/rally_plan.py": "590cd04cd109bb860ddb45e6549bea80ec5cb2a6edcb47b022b845ecc4425add",
     "app/raw_entry_model.py": "defacb61d6e733fb45a5e462a85b1a5a02a198dbbe1f27f7965e635f3e1e6f0f",
     "app/recommendation.py": "bde40f427a817a048f2816b866a1305b26a03179138ec7a738ad6b948b6d1c1f",
@@ -66744,7 +67510,7 @@
     "app/request_context.py": "ee3bc252a3c3b0d972cb732e52d6e44bb8fcff9b964fdfa9b94601bd1a437069",
     "app/request_security.py": "f56d143c958d912e4c5a67944268fd6e92966c7f47803b8cf6ff5a6af4132777",
     "app/research_data.py": "2c70ec25d17130317b9e3a31b6ba652abfbb0edb453b768f0897ce2430492b9f",
-    "app/schema_migrations.py": "22b1ef38953f5ae066afc1dd56590479993aecb707e34d7f800df339c27230fa",
+    "app/schema_migrations.py": "209b87d64ad8761c9d8f1a2250a1059714f294d82bd6478a278af3ddf37036b4",
     "app/screening/__init__.py": "19385a317dd043fc1325cf805633775273bf33b0119fbd01cc4898e2e6a2f1d7",
     "app/screening/confirmation.py": "ff838d73232dcce0652d16ad617ee51e603539847850b78eada4b6f14aca69ed",
     "app/screening/plans.py": "bd0f2b86edf9436adbe5dae004a8398a64f324d1265c97cf7cbd4a4582e4dc23",
@@ -66789,7 +67555,7 @@
     "app/upgrade_rehearsal.py": "a83fc609aae4a80c9a8a0da3578d00518fdf0442792f3c8e4a1e1ba3f47560a3",
     "app/us_top_movers.py": "eccbbdd1002646f52d1a122bfac85cd30c2810b658b2ec1099348fab3fe95ec2",
     "app/v2_engine.py": "1d01c8450e19b27fc87c82426b09b3b2b3e7a29548b9e398b852318454a7ed6b",
-    "app/v2_live.py": "e1d62553d16e859ee301b6546c426f6f0bfb2829679d8dfe832d92eeee7e7162",
+    "app/v2_live.py": "3cfc29dfa9560ef12a1f3efe4b15c6719e2730073e0cd15c7f8479593c16c6c6",
     "app/v2_web.py": "453fcee8fdf38d7311ee008b3cfd381191e769c5732b4107f45c4d07a98a585b",
     "app/whatsapp.py": "d90427b62fe12201677c267609e73b6a7f5d013e3db0b56a115c006f460ae663",
     "app/worker_fencing.py": "df45afe21edad792792018f5e726d8d3f2dbfdc323872d58271fbfec15f50290",
@@ -66805,11 +67571,13 @@
     "deploy/opentrade-news.service": "baa8f8219bd8a272ad8758d2001e4937b2165679c318e219033b9dd4b5677861",
     "deploy/opentrade-news.timer": "058fad04cc8783e530879deaec67fabb3ee19af4f9c0a8df4c8b58184256c732",
     "deploy/opentrade-nse-ann.service": "a54b8bd3cad17f7a977d5e41e02bd50aa46942f34e897353665550a9f1617d3d",
+    "deploy/opentrade-portfolio-feed.service": "67d96cc86a6d89aca9276ad9a5f24de9fca7ce962067824cd0c89d86db5f0734",
     "deploy/opentrade-screening.service": "a279ffd5e6320b28c1a4a074273c11fae76f37027e58709ed3fc6c70dc90a90c",
     "deploy/opentrade-screening.timer": "f6d929c661b54cbbf7242cdb8d9aeb4ab44565ce07085c7128abd5af0ab93839",
     "deploy/opentrade-shareholding.service": "d32b06eacb8aaab5d72fc3c415cfd6396b8ef511605c55a15cbc61a00a1271ce",
     "deploy/opentrade-shareholding.timer": "ab8521dd00e768447a994ba64ffa1dd2bdb03425862c7c0f6a47231a47528353",
     "deploy/trading-agent.service": "2690c2ec20d551656c2aa296e6cbc87ae4be7aad27966e2f9c120189b43bc072",
+    "docs/broker-protection-recovery.md": "754899391971179bf3f767f045e6c18561559ed7e1b1c7a4d424a48a2a314929",
     "docs/equity_factor_research.md": "ac457cd2c8ce6f0e7fd4db670690fc6805d312b6250d8ae04f5641e7202f4a86",
     "docs/evidence_screen.md": "6e4c96a7287bd73952880b2d61777a5c4dbeca0dc7b6044e86089def30a7681f",
     "docs/idea-tracking.md": "afe21d4d03f2e62fe06d19594299d1c1912fd575ddf8abf7430af74065d02a07",
@@ -66839,6 +67607,7 @@
     "scripts/backup_db.py": "c40f71faafb67f4a9f7b84bf402ff8ecf254da13012523bc8373d7f495d34f0c",
     "scripts/bigmove_detector.py": "3ae6b3623bc3f130ecb41dfcff0628159eca159056282f7d434e4866f20685e4",
     "scripts/breakout_target_bt.py": "2e01797a32586d77bf5c168d39eec1d17846064b204d2aa0b41c7dbc58f1fe7c",
+    "scripts/broker_portfolio_feed.py": "3c89833b35332ef6076ff146c6feff6b75f4ff23dde472bf0a7c1522557ebe76",
     "scripts/btst_bt.py": "b7cacf9204e7bb06a9164a1a971527be49fb62862acbe8e7304968c61d188c0a",
     "scripts/candle_ingest.py": "dd05336296fbd70e3f0b22cac3a0e605daceb3ee00ad70725dc97813ba371423",
     "scripts/check_paper_readiness.py": "a7b8e7920795be5dfe8a983c5b210925c0b523829452f0ca18ff00ba0c199897",
@@ -66922,9 +67691,10 @@
     "tests/test_billing_atomicity.py": "53221ae443806363ba62c84f98d688adfbad562d15f5a8cdc6c27e977ab4a45b",
     "tests/test_breakeven_lock.py": "fccef3b9515713aa825efe3c54f480c54edf9f059befea3115498dab3e9447f0",
     "tests/test_broker.py": "6c083e19014452f6d5c628d44303caf8869cb8436318b5699455a7789986be04",
-    "tests/test_broker_ledger.py": "9e86880e5a955fc0c24caf1dc7197d31f8c3988803ad52ebd6642411c91743ab",
+    "tests/test_broker_ledger.py": "0947242f8f572ed6c3e0d8171b394ebcbbbbe90f14a7a11e1d156be44a93fc55",
     "tests/test_broker_privacy.py": "e42eb0b77d0181cb026be8e2ed2ff959ff9e73869696585a85c0c519844ab2c6",
     "tests/test_broker_wire.py": "af33c12a7cc287def5298464553b0c0014f9c5c23ddba466907ba189f5b577dc",
+    "tests/test_broker_worker_fencing.py": "81627f1d1e994a613907e4b49c52db8581ff1fe2a99dc5d8beb97c3e3ef54947",
     "tests/test_candle_ingest_freshness.py": "b831e5ac1d93881072a8cee440dae1f4bad71df2f0ff5ed8eb231efd58a8ba74",
     "tests/test_candle_job_completion.py": "0e25be80b52b7975d6fab3592552b7b94551b2ace4caadf43c935ddc8200b0ed",
     "tests/test_canonical_trade_contract.py": "cc902a0c75eef3f04bb98948a303673f922b89093e3c3146897eff0b0bc2c460",
@@ -66946,7 +67716,7 @@
     "tests/test_evidence_screen.py": "b94969e56367d1bee36bb003c17eb995f5747161f8898c207cb7ca0501dfd45f",
     "tests/test_executable_quotes.py": "8edecb29377b286be4c588403696c1c512a5bcf72c466c4fab2f0c26f3330be5",
     "tests/test_executable_replay_calibration.py": "817a0a27089f6032e4b766d64d3aa22655b32f98e554be0646a84b33756c7cb2",
-    "tests/test_execution_capabilities.py": "dcc12c016ec95994f965ff7a243878e0d11a2b17a4524b6ded6173639d12d606",
+    "tests/test_execution_capabilities.py": "3ef137563bb8401afecad4caa76d774709219fefc0413bbd544f74e5f5f88ed4",
     "tests/test_execution_contracts.py": "1f0482041c71892587d8aaf2e68662fb951c8b06b3be9c9cef212322936174b3",
     "tests/test_execution_events.py": "3396ea1210965e7f2318d6aa93b8c71baf2a421fa9f8105e86656df8683b5122",
     "tests/test_execution_hardening.py": "5dc89c833557474c97743f2a531b6415c50afe247eeb113beb1d52571aa764dc",
@@ -67025,12 +67795,16 @@
     "tests/test_plan_enforcement.py": "755c4032eff68d162fb414d23c4950dcf6074ce501409dce3065a5e59567c518",
     "tests/test_point_in_time_universe.py": "60bd4676feb7aab5c5d54d522472f1f05f3eda46f83832091cbaa49013cf890b",
     "tests/test_portfolio.py": "16ab65f29d7b7acfbd1285e863f34ff84f3ecbe9b2835801f7c235a2505e25cc",
+    "tests/test_portfolio_collector_wire.py": "ffe3f91c52c8ef9941cf2afccb529d8cf7a32baef14ab65e2d2d5c7aec6a21cf",
+    "tests/test_portfolio_stream.py": "83b706d80e88c7aa46dc96cb7009834d3df01339efae4bd17adb27ef9bbc2cbd",
     "tests/test_portfolio_ui_render.py": "2dfdc8dd25b7abddba1b1b906295c643cc353e37751579f478fa8ea765ce9ab2",
     "tests/test_position_exit_terms_ui.py": "282eed18b48cdf2c84f304e249011f9ee5930d1743be816bff6640b21fa44d8f",
     "tests/test_position_mark_refresh.py": "b1e8a917d1c044d1cd3c24ed4e91456d46dfaf9a4996b401615a02c6e38a1ddb",
     "tests/test_pre_catalyst_engine.py": "8577344a4ade4acee5dfea6b835fc92e156e4961f3a7bad481de7132d8bd1a53",
     "tests/test_preopen.py": "b64b47b0bcf6016cdf7e2e3386fa70959925550968e1a092eee700dede57bd92",
+    "tests/test_protection_amendments.py": "b8af3606bfe1724832da87eb7cffa7009ed61887af77c34f75b58fece17a145d",
     "tests/test_protection_lifecycle.py": "2e59659695e7843405c0b8fd1e4996f1c6bbbeb1bdb508ba2bc9e30a80e815f0",
+    "tests/test_protection_races.py": "dce5c7a2b057c5049819054d4e8b7497207ef5f833cfb79b31810cad99019b74",
     "tests/test_quality_forward_watch.py": "c1ef4131655dc0debc9f9d553d55b87a35ad72269cc960c6304878361847a66b",
     "tests/test_rally_plan.py": "4cfd82ecef45eaff96de505054cce23072f5155830436d199089262bc696d689",
     "tests/test_real_money_readiness.py": "81d9cfec486999f6c8435a2f900cf7156eb03bc50f51e510a4af36ad3b2598d2",
@@ -67049,7 +67823,7 @@
     "tests/test_reset_is_shared.py": "9a0ded709a31589086e7e3301ffe031ed7e2b0fba5d4f99fabf5cc24e3a889cf",
     "tests/test_retired_entry_controls.py": "781f861acd9972ca606e288d61994cf923284178f9b91671b6014e54cf8e379f",
     "tests/test_runtime_settings_preservation.py": "0761489e8713b1c9279d66995477df9e22e2ea5b609076f6af907e0b0b6d08e8",
-    "tests/test_schema_migrations.py": "7d8b89dc4b1a3b16014d775dbdeac657ef30d4f3d4c54df601030c7e92e49154",
+    "tests/test_schema_migrations.py": "efb3945fa544a6896729ce6c18c940ff3c734069a91da69d11b41b4e3885e0bc",
     "tests/test_shareholding_ingest.py": "341595b407de3699b6d76b0379faf98fe31426d6aaf692ee2a46658aa78be859",
     "tests/test_sleeve_cold_imports.py": "ea2eb6b78994dd204dc529b87df0d9d7dabdca6a2ab44a84baafcde4a39f47e9",
     "tests/test_sleeve_data_integrity.py": "f33aeafb2bc800556aaab5bacada937cd37cd21a6597c7270562cf5e07f5749b",

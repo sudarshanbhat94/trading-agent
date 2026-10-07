@@ -112,6 +112,8 @@ def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, chec
         status, reasons = "unknown", ["complete, unambiguous broker evidence unavailable"]
     ensure_schema(con)
     with atomic(con):
+        from .worker_fencing import require_current
+        require_current(con)
         payload = dict(reasons=sorted(set(reasons)),differences=differences,
                        managed_only=True,external_adopted=False,fee_certified=False)
         con.execute("INSERT INTO broker_reconciliation VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "

@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2463,
-    "passed": 2330,
+    "run": 2496,
+    "passed": 2363,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 19.592,
-    "note": "Frozen final source after reproduced closed-session exit and source timestamp precision repairs."
+    "seconds": 19.736,
+    "note": "Frozen final code after capability truth and indistinguishable priced-lot safety repairs; package-aware isolation."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -22,12 +22,13 @@
     "approved_paper_rehearsal": "4 passed; isolated",
     "approved_order_api": "3 passed",
     "account_ui": "4 passed",
-    "native_stop_fault_tests": "11 passed",
+    "native_stop_fault_tests": "Extended obligation/quantity/cancel/trigger/takeover/restart/identity tests pass; actual broker certification still open.",
     "journal_observations": "3 passed",
     "paper_exchange_simulation": "nse-top-depth-next-event-aon-v1",
     "catalogue_outage_protection": "production-cycle test passed",
     "persistent_login_guard": "6 invariant tests passed",
-    "runtime_setting_preservation": "No-op preserves all rows; genuine single-key change changes one row"
+    "runtime_setting_preservation": "No-op preserves all rows; genuine single-key change changes one row",
+    "secret_hygiene": "4 staged-public-source checks passed"
   },
   "initial_full_run": {
     "run": 2268,
@@ -391,5 +392,32 @@
     "actual_app_startup": true,
     "original_values_preserved": true,
     "source_document_scope": "All 407 app/scripts/tests files match the isolated OCI code archive; documentary follow-up records its observed result separately."
+  },
+  "previous_native_milestone_full_unittest": {
+    "run": 2463,
+    "passed": 2330,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.592,
+    "note": "Frozen final source after reproduced closed-session exit and source timestamp precision repairs."
+  },
+  "native_protection_review": {
+    "new_regressions": 32,
+    "capability_regression": 1,
+    "completed_child_recovery": "authenticated owner-bound observations; no notification fill inference",
+    "read_only_socket_wire": "actual localhost frames passed; book unchanged; zero submissions",
+    "live_certified": false,
+    "production_deployed": false,
+    "schema": "trading-schema-v6",
+    "report": "../broker-protection-review-2026-10-07.md",
+    "final_oci_source": {
+      "archive_sha256": "7776a04b7bf6e0d5c0f140ae8e945e9a6f0f6aabf902755e9e21278f115104b4",
+      "files": 441,
+      "fresh_v6_copy_migration": "passed",
+      "final_actual_app_boot": "passed; exact final source boot reverified all original values on the fresh migrated v6 copies",
+      "production_modified": false
+    }
   }
 }

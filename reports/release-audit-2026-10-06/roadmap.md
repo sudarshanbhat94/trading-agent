@@ -97,3 +97,5 @@ The current ₹10,000 paper epoch and publications stay intact. Additional paper
 ## Current delivered versus remaining scope
 
 [Exact implementation ledger](../release-plan-implementation-2026-10-06.md) records all delivered code and tests. All seven tasks above concern remaining work; storage, canonical gates, manual approval binding, actual fill events, native partial recovery, receipt atomicity, incident acknowledgement, streaming disabled restore and exact dependency locks are implemented locally. Production raw connectors, final actual net/margin settlement, broker/house convergence, complete product/security/ops and additional-route implementation remain substantial engineering. Strategy proof, permissions and relevant observed market sessions remain separate acceptance. The whole commercial programme is not complete.
+
+Native completed-child capture, claim-once reduction, oversized-child cancellation and final-fee-coverage net allocation are now implemented locally. Task 1 still requires automatic fee/settlement sourcing, margin/FX/all-adapter accounting and actual scoped broker/outage acceptance; it is not marked complete.

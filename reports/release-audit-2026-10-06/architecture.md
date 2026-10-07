@@ -197,3 +197,26 @@ erDiagram
 ## Implemented paper journal scope — October 7
 
 The current NSE delivery paper worker uses `paper_order_intents`, `paper_order_state`, immutable `paper_order_events` and per-side `paper_depth_usage`. Pending commitments are derived under the same serialized book/risk transaction; they affect available cash, slots, sleeve notional and stop risk, not recorded equity or P&L. House, manual and approved personal entries use this journal, with subscriber approval tied to the original allowlisted house fill. A later fresh sourced ask confirms a whole-order paper entry; a later bid confirms an owned exit. No partial-fill or queue model is claimed. Runtime protection runs before entry catalogue checks. Other rows/diagrams above remain the complete target, not a claim that all asset or broker contracts are implemented.
+
+## Native coverage and observations — schema v6
+
+Logical owned identities do not claim a broker certificate or cross-database SQL foreign key.
+
+```mermaid
+flowchart LR
+  P[Verified owner broker profile] --> C[Outbound authenticated socket / leased generation]
+  C --> E[Immutable normalized observations]
+  E --> B[Exact owned completed child binding]
+  B --> F[Actual order / trade / inventory reconciliation]
+  F --> O[Remaining owned inventory]
+  O --> N[Protection obligation / coverage quantity]
+  N --> A[Immutable authorized reduction intent]
+  A --> S[Scheduled native modification]
+  S --> R[Later exact quantity evidence]
+  R --> N
+  F --> L[Balanced actual-fill ledger]
+  T[Sourced final fee totals / covered quantities] --> L
+  L --> X[Closed-unit P&L or explicit unavailable]
+```
+
+Unknown reduction/cancellation outcomes retain the sell right. Notifications cannot arm a stop or supply a fill. A raced oversized child has a durable cancel claim and needs actual terminal evidence before another exit.

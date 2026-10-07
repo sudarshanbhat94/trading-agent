@@ -997,7 +997,7 @@ def sleeve_view(market="IN"):
 
 def ensure_schema(v2):
     from .schema_migrations import apply,TRADING_CONTRACT,validate_trading
-    apply(v2,'trading-schema-v5',dict(TRADING_CONTRACT,version=5,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache'),_ensure_schema,validate_trading)
+    apply(v2,'trading-schema-v6',dict(TRADING_CONTRACT,version=6,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache',native_coverage='owned-claim-once-reduction',portfolio_observations='authenticated-owner-stream'),_ensure_schema,validate_trading)
 
 
 def _ensure_schema(v2):

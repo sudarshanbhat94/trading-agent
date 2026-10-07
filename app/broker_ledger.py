@@ -48,6 +48,8 @@ def _amount(value):
 
 
 def _post(con,uid,broker,key,kind,data,postings,now):
+    from .worker_fencing import require_current
+    require_current(con)
     if not con.in_transaction:raise RuntimeError('Accounting requires serialized transaction')
     if type(uid) is not int or uid<1 or not key or not broker or not data.get('source'):
         raise ValueError('Owned and sourced accounting identity required')
@@ -123,18 +125,21 @@ def ingest_trades(con,uid,trades,*,broker='upstox',now=None):
         return inserted
 
 
-def record_fee(con,uid,order_id,reference,amount,*,source,occurred_at,broker='upstox',now=None):
+def record_fee(con,uid,order_id,reference,amount,*,source,occurred_at,broker='upstox',now=None,covered_quantity=None):
     """One immutable total fee assessment per sourced reference, never estimated."""
     now=now or datetime.now(timezone.utc)
     if not isinstance(reference,str) or not reference.strip() or _time(occurred_at)>now:
         raise ValueError('Sourced fee identity/date required')
     if isinstance(amount,bool):raise ValueError('Invalid fee amount')
+    if covered_quantity is not None and (type(covered_quantity) is not int or covered_quantity<1):
+        raise ValueError('Sourced final fee coverage requires positive whole quantity')
     amount=_amount(amount) if amount!=0 else Decimal(0)
     ensure_schema(con)
     with atomic(con):
         if not con.execute('SELECT 1 FROM v2_live_orders WHERE user_id=? AND broker_order_id=?',(uid,order_id)).fetchone():
             raise ValueError('Fee belongs to an unknown account order')
         data=dict(order_id=order_id,currency='INR',source=source,occurred_at=occurred_at,amount=str(amount))
+        if covered_quantity is not None:data['covered_quantity']=covered_quantity
         return _post(con,uid,broker,'fee:'+reference,'FEE',data,{'fees':minor(amount),'trade_payable':-minor(amount)},now)[0]
 
 
@@ -162,9 +167,10 @@ def reverse(con,uid,event_id,reference,*,source,occurred_at,broker='upstox',now=
     now=now or datetime.now(timezone.utc)
     if not reference or _time(occurred_at)>now:raise ValueError('Sourced correction required')
     with atomic(con):
-        row=con.execute('SELECT currency FROM broker_ledger_events WHERE id=? AND user_id=? AND broker=?',
+        row=con.execute('SELECT currency,kind FROM broker_ledger_events WHERE id=? AND user_id=? AND broker=?',
                         (event_id,uid,broker)).fetchone()
         if not row:raise ValueError('Unknown owned correction target')
+        if row[1]=='REVERSAL':raise ValueError('Reversals cannot themselves be reversed; append sourced replacement evidence')
         if con.execute("SELECT 1 FROM broker_ledger_events WHERE user_id=? AND broker=? AND kind='REVERSAL' "
                        "AND json_extract(payload,'$.reverses')=?",(uid,broker,event_id)).fetchone():
             raise ValueError('Event already reversed')
@@ -180,22 +186,52 @@ def report(con,uid,broker='upstox'):
     # FIFO gross outcomes remain separate from unsourced final charges.
     from collections import defaultdict,deque
     lots=defaultdict(deque);gross=Decimal(0);closed=0;oversold=False
-    fills=con.execute("SELECT instrument_key,product,side,quantity,price FROM broker_ledger_events e WHERE user_id=? AND broker=? "
+    fills=con.execute("SELECT instrument_key,product,side,quantity,price,order_id,occurred_at,id FROM broker_ledger_events e WHERE user_id=? AND broker=? "
                       "AND kind='FILL' AND NOT EXISTS (SELECT 1 FROM broker_ledger_events r WHERE r.user_id=e.user_id "
                       "AND r.broker=e.broker AND r.kind='REVERSAL' AND json_extract(r.payload,'$.reverses')=e.id) "
-                      "ORDER BY julianday(occurred_at),id",(uid,broker))
-    for key,product,side,qty,px in fills:
+                      "ORDER BY id",(uid,broker)).fetchall()
+    # SQLite Julian days round close timestamps. Arrival order is not execution
+    # order: sort the original aware times at full precision, including offsets.
+    fills.sort(key=lambda r:(_time(r[6]),r[7]))
+    totals=defaultdict(int);closed_by_order=defaultdict(int);times=defaultdict(set)
+    for key,product,side,qty,px,oid,ts,_ in fills:
+        totals[oid]+=qty;times[(key,product,_time(ts))].add((side,str(Decimal(px).normalize()),oid))
+    # Equal buy times can also change which priced/fee-bearing lot is closed.
+    # Receipt IDs do not prove order within one exchange timestamp.
+    ambiguous=any(len({side for side,_,_ in observations})>1 or
+                  len({(price,oid) for side,price,oid in observations if side=='BUY'})>1
+                  for observations in times.values())
+    for key,product,side,qty,px,oid,_,_ in fills:
         px=Decimal(px);queue=lots[(key,product)]
-        if side=='BUY':queue.append([qty,px]);continue
+        if side=='BUY':queue.append([qty,px,oid]);continue
         remaining=qty
         while remaining and queue:
             taken=min(remaining,queue[0][0]);gross+=taken*(px-queue[0][1]);closed+=taken
+            closed_by_order[queue[0][2]]+=taken;closed_by_order[oid]+=taken
             remaining-=taken;queue[0][0]-=taken
             if not queue[0][0]:queue.popleft()
         if remaining:oversold=True
+    fees=defaultdict(list)
+    for oid,payload, in con.execute("SELECT order_id,payload FROM broker_ledger_events e WHERE user_id=? AND broker=? AND kind='FEE' "
+                      "AND NOT EXISTS (SELECT 1 FROM broker_ledger_events r WHERE r.user_id=e.user_id AND r.broker=e.broker "
+                      "AND r.kind='REVERSAL' AND json_extract(r.payload,'$.reverses')=e.id)",(uid,broker)):
+        fees[oid].append(json.loads(payload))
+    missing=[];allocated=0
+    for oid,quantity in closed_by_order.items():
+        order=con.execute('SELECT status,filled_qty FROM v2_live_orders WHERE user_id=? AND broker_order_id=?',(uid,oid)).fetchall()
+        assessments=fees[oid]
+        if len(assessments)!=1 or assessments[0].get('covered_quantity')!=totals[oid] or len(order)!=1 or \
+                order[0][0] not in {'filled','cancelled','rejected'} or order[0][1]!=totals[oid]:
+            missing.append(oid);continue
+        # Allocate each final total once, in paise. The open share portion of
+        # an entry keeps its own fee cost; it is not expensed twice on exits.
+        allocated+=minor(assessments[0]['amount'])*quantity//totals[oid]
+    net=None if oversold or ambiguous or missing else minor(gross)-allocated
     return dict(scope='actual-owned-broker-accounting',broker=broker,currency='INR',balances_minor=balances,
                 events_by_kind=counts,balanced=sum(balances.values())==0,available_margin=None,
-                realised_gross_minor=None if oversold else minor(gross),closed_units=closed,
-                realised_net_minor=None,inventory_consistent=not oversold,
+                realised_gross_minor=None if oversold or ambiguous else minor(gross),closed_units=closed,
+                realised_net_minor=net,inventory_consistent=not oversold,
+                execution_ordering_ambiguous=ambiguous,net_fee_coverage_missing_orders=sorted(missing),
+                realised_fee_allocation_minor=None if missing else allocated,
                 fee_coverage='sourced-assessments-only',settlement_coverage='sourced-statements-only',
                 certified=False,note='Trade-date postings are not spendable broker cash or certified net P&L')

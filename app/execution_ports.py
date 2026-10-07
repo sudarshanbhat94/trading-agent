@@ -49,6 +49,7 @@ class BrokerPort(Protocol):
                    *, product: str, stop: float) -> dict: ...
     def protection_status(self, user_id: int, protection_id: str) -> list: ...
     def cancel_protection(self, user_id: int, protection_id: str) -> dict: ...
+    def modify_protection(self, user_id: int, protection_id: str, *, quantity: int, stop: float) -> dict: ...
 
 
 class UpstoxPort:
@@ -113,14 +114,18 @@ class UpstoxPort:
         from . import broker
         return broker.cancel_protection(user_id,protection_id)
 
+    def modify_protection(self,user_id,protection_id,*,quantity,stop):
+        from . import broker
+        return broker.modify_protection(user_id,protection_id,quantity=quantity,stop=stop)
+
 
 def capability_report():
     from .angelone_port import capabilities as angel_capabilities
     return dict(routes=[dict(broker=r.broker,venue=r.venue,segment=r.segment,kind=r.kind,
                              product=r.product,order_type=r.order_type,validity=r.validity,
-                             implementation=r.enabled,live_certified=False,
+                             implementation=r.enabled and (r.broker!='paper' or r.product=='D'),live_certified=False,
                              native_protection=r.native_protection) for r in ROUTES],
                 additional_adapters=[angel_capabilities()],
-                unsupported=["BSE execution", "US execution adapter", "futures", "options",
+                unsupported=["paper intraday order lifecycle", "BSE execution", "US execution adapter", "futures", "options",
                              "currency", "commodities", "multi-leg", "Angel One", "Zerodha", "Dhan"],
-                note="Instrument discovery is broader than certified execution. Live release remains blocked.")
+                note="Paper approved-order orchestration implements delivery only; lower-level prototypes do not enable intraday orders. Instrument discovery is broader than certified execution. Live release remains blocked.")

@@ -1,0 +1,23 @@
+[Unit]
+Description=OpenStocks authenticated read-only portfolio observations
+After=network-online.target opentrade.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/broker_portfolio_feed.py --loop
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/opentrade/var
+
+[Install]
+WantedBy=multi-user.target
