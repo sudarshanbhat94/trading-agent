@@ -57,7 +57,7 @@ def test_profitable_t3_does_not_justify_a_loss_making_t1():
 
 def test_new_plans_freeze_a_precise_forward_policy():
     p=plans.shortlist(screen(1),book(),now=NOW)['ideas'][0]
-    assert p['model_version']=='conditional-pullback-v2' and p['confirmation_policy']==c.POLICY
+    assert p['model_version']=='conditional-pullback-v3' and p['confirmation_policy']==c.POLICY
     assert all(value>0 for value in p['estimated_net_at_targets'])
     assert '1.5x' in p['buy_condition'] and not p['actionable']
 
@@ -154,8 +154,13 @@ def test_tracking_ui_shows_machine_checks_gap_and_recorded_legacy_exit(tmp_path)
     assert 'matching index observations unavailable' in result['html']
 
 
-def test_research_cycle_records_replayable_checks_without_writing_paper_book(tmp_path):
+@pytest.mark.parametrize('model',['conditional-pullback-v2','conditional-pullback-v3'])
+def test_research_cycle_records_replayable_checks_without_writing_paper_book(tmp_path,model):
     p,s,b,q,ctx,now=confirmation_fixture();p['qty']=16;p['stop']=96
+    p['model_version']=model
+    if model=='conditional-pullback-v3':
+        from app.screening.selection import POLICY
+        p['selection_policy']=dict(POLICY)
     market=tmp_path/'market.db';paper=tmp_path/'v2_paper.db';tracker=tmp_path/'tracker.db'
     con=sqlite3.connect(market)
     con.execute('CREATE TABLE latest_quotes(symbol TEXT,price REAL,ts TEXT,source TEXT)')
@@ -170,7 +175,13 @@ def test_research_cycle_records_replayable_checks_without_writing_paper_book(tmp
     touch=datetime(2026,10,5,4,tzinfo=timezone.utc)
     t.publish(tracker,2,[p],issued_at=touch.isoformat(),now=touch)
     t.observe(tracker,{'TEST':dict(q,ts=touch.isoformat())},touch.isoformat())
-    screen=dict(price_asof='2026-10-05',equities=[dict(symbol='TEST',flags=[],news={'checked_at':now.isoformat()})])
+    if model=='conditional-pullback-v3':
+        from tests.test_stock_plans import screen as evidence_fixture
+        screen=evidence_fixture(1);screen['price_asof']='2026-10-05'
+        screen['equities'][0].update(symbol='TEST',news={'checked_at':now.isoformat()})
+        screen['equities'][0]['participation']['session']=screen['price_asof']
+    else:
+        screen=dict(price_asof='2026-10-05',equities=[dict(symbol='TEST',flags=[],news={'checked_at':now.isoformat()})])
     regime=dict(regime='ON',asof='2026-10-05',cycle_date='2026-10-06')
     before=hashlib.sha256(paper.read_bytes()).digest()
     assert c.refresh(market,tracker,paper,screen,regime,now)==1

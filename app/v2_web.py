@@ -5465,7 +5465,8 @@ function renderStockPlans(p){
   +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
   +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
   +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
-  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' qualifying plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<p class=mut>At most '+esc(p.max_ideas==null?3:p.max_ideas)+' ideas, one per sector. No daily quota; some sessions have none.</p>'
   +'<div class=ig-plan-grid id=ideaCards '+(IDEA_UI.view=='tracking'?'hidden':'')+'>'+ideaCards(p)+'</div><div id=ideaTrackingPanel '+(IDEA_UI.view=='tracking'?'':'hidden')+'>'+renderIdeaTracking(p.tracking)+'</div>'
   +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
 }
@@ -5481,9 +5482,14 @@ function ideaFiltered(p){
 }
 function ideaCards(p){
  var rows=ideaFiltered(p);
- if(!rows.length)return '<div class=ideas-empty><b>'+(IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
-  +esc(p.book_error||(IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector. Incomplete evidence and account limits can reduce the shortlist.'))+'</p>'
-  +'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button></div>';
+ if(!rows.length){
+  var noSetups=!(p.ideas||[]).length;
+  var reasons=Array.from(new Set((p.rejected||[]).map(function(r){return r.reason;})));
+  return '<div class=ideas-empty><b>'+(noSetups?'No qualifying setups':IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
+   +esc(p.book_error||(noSetups?'No stock currently passes all evidence, participation, reward and account checks. We do not fill the list with weaker ideas.':IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector.'))+'</p>'
+   +(noSetups&&reasons.length?'<details><summary>Why ideas are waiting</summary><ul>'+reasons.map(function(r){return '<li>'+esc(r)+'</li>';}).join('')+'</ul></details>':'')
+   +(!noSetups?'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button>':'')+'</div>';
+ }
  return rows.map(function(r){
   var saved=(p.watchlisted||[]).includes(r.symbol),status=ideaStatus(r),m=r.evidence.metrics||{};
   function level(label,value,cls){return '<div><span>'+label+'</span><b class="'+(cls||'')+'">'+ideaMoney(value)+'</b></div>';}
@@ -5494,6 +5500,7 @@ function ideaCards(p){
    +'<div class=idea-entry><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
    +'<div class=idea-levels>'+level('Stop-loss',r.stop,'dn')+level('Target 1',r.t1,'up')+level('Target 2',r.t2,'up')+level('Target 3',r.t3,'up')+'</div>'
    +'<div class=idea-allocation><div><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b><span>'+ideaMoney(r.notional)+' allocation</span></div><div><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b><span>Estimated stop loss</span></div><div><b>4–8 weeks</b><span>Planning horizon</span></div></div>'
+   +'<p class=mut>Final-target net scenario '+ideaMoney(r.estimated_net_at_targets[2])+' · '+esc(r.net_r_at_targets[2])+'R after costs; not a forecast.</p>'
    +'<div class=idea-observation>'+ideaTrackingBadge(r.tracking)+'</div>'
    +'<div class=idea-thesis><span>WHY THIS STOCK</span><p>'+esc(r.why)+'</p></div>'
    +'<div class=idea-card-actions><button class=idea-secondary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,false)">View plan</button>'
@@ -5508,7 +5515,7 @@ function ideaRepaint(){
  var session=document.getElementById('ideaMarketSession');if(session)session.textContent=p.tracking&&p.tracking.status!='ok'?'Quote tracking unavailable':p.market_open?'Market open · fresh quotes required':'Market closed · last close shown';
  var filters=document.getElementById('ideaFilters');if(filters)filters.hidden=IDEA_UI.view=='tracking';
  var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
- var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
+ var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' qualifying plans · prices through '+p.price_asof;
  document.querySelectorAll('[data-idea-view]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.ideaView==IDEA_UI.view);});
 }
 function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();if(v=='tracking')ideaRefreshTracking();}
@@ -5545,7 +5552,9 @@ function ideaOpenPlan(sym,review){
   +'. Net reward / estimated stop loss: '+r.net_r_at_targets.map(function(v){return v+'R';}).join(' / ')+'. Assumes a full exit at each scenario, after fees and 0.2% slippage each way. Gaps can increase the loss.</p></div>'
   +'<div class=idea-dialog-section><h3>'+(review?'Buy eligibility':'Entry &amp; invalidation')+'</h3>'
   +(review?checks.map(function(c){return '<div class=idea-check><span class="'+(c[1]?'up':'mut')+'">'+(c[1]?'✓':'○')+'</span><div><b>'+c[0]+'</b><p>'+esc(c[2])+'</p></div></div>';}).join(''):'<p>'+esc(r.buy_condition)+'.</p><p>'+esc(r.invalidation)+'.</p><p>'+esc(r.horizon)+'.</p>')+'</div>'
-  +'<details class=idea-dialog-section><summary>Research &amp; source details</summary><p>'+esc(r.why)+'. Research score '+r.score+'/100; not a win probability.</p><p>ROE '+esc(f.roe_pct)+'% · delivery '+esc(v.delivery_pct)+'% · earnings period '+esc(f.period_end||'unavailable')+'. '+esc(f.reliability||'')+'</p><p>Official filings checked '+esc(n.checked_at||'unavailable')+'. News and earnings evidence are in the full evidence panel below the shortlist.</p></details>'
+  +'<details class=idea-dialog-section><summary>Research &amp; source details</summary><p>'+esc(r.why)+'. Research score '+r.score+'/100; not a win probability.</p>'
+  +(r.selection_policy?'<p>Selection '+esc(r.selection_policy.version)+': ROE ≥'+esc(r.selection_policy.min_roe_pct)+'%, debt/equity ≤'+esc(r.selection_policy.max_debt_equity)+', cash conversion ≥'+esc(r.selection_policy.min_cash_conversion)+', consistently profitable years ≥'+esc(r.selection_policy.min_earnings_years)+', volume ≥'+esc(r.selection_policy.min_relative_volume)+'x and delivery above average. Final-target net reward must cover estimated stop loss. This policy still needs independent validation.</p>':'')
+  +'<p>ROE '+esc(f.roe_pct)+'% · delivery '+esc(v.delivery_pct)+'% · earnings period '+esc(f.period_end||'unavailable')+'. '+esc(f.reliability||'')+'</p><p>Official filings checked '+esc(n.checked_at||'unavailable')+'. News and earnings evidence are in the full evidence panel below the shortlist.</p></details>'
   +'<div class=idea-dialog-footer>'+(review?'<button class=idea-primary type=button disabled>Buy unavailable · research plan</button><p>This review submits no order. The manual Buy flow has separate exit rules and cannot execute this plan.</p>':'<button class=idea-primary type=button data-symbol="'+esc(sym)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy eligibility →</button>')+'</div>';
  document.getElementById('ideaDialogBody').innerHTML=html;
  var dialog=document.getElementById('ideaPlanDialog');if(!dialog.open)dialog.showModal();
@@ -5555,7 +5564,7 @@ function ideaTrackingStatus(s){return ({WAITING:'Waiting for entry',ZONE_TOUCHED
 function ideaTrackingBadge(r){return r?'<span>'+ideaTrackingStatus(r.status)+'</span><small>Tracking since '+ideaTime(r.issued_at)+' · '+r.samples+' quotes'+(r.gaps?' · '+r.gaps+' gaps':'')+'</small>':'<span>Tracking not available</span><small>Reload to check publication capture.</small>';}
 function ideaConfirmationHtml(r){
  var a=r.confirmation;
- if(!a)return '<p>Confirmed-entry model: '+(r.plan&&r.plan.model_version=='conditional-pullback-v2'?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
+ if(!a)return '<p>Confirmed-entry model: '+(r.plan&&['conditional-pullback-v2','conditional-pullback-v3'].includes(r.plan.model_version)?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
  return '<div class=idea-confirmation><b>Confirmed-entry research · '+esc(a.model_version)+'</b><p>'+esc(a.reason)+' · checked '+ideaTime(a.checked_at)+(a.fresh?'':' · historical assessment')+'. Execution remains unpromoted.</p>'
  +'<ul>'+(a.checks||[]).map(function(c){return '<li>'+ (c.passed?'✓ ':'○ ')+esc(c.reason)+'</li>';}).join('')+'</ul></div>';
 }
@@ -5680,7 +5689,7 @@ function renderIdeas(d){
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
  var st=d.stats||{},dx=dec.diagnostics||{},preview=d.stock_plans;
- document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Your stock shortlist</h1><p>Entry levels, exit scenarios and risk, sized for your paper book.</p></div>'
+ document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Selective stock ideas</h1><p>Only qualifying setups, with entry levels, exit scenarios and risk sized for your paper book.</p></div>'
   +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':dec.regime=='OFF'?'Entries paused':'Regime '+(dec.regime||'unavailable'))+'</small></div></div>' :!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'

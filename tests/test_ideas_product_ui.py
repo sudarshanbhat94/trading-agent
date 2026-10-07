@@ -53,6 +53,25 @@ def test_search_sector_saved_views_and_empty_state(tmp_path):
     assert 'No matching ideas' in result['empty']
 
 
+def test_no_qualifying_setup_explains_rejection_without_a_daily_quota(tmp_path):
+    data=screen(1);data['equities'][0]['metrics']['relative_volume']=1
+    preview=shortlist(data,book(),now=NOW)
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans)}));",preview)
+    assert 'No qualifying setups' in result['html']
+    assert 'No daily quota; some sessions have none' in result['html']
+    assert 'Participation gate failed' in result['html']
+    assert 'Try another search' not in result['html'] and 'Show all ideas' not in result['html']
+    assert '<article' not in result['html']
+
+
+def test_card_exposes_after_cost_scenario_and_v3_tracks_confirmation(tmp_path):
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans),confirmation:ideaConfirmationHtml({plan:IDEAS.stock_plans.ideas[0]})}));")
+    assert result['html'].count('<article')==3
+    assert 'Final-target net scenario' in result['html'] and 'after costs; not a forecast' in result['html']
+    assert 'waiting for the next evidence check' in result['confirmation']
+    assert 'legacy first-touch' not in result['confirmation']
+
+
 def test_failed_save_keeps_previous_state_and_success_can_add_and_remove(tmp_path):
     result=run_js(tmp_path,"""
     const calls=[];let success=false;

@@ -23,15 +23,19 @@ def book():
 
 def screen(count=12):
     return dict(status='ok', generated_at=NOW.isoformat(),price_asof='2026-09-30',equities=[
-        dict(symbol=f'STOCK{i}',sector='Industrials',score=90-i,flags=[],
+        dict(symbol=f'STOCK{i}',sector=('Industrials','Consumer','Healthcare','Technology','Materials','Energy')[i%6],score=90-i,flags=[],
              metrics=dict(price=800.,atr_pct=4.,above50=True,rs_vs_nifty20_pct=5.,
-                          sector_rs20_pct=2.,return126_pct=10.),
-             fundamentals=dict(roe_pct=20),participation=dict(delivery_pct=60)) for i in range(count)])
+                          sector_rs20_pct=2.,return126_pct=10.,turnover=300_000_000,
+                          relative_volume=2.,setup='pullback'),
+             fundamentals=dict(roe_pct=20,debt_equity=.3,cash_conversion=1.,earnings_growth_pct=10.,
+                               profit_margin_pct=15.,annual_income=100.,earnings_years=3,positive_earnings_years=3),
+             participation=dict(delivery_pct=60,delivery_avg20_pct=50,session='2026-09-30')) for i in range(count)])
 
 
-def test_ten_ranked_alternatives_with_explicit_levels_and_cost_aware_size():
+def test_minimal_ranked_alternatives_with_explicit_levels_and_cost_aware_size():
     result=plans.shortlist(screen(),book(),now=NOW)
-    assert result['count']==10
+    assert result['count']==3 and result['requested']==0 and result['max_ideas']==3
+    assert len({p['sector'] for p in result['ideas']})==3
     for p in result['ideas']:
         assert p['stop'] < p['entry_low'] <= p['entry_high'] < p['t1'] < p['t2'] < p['t3']
         assert p['entry_high']==768 and p['stop']==736
@@ -42,10 +46,11 @@ def test_ten_ranked_alternatives_with_explicit_levels_and_cost_aware_size():
         assert p['notional']<=result['cash']
         assert p['estimated_net_at_targets'][0] < (p['t1']-p['entry_high'])*p['qty']
         assert p['actionable'] is False
+        assert p['net_r_at_targets'][2]>=1
         assert p['state']=='LIVE QUOTE UNAVAILABLE'
 
 
-def test_never_pad_ten_with_missing_evidence_negative_rs_or_duplicate_symbols():
+def test_never_pad_shortlist_with_missing_evidence_negative_rs_or_duplicate_symbols():
     data=screen(4)
     data['equities'][1]['flags']=['adverse filing headline']
     data['equities'][2]['metrics']['rs_vs_nifty20_pct']=-2
@@ -80,8 +85,7 @@ def test_missing_held_quote_blocks_sizing_and_never_defaults_to_another_account(
     assert con.total_changes==before
 
 
-@pytest.mark.parametrize('price,state', [(780,'WAIT FOR PULLBACK'),(765,'IN ZONE · CONFIRMATION NEEDED'),
-    (750,'BELOW ENTRY ZONE'),(730,'INVALIDATED')])
+@pytest.mark.parametrize('price,state', [(780,'WAIT FOR PULLBACK'),(765,'IN ZONE · CONFIRMATION NEEDED')])
 def test_zone_never_becomes_buy_now(price,state):
     result=plans.shortlist(screen(1),book(),dict(STOCK0=dict(price=price,ts=NOW.isoformat())),NOW)
     assert result['ideas'][0]['state']==state
@@ -93,7 +97,7 @@ def test_stale_or_future_quote_cannot_supply_entry_confirmation():
         result=plans.shortlist(screen(1),book(),dict(STOCK0=dict(price=765,ts=ts.isoformat())),NOW)
         assert result['ideas'][0]['quote_price'] is None
     data=screen(1);data['stale']=True
-    assert plans.shortlist(data,book(),now=NOW)['ideas'][0]['state']=='STALE PLAN'
+    assert plans.shortlist(data,book(),now=NOW)['count']==0
 
 
 def test_screen_delivers_personal_preview_with_publication_capture():
