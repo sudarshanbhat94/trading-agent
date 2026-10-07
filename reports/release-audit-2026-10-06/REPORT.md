@@ -10,7 +10,7 @@ Original audit `b588ffdca0e0309500a6bc0e74699d5c1c586c2e`; latest implementation
 
 Read-only production evidence from 7 October at 04:13 UTC: build `2b300b4e7de90157362f104bf3654de7cde6215e`, service active; user 2 capital/cash/equity ₹10,000, zero positions; epoch `2026-09-22T13:34:11.273061+00:00`. Forward protocol SHA-256 `1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2`. Peak/drawdown were not queried. This is a dated observation, not a deployed repair or browser-visible production assurance.
 
-The current static inventory contains 148 app modules (89,086 lines), 80 scripts, 185 test modules, 163 decorated routes, 30 model declarations, 196 SQL declaration sites, 287 config fields, 320 unique environment **names**, 41 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
+The current static inventory contains 148 app modules (89,571 lines), 80 scripts, 185 test modules, 163 decorated routes, 30 model declarations, 196 SQL declaration sites, 287 config fields, 320 unique environment **names**, 41 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
 
 ## A. Readiness scores and top risks
 

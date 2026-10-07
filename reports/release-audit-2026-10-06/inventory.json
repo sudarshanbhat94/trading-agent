@@ -228,6 +228,7 @@
     "reports/release-audit-2026-10-06/key-diffs.patch",
     "reports/release-audit-2026-10-06/native-key-diffs.patch",
     "reports/release-audit-2026-10-06/next-session-key-diffs.patch",
+    "reports/release-audit-2026-10-06/official-research-key-diffs.patch",
     "reports/release-audit-2026-10-06/quote-key-diffs.patch",
     "reports/release-audit-2026-10-06/release-evidence.json",
     "reports/release-audit-2026-10-06/release-gate-result.json",
@@ -68154,6 +68155,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/official-research-key-diffs.patch",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/quote-key-diffs.patch",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -68243,9 +68248,9 @@
     }
   ],
   "baseline": {
-    "source_commit": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
-    "generated_at": "2026-10-07T10:42:54.505481+00:00",
-    "dirty_source": true,
+    "source_commit": "424d7b475cebefb83aeed94156cb6c9cd93deaf8",
+    "generated_at": "2026-10-07T11:01:39.637375+00:00",
+    "dirty_source": false,
     "coverage": "static declarations; semantic review recorded separately"
   },
   "source_hashes": {

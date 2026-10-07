@@ -30,7 +30,7 @@ Read-only production snapshot dated 7 October retains build `2b300b4`, active se
 
 | Phase | Delivered locally | Remaining engineering | Separate acceptance |
 |---|---|---|---|
-| 0 safety | 69 finding records; targeted risk/ownership/legacy/security/accounting regressions; F54 exact historical crash repaired | Full semantic review of every inventoried legacy module; residual route/security boundaries | Qualified legal/data classification; deployed revalidation |
+| 0 safety | 73 finding records; targeted risk/ownership/legacy/security/accounting regressions; F54 exact historical crash repaired | Full semantic review of every inventoried legacy module; residual route/security boundaries | Qualified legal/data classification; deployed revalidation |
 | 1 universe/paper | All-writer canonical gate; normalized import/quarantine; immutable approved/manual stock-paper lifecycle | Official raw actions/calendars/execution-rule connectors and production rules; full historic mapping; live approved-plan convergence | Real source coverage/rights and funded liquid-stock acceptance |
 | 2 execution | Owned actual fill postings; sourced assessment/settlement/reversal API; partial native recovery; acknowledgements | Automatic final fees/margin/FX/settlement sourcing, actual native/stream/amendment certification; consented incident escalation; shared adapters | Actual broker/sandbox protection, reconciliation/outage and recovery certification |
 | 3 assets | Angel One transport/ownership/wire contract; unsupported route refusal | Angel journal/native integration; BSE/US/futures/options/FX/commodity; margin/freezes/multi-leg/expiry/physical settlement | Each route/product/account separately certified |

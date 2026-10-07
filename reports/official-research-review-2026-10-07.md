@@ -18,3 +18,5 @@ The licensed master is a separately acquired NSE product, and the specification 
 ## Full programme still outstanding
 
 The [A–G roadmap](release-audit-2026-10-06/roadmap.md) remains authoritative: complete data connectors/operational coverage; actual fees/margin/settlement, native protection/recovery, adapter convergence and Angel/further asset routes; complete product/billing/accessibility/security/backup/SLO/permissions; independent after-cost stock/index validation, relevant observed sessions and a separately authorized verified release. Independent strategy results, operational correctness, deployment and commercial permission remain different gates. The registered experiment and all active books are unchanged.
+
+Exact runtime commit `424d7b475cebefb83aeed94156cb6c9cd93deaf8` passed [CI](https://github.com/sudarshanbhat94/trading-agent/actions/runs/37609794425), including both pinned development/production Python versions. A separate constituent source probe through isolated staging also timed out. No actual source acceptance or production permission is inferred.

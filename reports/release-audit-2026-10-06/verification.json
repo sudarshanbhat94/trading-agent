@@ -556,6 +556,9 @@
     "function_fixtures": {
       "passed": 102,
       "exit_code": 0
-    }
+    },
+    "exact_runtime_commit": "424d7b475cebefb83aeed94156cb6c9cd93deaf8",
+    "ci_run": "https://github.com/sudarshanbhat94/trading-agent/actions/runs/37609794425",
+    "ci_status": "success"
   }
 }
