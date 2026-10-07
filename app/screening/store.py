@@ -3,6 +3,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
+from .financials import valid_income_history
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence(
@@ -103,6 +104,10 @@ def _current_rows(data, now):
                 fresh = False
             if not fresh and reason not in flags:
                 flags.append(reason)
+        f=row.get('fundamentals')
+        history_reason='consecutive annual earnings history unavailable'
+        if isinstance(f,dict) and not valid_income_history(f,now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat()) and history_reason not in flags:
+            flags.append(history_reason)
         if flags:
             row['status'] = 'REVIEW REQUIRED'
 

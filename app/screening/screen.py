@@ -5,10 +5,12 @@ Unknown evidence earns no points and never means 'no adverse news'.
 """
 import math
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
 from .store import latest
+from .financials import valid_income_history
 
 MIN_TURNOVER = 250_000_000
 BENCHMARKS = {"NIFTY": "NIFTYBEES", "BANKNIFTY": "BANKBEES"}
@@ -58,7 +60,7 @@ def _features(frame, asof):
                else "no controlled entry setup"))
 
 
-def _quality(f, sector, price):
+def _quality(f, sector, price, asof=None):
     if f is None:
         return None, ["financial statements unavailable or stale"]
     flags, points = [], 0
@@ -67,7 +69,9 @@ def _quality(f, sector, price):
     if roe is not None: points += 10 * min(max(roe/20, 0), 1)
     if growth is not None: points += 10 * min(max(growth/15, 0), 1)
     if margin is not None: points += 5 * min(max(margin/15, 0), 1)
-    years = int(f.get("earnings_years") or 0)
+    history_ok = valid_income_history(f,asof)
+    years = len(f['earnings_periods']) if history_ok else 0
+    if not history_ok:flags.append("consecutive annual earnings history unavailable")
     if years >= 3: points += 5 * (int(f.get("positive_earnings_years") or 0)/years)
     if bank:
         flags.append("financial-sector asset quality / capital adequacy not verified")
@@ -119,7 +123,7 @@ def build(tails, eligible, sectors, con, now, asof):
         rs = feat["return20_pct"]-benchmark["return20_pct"] if matched(feat) else None
         sector_rs = peer_returns.get(sector)
         sector_rs = sector_rs-benchmark["return20_pct"] if sector_rs is not None and benchmark else None
-        f, flags = _quality(latest(con, symbol, "fundamentals", now, 14), sector, feat["price"])
+        f, flags = _quality(latest(con, symbol, "fundamentals", now, 14), sector, feat["price"],now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat())
         news = latest(con, symbol, "news", now, 2/24)
         participation = latest(con, symbol, "participation", now, 7)
         earnings = latest(con, symbol, "earnings", now, 2)

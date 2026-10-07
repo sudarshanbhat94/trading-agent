@@ -21,12 +21,19 @@ import httpx
 import pandas as pd
 from app.screening import providers, store
 from app.screening.screen import build, _features, MIN_TURNOVER
+from app.screening.financials import valid_income_history
 from app.sleeves.reference import refresh_membership, snapshot
 from app.v2_engine import load_panel
 
 LOG = logging.getLogger("openstocks.screening")
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = os.getenv("SCREENING_DB", str(ROOT / "var" / "screening.db"))
+
+
+def statement_due(f,asof):
+    """Recollect incompatible caches promptly without refetching honest gaps."""
+    return (not f or f.get('financial_contract_version')!='annual-statements-v2'
+            or not valid_income_history(f,str(asof)[:10]))
 
 
 def _rows(con, sql, params=()):
@@ -181,7 +188,7 @@ def run(args):
             capture_participation(main, con, wanted, asof, now, delivery, flows)
             capture_events(http, con, wanted, now, errors)
             capture_options(http, con, now, errors)
-            missing = [s for s in wanted if store.latest(con, s, "fundamentals", now, 7) is None]
+            missing = [s for s in wanted if statement_due(store.latest(con, s, "fundamentals", now, 7),now.astimezone(providers.IST).date())]
             # Oldest/never-fetched first. Bound traffic; successful captures rotate
             # out of the queue, failures do not permanently starve other names.
             previous_attempts = {s:r for s,r in _rows(con,

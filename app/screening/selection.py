@@ -5,8 +5,11 @@ predicate; it cannot compensate for missing evidence or a bad trade contract.
 These thresholds are conservative research hypotheses, not a validated edge.
 """
 import math
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .screen import MIN_TURNOVER
+from .financials import valid_income_history
 
 MODEL_VERSION = "conditional-pullback-v3"
 POLICY = dict(version="selective-ideas-v1", max_ideas=3, min_ideas=0,
@@ -27,7 +30,7 @@ def number(value):
         return None
 
 
-def reject_reason(row, screen):
+def reject_reason(row, screen, now=None):
     """Fail closed on missing facts, including apparently flag-free records."""
     if screen.get("status") != "ok" or screen.get("stale") or screen.get("price_stale"):
         return "Current completed-session evidence unavailable; no new idea"
@@ -36,6 +39,11 @@ def reject_reason(row, screen):
     if not row.get("sector") or row["sector"] in ("Unknown", "Other", "NSE Listed Equity"):
         return "Verified sector required for shortlist diversification"
     f, m, p = (row.get(k) or {} for k in ("fundamentals", "metrics", "participation"))
+    if not screen.get('price_asof') or not valid_income_history(f,screen['price_asof']):
+        return "Consecutive dated annual earnings evidence required; counts alone are insufficient"
+    if now is not None and (not isinstance(now,datetime) or now.utcoffset() is None or
+            not valid_income_history(f,now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat())):
+        return "Annual earnings evidence is unavailable at this decision time"
     roe, debt, cash, growth, margin, income, years, positive = (
         number(f.get(k)) for k in ("roe_pct", "debt_equity", "cash_conversion",
             "earnings_growth_pct", "profit_margin_pct", "annual_income",

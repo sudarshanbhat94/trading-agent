@@ -73,7 +73,7 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
         if book_error:
             rejected.append(dict(symbol=row.get("symbol"), reason=book_error))
             continue
-        reason = reject_reason(row, screen)
+        reason = reject_reason(row, screen, now)
         if reason:
             rejected.append(dict(symbol=row.get("symbol"),reason=reason))
             continue

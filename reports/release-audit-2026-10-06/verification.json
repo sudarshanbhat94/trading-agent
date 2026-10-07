@@ -4,18 +4,18 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2552,
-    "passed": 2419,
+    "run": 2578,
+    "passed": 2445,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 19.983,
-    "note": "Current data/Ideas/engine source; full retry after sandbox localhost binding failures"
+    "seconds": 20.106,
+    "note": "Final financial-history/cached API/decision-time source; disposable databases, dotenv disabled and external sockets blocked"
   },
   "additional_checks": {
     "retired_entry_controls": 2,
-    "function_fixtures": 102,
+    "function_fixtures": 103,
     "wire_mock": 13,
     "paper_rehearsal": "passed",
     "final_ledger_performance_api_controls": 16,
@@ -578,5 +578,33 @@
     "paper_rehearsal": "passed; synthetic; no actual broker orders",
     "production_changed": false,
     "model_promoted": false
+  },
+  "financial_history_contract": {
+    "parent": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "findings": [
+      "F75",
+      "F28"
+    ],
+    "new_unit_methods": 18,
+    "focused_passed": 101,
+    "subtests_passed": 48,
+    "source_hashes": {
+      "app/screening/financials.py": "e929329edfbf410b7a0c821eac3c1c1bb58fdc76c41a55e31b84c5b9cac66ecc",
+      "app/screening/providers.py": "13c5d0287db29e693ae24aaebd2acf6140a64af442f1bf284a342f730f5d6adf",
+      "app/screening/screen.py": "d1b935fe7a20b91fa16979add7ab598fd31b10e4746bce615734e7c6f47ceeeb",
+      "app/screening/store.py": "8709a87c6dbe710a58296d0b246f2373c734c70eb07fdc76cc19042fd0914aa1",
+      "app/screening/selection.py": "bde1360665acbc003c4924162ac65808ac90d5da56b981689c9fbe01511b615c",
+      "app/screening/plans.py": "0a2468af4c4cb44d4b887ee8e98dbc1d0fa8159b5ba7c39f5a2e045fd8f0f271",
+      "app/screening/confirmation.py": "96b41603f36a7bba4d9e12032c41eba56c498e7513fa57821c32885351319acc",
+      "scripts/evidence_screen.py": "34f9ac9abe80bd13e8d6dd636b50dceb3f34adf2a131f41b58b026144350460d",
+      "tests/test_financial_history_contract.py": "a4865e6a55d6763e28ef24c649b35951d59a1c29e8ee813c0929bdeb2ae676fe",
+      "tests/test_stock_plans.py": "1eea1646a0c4ff9eb3899cfd639bd8a47c682faf0f78a95457ca7fbeebe01989"
+    },
+    "source_acceptance": false,
+    "source_probe": "Bounded official raw acquisitions timed out; secondary schema probe failed HTTP; no fabricated receipt",
+    "production_repaired": false,
+    "book_and_protocol_unchanged": true,
+    "revised_boundary_class_passed": 18,
+    "boundary_subtests": 24
   }
 }

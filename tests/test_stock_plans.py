@@ -28,7 +28,10 @@ def screen(count=12):
                           sector_rs20_pct=2.,return126_pct=10.,turnover=300_000_000,
                           relative_volume=2.,setup='pullback'),
              fundamentals=dict(roe_pct=20,debt_equity=.3,cash_conversion=1.,earnings_growth_pct=10.,
-                               profit_margin_pct=15.,annual_income=100.,earnings_years=3,positive_earnings_years=3),
+                               profit_margin_pct=15.,annual_income=100.,earnings_years=3,positive_earnings_years=3,
+                               statement_currency='INR',period_end='2026-03-31',
+                               earnings_periods=[dict(period_end=f'{year}-03-31',annual_income=value,statement_currency='INR')
+                                                 for year,value in ((2024,80),(2025,90),(2026,100))]),
              participation=dict(delivery_pct=60,delivery_avg20_pct=50,session='2026-09-30')) for i in range(count)])
 
 

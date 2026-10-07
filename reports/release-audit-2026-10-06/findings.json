@@ -100,7 +100,7 @@
     ],
     "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
     "fix": "Use one account-specific risk snapshot and serialized reservation for every entry; apply per-user cash, open risk, loss and drawdown limits.",
-    "acceptance": "After a ₹200 loss on ₹10,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
+    "acceptance": "After a \u20b9200 loss on \u20b910,000, the reproduced manual buy is refused; concurrent mirrors/manual orders cannot overspend.",
     "hours": [
       1,
       4
@@ -730,7 +730,7 @@
       "app/v2_web.py:1884",
       "app/approved_execution.py:82"
     ],
-    "rootCause": "Historical boundary: Symbol-only manual route substitutes ±6% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
+    "rootCause": "Historical boundary: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
     "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
     "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
     "hours": [
@@ -742,7 +742,7 @@
       "app/manual_execution.py:6"
     ],
     "original_status": "Confirmed route mismatch",
-    "original_rootCause": "Symbol-only manual route substitutes ±6% levels and separate sizing.",
+    "original_rootCause": "Symbol-only manual route substitutes \u00b16% levels and separate sizing.",
     "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Not deployed; baseline finding remains",
@@ -1174,9 +1174,9 @@
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions. Official current membership/delivery archive and replay now preserve first observation, source hashes and missing coverage. Exact PIT cutoffs/correction ordering are repaired in F73.",
+    "current_state": "Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions. Official current membership/delivery archive and replay now preserve first observation, source hashes and missing coverage. Exact PIT cutoffs/correction ordering are repaired in F73. F75 repairs exact annual-history/duplicate/conflict/financial-shape acceptance through the actual screening job; verified filing provenance and source rights remain incomplete.",
     "remaining": "Actual licensed/public-source acceptance, verified filing fundamentals, action-aware price history, news/benchmark data, operational coverage and independent model approval.",
-    "test_evidence": "tests.test_research_point_in_time; tests.test_official_research_sources; tests.test_research_time_boundaries",
+    "test_evidence": "tests.test_research_point_in_time; tests.test_official_research_sources; tests.test_research_time_boundaries; tests.test_financial_history_contract",
     "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
@@ -1866,7 +1866,7 @@
     ],
     "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
     "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
-    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says ₹10,000 and history retention consistently.",
+    "acceptance": "Browser-visible desktop/mobile numbers match the current ledger; reset copy says \u20b910,000 and history retention consistently.",
     "hours": [
       1,
       4
@@ -2911,6 +2911,51 @@
     "deployed_repair": false,
     "production_status": "Not deployed / uncertified",
     "remaining": "Authorized verified rollout, real source/canonical execution-rule coverage and independent strategy evidence.",
+    "release_certification": false
+  },
+  {
+    "id": "F75",
+    "area": "Data / research fundamentals",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Conflicting and disconnected financial periods manufacture earnings quality",
+    "evidence": [
+      "app/screening/providers.py:84",
+      "app/screening/financials.py:25",
+      "app/screening/financials.py:38",
+      "app/screening/selection.py:42",
+      "app/screening/store.py:87",
+      "scripts/evidence_screen.py:33"
+    ],
+    "rootCause": "Same-period values and split series used last-block/value wins; disconnected profitable years counted as stable annual history; counts without dated amounts could pass Ideas. No independently dated filing resolution was available.",
+    "fix": "Merge unambiguous metric/period points; reject conflicts and malformed duration/date/currency/amounts; retain comparable contiguous periods; check dated earnings against counts/current income and decision-date age; recollect incompatible caches through the actual job. The cached API rechecks fiscal availability/expiry without rewriting stored screens; consumer age uses the actual IST decision day, not a lagging price session.",
+    "acceptance": "Duplicate/split/conflict/order/gap/foreign-currency/future/stale/count-only/overflow cases preserve exact normalized facts or reject; short coverage is not three years; no book/protocol write.",
+    "hours": [
+      2,
+      6
+    ],
+    "original_evidence": [
+      "app/screening/providers.py:74",
+      "app/screening/selection.py:38"
+    ],
+    "original_status": "Reproduced at exact parent bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "original_rootCause": "Last-block/value wins and undated nonconsecutive year-count acceptance",
+    "revalidated_against": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "No deployed repair; current production acceptance not inferred",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "The actual refresh, cached API, screen, Ideas and current assessment paths now require the annual history contract. 18 new unit methods cover normalized gaps/conflicts/availability, real job recollection, and cached-reader/decision-day expiry bypasses.",
+    "remaining": "Separate authorized deployment/browser/source acceptance; official verified filings/rights remain F28",
+    "test_evidence": "tests.test_financial_history_contract; focused 101 checks +48 subtests and revised class 18/24 subtests; full 2578/2445/133, zero failures/errors; 103 function fixtures",
+    "revalidation_method": "Exact-parent synthetic counterexamples and full current-source checks; negative real-source probes retained privately",
+    "hours_basis": "Remaining engineering review estimate, excluding source licensing/external lead time",
+    "original_hours": [
+      8,
+      16
+    ],
+    "revalidated_working_parent": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "revalidation_source": "reports/financial-history-hardening-2026-10-07.md; current hashes/tests; no production certification",
     "release_certification": false
   }
 ]

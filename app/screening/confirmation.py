@@ -173,7 +173,7 @@ def refresh(main, path, paper, screen, regime, now=None):
                 context.update(evidence_ok=bool(current) and not current.get('flags') and not screen.get('stale') and not screen.get('price_stale'),
                     news_checked_at=(current.get('news') or {}).get('checked_at'))
                 if plan.get('model_version')==SELECTIVE_MODEL:
-                    reason=reject_reason(current,screen)
+                    reason=reject_reason(current,screen,now)
                     context.update(selection_ok=not reason,selection_reason=reason)
                 if uid not in books:books[uid]=account_state(account,uid,quotes,now)
                 book,error=books[uid];q=quotes.get(symbol,{})
