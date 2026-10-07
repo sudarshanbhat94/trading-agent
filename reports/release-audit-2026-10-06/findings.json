@@ -2339,5 +2339,81 @@
     "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
     "revalidation_method": "Actual private snapshot comparison plus meaningful no-op/genuine-change invariant test",
     "release_certification": false
+  },
+  {
+    "id": "F58",
+    "area": "Execution / source contracts",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Fresh paper bid can fill outside the sourced exchange session",
+    "evidence": [
+      "app/paper_exchange.py:496",
+      "app/paper_exchange.py:63",
+      "app/v2_live.py:4693"
+    ],
+    "original_evidence": [
+      "app/paper_exchange.py:496",
+      "app/paper_exchange.py:63",
+      "app/v2_live.py:4693"
+    ],
+    "rootCause": "Paper exit fill checks verified later depth and ownership but not the sourced session. A fresh bid after an early-close notice closed the synthetic owned position.",
+    "original_rootCause": "Paper exit fill checks verified later depth and ownership but not the sourced session. A fresh bid after an early-close notice closed the synthetic owned position.",
+    "original_status": "Reproduced on disposable real-code fixture",
+    "fix": "Freeze the original canonical calendar, copy immutable current sourced sessions, refresh separately from entry rules and require both the quote and fill time inside the dated open session. Unknown, closed, conflicting or expired sessions retain pending protection and owned inventory.",
+    "current_state": "Implemented and verified on the final frozen source; no production repair claimed.",
+    "remaining": "Production source/session coverage, cutover and scoped operational certification.",
+    "acceptance": "Fresh quotes after early close, before open, on a closed/unknown/conflicting/expired session do not fill, release inventory or consume depth. A valid cached session permits exit through entry catalogue outage; sourced reopening fills once.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_paper_exchange_sessions; tests.test_paper_exchange_exits",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidated_working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidation_method": "Exact pre-repair real-code synthetic reproduction, current invariant tests, full frozen-source suite",
+    "revalidation_source": "inventory.json source hashes; private immutable runtime candidate; existing read-only production observation",
+    "release_certification": false
+  },
+  {
+    "id": "F59",
+    "area": "Execution / source contracts",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded source-time ordering can select superseded or future contract evidence",
+    "evidence": [
+      "app/execution_contracts.py:65",
+      "app/paper_exchange.py:38"
+    ],
+    "original_evidence": [
+      "app/execution_contracts.py:65",
+      "app/paper_exchange.py:38"
+    ],
+    "rootCause": "SQLite julianday rounds source times below one millisecond. The old selector trusted its first row and could overlook a newer close notice; approximate time predicates could admit a future observation or misclassify effective boundaries.",
+    "original_rootCause": "SQLite julianday rounds source times below one millisecond. The old selector trusted its first row and could overlook a newer close notice; approximate time predicates could admit a future observation or misclassify effective boundaries.",
+    "original_status": "Reproduced on disposable real-code fixture",
+    "fix": "Use padded SQLite candidate selection only, then exact aware observed/effective timestamps and exact maximum ordering; cache only exact currently eligible source records.",
+    "current_state": "Implemented and verified on the final frozen source; no production repair claimed.",
+    "remaining": "Production source/session coverage, cutover and scoped operational certification.",
+    "acceptance": "A notice one microsecond newer wins; future observations/effective starts refuse; a just-valid end remains eligible and the exact expiry refuses; no future source is cached.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_paper_exchange_sessions.PaperSessionBoundaryTest.test_exact_source_ordering_refuses_submillisecond_future_and_effective_boundaries",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidated_working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidation_method": "Exact pre-repair real-code synthetic reproduction, current invariant tests, full frozen-source suite",
+    "revalidation_source": "inventory.json source hashes; private immutable runtime candidate; existing read-only production observation",
+    "release_certification": false
   }
 ]

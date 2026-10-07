@@ -4,14 +4,14 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2453,
-    "passed": 2320,
+    "run": 2463,
+    "passed": 2330,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 19.221,
-    "note": "Final frozen source after actual OCI startup reproduced no-op configuration timestamp rewriting; invariant repair and full permitted mock suite passed."
+    "seconds": 19.592,
+    "note": "Frozen final source after reproduced closed-session exit and source timestamp precision repairs."
   },
   "additional_checks": {
     "retired_entry_controls": 2,
@@ -99,8 +99,8 @@
     "production_modified": false
   },
   "entire_release_plan_complete": false,
-  "working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
-  "refreshed_at": "2026-10-07T05:11:31.298855+00:00",
+  "working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+  "refreshed_at": "2026-10-07T05:25:46.360440+00:00",
   "this_turn_initial_full_run": {
     "run": 2353,
     "failures": 3,
@@ -119,7 +119,7 @@
   "functions": {
     "passed": 102,
     "exit_code": 0,
-    "seconds": 0.8
+    "seconds": 0.91
   },
   "dependencies": {
     "locked_packages": 39,
@@ -286,8 +286,8 @@
     "note": "Old instant-fill/retired fan-out expectations, missing route mappings and sandbox socket refusal; repaired meaningful fixture expectations and route controls before final run."
   },
   "durable_paper_candidate": {
-    "archive_sha256": "139ad3bcb67c0631014c044f8f977dca3ec019d9765270fc3cb059d9cd898cbc",
-    "source_files_verified": 406,
+    "archive_sha256": "34bef65ac88daababcefe05a5717ccab2b5776714e133a1a99f887b4afa5b85e",
+    "source_files_verified": 407,
     "hash_pinned_oci_runtime": true,
     "production_copy_migration": {
       "passed": true,
@@ -322,6 +322,74 @@
     ],
     "production_cycle_executed": false,
     "production_ui_certified": false,
-    "deployed": false
+    "deployed": false,
+    "trading_schema": "v5",
+    "original_calendar_and_sourced_sessions": true,
+    "actual_app_startup": true,
+    "original_values_preserved": true,
+    "source_document_scope": "All 407 app/scripts/tests files match the isolated OCI code archive; documentary follow-up records its observed result separately."
+  },
+  "previous_full_unittest_ed9a03a": {
+    "run": 2453,
+    "passed": 2320,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.221,
+    "note": "Final frozen source after actual OCI startup reproduced no-op configuration timestamp rewriting; invariant repair and full permitted mock suite passed."
+  },
+  "session_boundary_reproduction": {
+    "before_repair_closed_session_fill": true,
+    "after_repair_closed_session_fill": false,
+    "after_repair_owned_positions": 1,
+    "focused_checks": 42,
+    "first_focused_failures": 1,
+    "reason": "Initial sourced-cache repair exposed sub-millisecond source ordering; exact timestamp selector repaired before the final pass.",
+    "production_modified": false
+  },
+  "previous_durable_paper_candidate": {
+    "archive_sha256": "34bef65ac88daababcefe05a5717ccab2b5776714e133a1a99f887b4afa5b85e",
+    "source_files_verified": 407,
+    "hash_pinned_oci_runtime": true,
+    "production_copy_migration": {
+      "passed": true,
+      "original_paper_tables": 18,
+      "original_selected_account_tables": 2,
+      "original_values_preserved": true,
+      "epoch_protocol_preserved": true
+    },
+    "boot": {
+      "status": "passed",
+      "actual_app_startup": true,
+      "unauthenticated_positions": 401,
+      "capital": 10000,
+      "cash": 10000,
+      "equity": 10000,
+      "positions": 0,
+      "original_values_preserved": true,
+      "outbound_http_blocked": true,
+      "workers_disabled": true,
+      "production_modified": false,
+      "real_orders": 0
+    },
+    "earlier_failures": [
+      {
+        "kind": "harness",
+        "reason": "Attempted to patch optional requests library absent from pinned runtime; use installed HTTP/socket boundaries instead."
+      },
+      {
+        "kind": "application",
+        "reason": "Actual startup rewrote 234 runtime-setting timestamps with zero changed values; conditional no-op UPSERT repaired, then fresh-copy startup preserved all checked rows."
+      }
+    ],
+    "production_cycle_executed": false,
+    "production_ui_certified": false,
+    "deployed": false,
+    "trading_schema": "v5",
+    "original_calendar_and_sourced_sessions": true,
+    "actual_app_startup": true,
+    "original_values_preserved": true,
+    "source_document_scope": "All 407 app/scripts/tests files match the isolated OCI code archive; documentary follow-up records its observed result separately."
   }
 }

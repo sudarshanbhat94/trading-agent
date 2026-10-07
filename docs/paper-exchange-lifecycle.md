@@ -25,7 +25,7 @@ Orders uses the shared `account_ui` component to display side, requested quantit
 
 Account schema v3 adds shared SQLite login reservations/locks and executable quote storage. Reservations count password work already in flight across workers/restarts; successful login releases only its own reservation. Password, role or activation changes revoke every owned server session in the same transaction. Authenticated `POST /api/auth/logout-all` revokes only the caller's sessions. Existing origin/session protections still apply.
 
-Trading schema v4 adds immutable paper intents/events, monotonic state and per-side depth consumption. Startup migrations are atomic. Production-copy rehearsal checks all pre-existing paper values/rows and selected account/security/configuration tables. Historical positions retain their old execution semantics; they are not silently converted to new exchange-managed fills. No production reset or migration was performed.
+Trading schema v5 adds immutable paper intents/events, monotonic state and per-side depth consumption. Startup migrations are atomic. Production-copy rehearsal checks all pre-existing paper values/rows and selected account/security/configuration tables. Historical positions retain their old execution semantics; they are not silently converted to new exchange-managed fills. No production reset or migration was performed.
 
 ## Reproduce the software checks
 
@@ -39,3 +39,7 @@ The first command exercises the actual journal, risk, house/subscriber outbox, l
 ## Remaining acceptance
 
 This adapter is whole-order, top-of-book NSE delivery paper simulation. It does not implement partial fills, queue priority, multi-depth VWAP, exchange auction fills, multi-leg compensation or other asset routes. Production requires actual current execution catalogue/session/action coverage and real quote depth; a discovery master alone is insufficient. Broker native protection/reconciliation, final actual fee/margin/settlement integration, additional routes, full deployed product/security/operations certification, independent stock-model evidence, relevant paper sessions and commercial permissions remain separate unfinished phases. The approved release plan reserves deployment and model promotion for concrete authorization; passing fixtures does not supply it.
+
+## Sourced session boundary
+
+Every new exchange-managed position retains its original canonical calendar. The paper database caches immutable sourced current sessions and accepts newer notices using exact aware timestamps. Both the later quote and simulated fill must fall inside the dated open session. Closed/unknown/expired/conflicting sessions keep the protective exit pending, retain owned inventory/cash and consume no displayed depth. The worker evaluates protection first, then refreshes session evidence independently of instrument entry rules; an entry catalogue outage can use an unexpired sourced cache. It cannot assume the next session is open. Older journal positions without original calendar evidence require sourced reconciliation; migration does not infer it from a ticker. Entry regime/entitlement rules still do not block owned exits.

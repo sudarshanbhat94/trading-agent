@@ -17,6 +17,8 @@ SIMULATION_VERSION = 'nse-top-depth-next-event-aon-v1'
 
 
 def ensure_schema(con):
+    from . import execution_contracts
+    execution_contracts.ensure_schema(con)
     con.execute('CREATE TABLE IF NOT EXISTS paper_order_intents('
                 'id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,epoch TEXT NOT NULL,plan_id TEXT NOT NULL,'
                 'request_key TEXT NOT NULL,payload TEXT NOT NULL,submitted_at TEXT NOT NULL,'
@@ -31,6 +33,41 @@ def ensure_schema(con):
         for operation in ('UPDATE', 'DELETE'):
             con.execute(f'CREATE TRIGGER IF NOT EXISTS immutable_{table}_{operation.lower()} BEFORE {operation} ON {table} '
                         "BEGIN SELECT RAISE(ABORT,'immutable paper exchange evidence'); END")
+
+
+def sync_sessions(con, catalogue, *, now):
+    """Cache current sourced sessions independently of instrument entry rules.
+
+    Copies retain the original immutable evidence identity. An entry catalogue
+    outage can use an unexpired cache, but never invent tomorrow's session.
+    """
+    from . import execution_contracts
+    before,after=now-timedelta(seconds=1),now+timedelta(seconds=1)
+    rows=catalogue.execute("SELECT id,kind,identity,observed_at,effective_from,effective_until,source,payload "
+        "FROM execution_contract_evidence WHERE kind='session' "
+        'AND julianday(observed_at)<=julianday(?) AND julianday(effective_from)<=julianday(?) '
+        'AND julianday(effective_until)>julianday(?) LIMIT 1001',
+        (after.isoformat(),after.isoformat(),before.isoformat())).fetchall()
+    if len(rows)>1000:raise ValueError('Sourced session cache exceeds reviewed bounds')
+    count=0
+    with atomic(con):
+        for identity,kind,calendar,observed,start,end,source,text in rows:
+            if executable_quotes.moment(observed)>now or not executable_quotes.moment(start)<=now<executable_quotes.moment(end):continue
+            copied=execution_contracts.record(con,kind,calendar,json.loads(text),source=source,
+                observed_at=observed,effective_from=start,effective_until=end,now=now)
+            if copied!=identity:raise ValueError('Sourced session fingerprint differs')
+            count+=1
+    return count
+
+
+def _open_session(con, calendar, snapshot, now):
+    from . import execution_contracts
+    if not calendar:raise ValueError('Original sourced exchange calendar unavailable')
+    _,session=execution_contracts._latest(con,'session',calendar,now)
+    if not session['open']:raise ValueError('Sourced exchange session is closed')
+    opens,closes=map(executable_quotes.moment,(session['opens_at'],session['closes_at']))
+    stamp=executable_quotes.moment(snapshot['snapshot_at'])
+    if not opens<=stamp<=now<closes:raise ValueError('Executable quote is outside the sourced exchange session')
 
 
 def _event(con, order_id, kind, payload, now):
@@ -178,6 +215,7 @@ def service(con, catalogue, quotes, *, regime, now=None):
         require_current(con)
         problem=integrity_reason(con,allow_filling=False)
         if problem:raise ValueError(problem)
+        sync_sessions(con,catalogue,now=now)
         for row in pending(con):
             order_id, uid, epoch, plan_id, request_key, text, submitted_at = row
             if uid == 0: continue  # House proposals use the same journal; separate owned posting.
@@ -204,9 +242,10 @@ def service(con, catalogue, quotes, *, regime, now=None):
             if displayed//10-(used[0] if used else 0) < plan['quantity']:
                 _wait(con,row,'Insufficient unconsumed displayed ask liquidity for a whole-order fill',now,snapshot);continue
             try:
-                spec, key, _ = execution_contracts.order_contract(catalogue, instrument_id=plan['instrument_id'],
+                spec, key, evidence = execution_contracts.order_contract(catalogue, instrument_id=plan['instrument_id'],
                                           quantity=plan['quantity'], price=price, now=now)
                 if key != payload['instrument_key'] or spec.symbol != plan['symbol']: raise ValueError('Canonical identity changed')
+                _open_session(con,evidence['calendar'],snapshot,now)
             except ValueError as exc:
                 outcomes.append(_terminal(con, row, 'rejected', str(exc), now)); continue
             # Remove only this reservation inside the same write transaction.
@@ -349,6 +388,7 @@ def service_house(con, catalogue, quotes, *, regime, now):
         require_current(con)
         problem=integrity_reason(con,allow_filling=False)
         if problem:raise ValueError(problem)
+        sync_sessions(con,catalogue,now=now)
         for row in pending(con, 0):
             payload=json.loads(row[5]); plan=payload['plan']; uid=0; order_id=row[0]
             epoch_row=con.execute("SELECT started_at FROM v2_book WHERE market='IN'").fetchone()
@@ -371,8 +411,9 @@ def service_house(con, catalogue, quotes, *, regime, now):
             if displayed//10-(used[0] if used else 0)<plan['quantity']:
                 _wait(con,row,'Insufficient unconsumed displayed ask liquidity for a whole-order fill',now,snapshot);continue
             try:
-                spec,key,_=execution_contracts.order_contract(catalogue,instrument_id=plan['instrument_id'],quantity=plan['quantity'],price=price,now=now)
+                spec,key,evidence=execution_contracts.order_contract(catalogue,instrument_id=plan['instrument_id'],quantity=plan['quantity'],price=price,now=now)
                 if key!=payload['instrument_key'] or spec.symbol!=plan['symbol']:raise ValueError('House canonical identity changed')
+                _open_session(con,evidence['calendar'],snapshot,now)
                 con.execute("UPDATE paper_order_state SET status='filling' WHERE order_id=?",(order_id,))
                 state,_=house_state(con,quotes,now)
                 candidate=Candidate(plan['symbol'],plan['sleeve'],plan['score'],price,plan['stop'],target=plan['target'],
@@ -433,6 +474,7 @@ def queue_exit(con, user_id, position_id, reason, *, now=None):
         contract=json.loads(contract[0]);quantity=int(row[1])
         if quantity!=row[1] or quantity<=0:raise ValueError('Whole owned position quantity required')
         plan=dict(side='SELL',symbol=row[0],quantity=quantity,stop=row[2],target=row[3],sleeve=row[4],
+                  calendar=contract.get('contract_evidence',{}).get('calendar'),
                   instrument_id=contract['instrument_id'],position_id=position_id,epoch=epoch,exit_reason=reason)
         request_key=f'owned-exit:{user_id}:{epoch}:{position_id}:{now.isoformat()}'
         order_id='paper_'+hashlib.sha256(request_key.encode()).hexdigest()
@@ -478,6 +520,9 @@ def service_exits(con, quotes, *, now=None):
                                                     now=now,after=executable_quotes.moment(submitted_at))
             except (ValueError,KeyError,TypeError) as exc:
                 _wait(con,row,str(exc) if isinstance(exc,ValueError) else 'Executable quote evidence incomplete',now);continue
+            try:_open_session(con,plan.get('calendar'),snapshot,now)
+            except (ValueError,KeyError,TypeError) as exc:
+                _wait(con,row,str(exc) if isinstance(exc,ValueError) else 'Sourced exchange session unavailable',now);continue
             used=con.execute("SELECT quantity FROM paper_depth_usage WHERE snapshot_id=? AND side='SELL'",(snapshot['snapshot_id'],)).fetchone()
             if displayed//10-(used[0] if used else 0)<plan['quantity']:
                 _wait(con,row,'Insufficient unconsumed displayed bid liquidity; owned position remains open',now,snapshot);continue

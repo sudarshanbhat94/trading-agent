@@ -403,6 +403,29 @@ index 0000000..7181c71
 +                                               'bids','asks','lower_circuit','upper_circuit')}
 +    expected = 'snap_'+hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 +    if snapshot.get('snapshot_id') != expected: raise ValueError('Executable snapshot content changed')
+diff --git a/app/execution_contracts.py b/app/execution_contracts.py
+index c67f8e8..d1219b6 100644
+--- a/app/execution_contracts.py
++++ b/app/execution_contracts.py
+@@ -66 +66,4 @@ def _latest(con,kind,identity,now):
+-    rows=con.execute('SELECT id,observed_at,payload FROM execution_contract_evidence WHERE kind=? AND identity=? '
++    # SQLite julianday rounds sub-millisecond source times. Use it only for a
++    # padded candidate search, then compare exact aware timestamps in Python.
++    before,after=now-timedelta(seconds=1),now+timedelta(seconds=1)
++    rows=con.execute('SELECT id,observed_at,payload,effective_from,effective_until FROM execution_contract_evidence WHERE kind=? AND identity=? '
+@@ -69 +72,2 @@ def _latest(con,kind,identity,now):
+-                     (kind,identity,now.isoformat(),now.isoformat(),now.isoformat())).fetchall()
++                     (kind,identity,after.isoformat(),after.isoformat(),before.isoformat())).fetchall()
++    rows=[r for r in rows if _moment(r[1])<=now and _moment(r[3])<=now<_moment(r[4])]
+@@ -71 +75 @@ def _latest(con,kind,identity,now):
+-    latest=_moment(rows[0][1]);tied=[r for r in rows if _moment(r[1])==latest]
++    latest=max(_moment(r[1]) for r in rows);tied=[r for r in rows if _moment(r[1])==latest]
+@@ -74 +78 @@ def _latest(con,kind,identity,now):
+-    return rows[0][0],json.loads(rows[0][2])
++    return tied[0][0],json.loads(tied[0][2])
+@@ -105 +109 @@ def order_contract(con,*,instrument_id,quantity,price,provider='upstox',now=None
+-    return spec,key,dict(evidence,session_id=session_id)
++    return spec,key,dict(evidence,session_id=session_id,calendar=calendar)
 diff --git a/app/login_guard.py b/app/login_guard.py
 new file mode 100644
 index 0000000..8fe595a
@@ -470,10 +493,10 @@ index 0000000..8fe595a
 +                            'DO UPDATE SET locked_until=MAX(locked_until,excluded.locked_until)', (row[0], now+lockout))
 diff --git a/app/paper_exchange.py b/app/paper_exchange.py
 new file mode 100644
-index 0000000..5f2b086
+index 0000000..0363682
 --- /dev/null
 +++ b/app/paper_exchange.py
-@@ -0,0 +1,498 @@
+@@ -0,0 +1,543 @@
 +"""Durable approved NSE cash-paper intents, filled on a later exchange event.
 +
 +This adapter deliberately supports whole-order fills only. It uses at most
@@ -493,6 +516,8 @@ index 0000000..5f2b086
 +
 +
 +def ensure_schema(con):
++    from . import execution_contracts
++    execution_contracts.ensure_schema(con)
 +    con.execute('CREATE TABLE IF NOT EXISTS paper_order_intents('
 +                'id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,epoch TEXT NOT NULL,plan_id TEXT NOT NULL,'
 +                'request_key TEXT NOT NULL,payload TEXT NOT NULL,submitted_at TEXT NOT NULL,'
@@ -507,6 +532,41 @@ index 0000000..5f2b086
 +        for operation in ('UPDATE', 'DELETE'):
 +            con.execute(f'CREATE TRIGGER IF NOT EXISTS immutable_{table}_{operation.lower()} BEFORE {operation} ON {table} '
 +                        "BEGIN SELECT RAISE(ABORT,'immutable paper exchange evidence'); END")
++
++
++def sync_sessions(con, catalogue, *, now):
++    """Cache current sourced sessions independently of instrument entry rules.
++
++    Copies retain the original immutable evidence identity. An entry catalogue
++    outage can use an unexpired cache, but never invent tomorrow's session.
++    """
++    from . import execution_contracts
++    before,after=now-timedelta(seconds=1),now+timedelta(seconds=1)
++    rows=catalogue.execute("SELECT id,kind,identity,observed_at,effective_from,effective_until,source,payload "
++        "FROM execution_contract_evidence WHERE kind='session' "
++        'AND julianday(observed_at)<=julianday(?) AND julianday(effective_from)<=julianday(?) '
++        'AND julianday(effective_until)>julianday(?) LIMIT 1001',
++        (after.isoformat(),after.isoformat(),before.isoformat())).fetchall()
++    if len(rows)>1000:raise ValueError('Sourced session cache exceeds reviewed bounds')
++    count=0
++    with atomic(con):
++        for identity,kind,calendar,observed,start,end,source,text in rows:
++            if executable_quotes.moment(observed)>now or not executable_quotes.moment(start)<=now<executable_quotes.moment(end):continue
++            copied=execution_contracts.record(con,kind,calendar,json.loads(text),source=source,
++                observed_at=observed,effective_from=start,effective_until=end,now=now)
++            if copied!=identity:raise ValueError('Sourced session fingerprint differs')
++            count+=1
++    return count
++
++
++def _open_session(con, calendar, snapshot, now):
++    from . import execution_contracts
++    if not calendar:raise ValueError('Original sourced exchange calendar unavailable')
++    _,session=execution_contracts._latest(con,'session',calendar,now)
++    if not session['open']:raise ValueError('Sourced exchange session is closed')
++    opens,closes=map(executable_quotes.moment,(session['opens_at'],session['closes_at']))
++    stamp=executable_quotes.moment(snapshot['snapshot_at'])
++    if not opens<=stamp<=now<closes:raise ValueError('Executable quote is outside the sourced exchange session')
 +
 +
 +def _event(con, order_id, kind, payload, now):
@@ -654,6 +714,7 @@ index 0000000..5f2b086
 +        require_current(con)
 +        problem=integrity_reason(con,allow_filling=False)
 +        if problem:raise ValueError(problem)
++        sync_sessions(con,catalogue,now=now)
 +        for row in pending(con):
 +            order_id, uid, epoch, plan_id, request_key, text, submitted_at = row
 +            if uid == 0: continue  # House proposals use the same journal; separate owned posting.
@@ -680,9 +741,10 @@ index 0000000..5f2b086
 +            if displayed//10-(used[0] if used else 0) < plan['quantity']:
 +                _wait(con,row,'Insufficient unconsumed displayed ask liquidity for a whole-order fill',now,snapshot);continue
 +            try:
-+                spec, key, _ = execution_contracts.order_contract(catalogue, instrument_id=plan['instrument_id'],
++                spec, key, evidence = execution_contracts.order_contract(catalogue, instrument_id=plan['instrument_id'],
 +                                          quantity=plan['quantity'], price=price, now=now)
 +                if key != payload['instrument_key'] or spec.symbol != plan['symbol']: raise ValueError('Canonical identity changed')
++                _open_session(con,evidence['calendar'],snapshot,now)
 +            except ValueError as exc:
 +                outcomes.append(_terminal(con, row, 'rejected', str(exc), now)); continue
 +            # Remove only this reservation inside the same write transaction.
@@ -825,6 +887,7 @@ index 0000000..5f2b086
 +        require_current(con)
 +        problem=integrity_reason(con,allow_filling=False)
 +        if problem:raise ValueError(problem)
++        sync_sessions(con,catalogue,now=now)
 +        for row in pending(con, 0):
 +            payload=json.loads(row[5]); plan=payload['plan']; uid=0; order_id=row[0]
 +            epoch_row=con.execute("SELECT started_at FROM v2_book WHERE market='IN'").fetchone()
@@ -847,8 +910,9 @@ index 0000000..5f2b086
 +            if displayed//10-(used[0] if used else 0)<plan['quantity']:
 +                _wait(con,row,'Insufficient unconsumed displayed ask liquidity for a whole-order fill',now,snapshot);continue
 +            try:
-+                spec,key,_=execution_contracts.order_contract(catalogue,instrument_id=plan['instrument_id'],quantity=plan['quantity'],price=price,now=now)
++                spec,key,evidence=execution_contracts.order_contract(catalogue,instrument_id=plan['instrument_id'],quantity=plan['quantity'],price=price,now=now)
 +                if key!=payload['instrument_key'] or spec.symbol!=plan['symbol']:raise ValueError('House canonical identity changed')
++                _open_session(con,evidence['calendar'],snapshot,now)
 +                con.execute("UPDATE paper_order_state SET status='filling' WHERE order_id=?",(order_id,))
 +                state,_=house_state(con,quotes,now)
 +                candidate=Candidate(plan['symbol'],plan['sleeve'],plan['score'],price,plan['stop'],target=plan['target'],
@@ -909,6 +973,7 @@ index 0000000..5f2b086
 +        contract=json.loads(contract[0]);quantity=int(row[1])
 +        if quantity!=row[1] or quantity<=0:raise ValueError('Whole owned position quantity required')
 +        plan=dict(side='SELL',symbol=row[0],quantity=quantity,stop=row[2],target=row[3],sleeve=row[4],
++                  calendar=contract.get('contract_evidence',{}).get('calendar'),
 +                  instrument_id=contract['instrument_id'],position_id=position_id,epoch=epoch,exit_reason=reason)
 +        request_key=f'owned-exit:{user_id}:{epoch}:{position_id}:{now.isoformat()}'
 +        order_id='paper_'+hashlib.sha256(request_key.encode()).hexdigest()
@@ -954,6 +1019,9 @@ index 0000000..5f2b086
 +                                                    now=now,after=executable_quotes.moment(submitted_at))
 +            except (ValueError,KeyError,TypeError) as exc:
 +                _wait(con,row,str(exc) if isinstance(exc,ValueError) else 'Executable quote evidence incomplete',now);continue
++            try:_open_session(con,plan.get('calendar'),snapshot,now)
++            except (ValueError,KeyError,TypeError) as exc:
++                _wait(con,row,str(exc) if isinstance(exc,ValueError) else 'Sourced exchange session unavailable',now);continue
 +            used=con.execute("SELECT quantity FROM paper_depth_usage WHERE snapshot_id=? AND side='SELL'",(snapshot['snapshot_id'],)).fetchone()
 +            if displayed//10-(used[0] if used else 0)<plan['quantity']:
 +                _wait(con,row,'Insufficient unconsumed displayed bid liquidity; owned position remains open',now,snapshot);continue
@@ -973,12 +1041,12 @@ index 0000000..5f2b086
 +            _event(con,order_id,'FILLED',dict(result=result,snapshot=snapshot),now);outcomes.append(result)
 +    return outcomes
 diff --git a/app/v2_live.py b/app/v2_live.py
-index cb07d01..ef8695d 100644
+index cb07d01..2d87bfb 100644
 --- a/app/v2_live.py
 +++ b/app/v2_live.py
 @@ -1000 +1000 @@ def ensure_schema(v2):
 -    apply(v2,'trading-schema-v3',TRADING_CONTRACT,_ensure_schema,validate_trading)
-+    apply(v2,'trading-schema-v4',dict(TRADING_CONTRACT,version=4,paper_exchange='next-event-aon-v1'),_ensure_schema,validate_trading)
++    apply(v2,'trading-schema-v5',dict(TRADING_CONTRACT,version=5,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache'),_ensure_schema,validate_trading)
 @@ -1317 +1317 @@ def _live(market, symbols=None):
 -    if symbols:
 +    if symbols is not None:
@@ -1030,7 +1098,7 @@ index cb07d01..ef8695d 100644
 @@ -4578 +4599 @@ def sleeve_pass(market):
 -                           f"breadth) · {len(active)} active · +{fills} new")
 +                           f"breadth) · {len(active)} active · {queued_count} queued; fills require a later snapshot")
-@@ -4659,0 +4681,24 @@ def _sleeve_vix():
+@@ -4659,0 +4681,31 @@ def _sleeve_vix():
 +def service_personal_paper(personal, market):
 +    """Owned protection runs before, and independently of, new-entry data."""
 +    from . import books, paper_exchange, entry_contracts
@@ -1042,6 +1110,13 @@ index cb07d01..ef8695d 100644
 +    if not pending_symbols:return
 +    house=[r[0] for r in personal.execute("SELECT symbol FROM v2_positions WHERE market='IN'")]
 +    quotes=_live(market,set(pending_symbols+symbols+house))
++    # Protection is already evaluated. Refresh session evidence separately:
++    # failed entry rules never erase a valid current protective session cache.
++    try:
++        with entry_contracts.open_catalogue() as (catalogue,now):
++            paper_exchange.sync_sessions(personal,catalogue,now=now)
++    except (ValueError,sqlite3.Error,OSError):
++        _LOG.warning('Paper exit session refresh unavailable; retaining sourced cache',exc_info=True)
 +    paper_exchange.service_exits(personal,quotes)
 +    if not buys:return  # Exits require no entry catalogue or subscription.
 +    try:
@@ -1055,7 +1130,7 @@ index cb07d01..ef8695d 100644
 +        _LOG.exception('Pending paper entry checks unavailable; owned exit service already ran')
 +
 +
-@@ -4759,4 +4804 @@ def loop(interval):
+@@ -4759,4 +4811 @@ def loop(interval):
 -                            symbols = [r[0] for r in personal.execute(
 -                                "SELECT DISTINCT symbol FROM user_positions WHERE market=?", (m,))]
 -                            books.monitor_positions(personal, m, _live(m, symbols),

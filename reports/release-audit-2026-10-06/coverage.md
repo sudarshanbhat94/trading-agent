@@ -374,3 +374,5 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 Current release safety boundaries reviewed: sourced entry/approval/catalogue, actual broker ledger/reconciliation, native partial recovery, atomic billing/migration, incident ownership, request origin/proxy, recovery frames and PIT immutability. This does not turn all inventoried legacy files into semantically reviewed files.
 
 The corrected source added the no-op runtime-settings preservation regression. Inventory now includes 179 test modules. Actual pinned-runtime app startup was checked against fresh copied production originals after the reproduced timestamp defect; this verifies those stated preservation boundaries, not full semantic review of every settings consumer.
+
+F58/F59 received targeted semantic review of paper exit/session-cache and exact execution-contract time selection. Six new boundary tests cover sourced closure/reopening, conflict/expiry/future evidence, source outage/cache immutability and pre-open quote times. The inventory now has 180 test modules. This extends narrow runtime review without claiming every legacy module has been semantically reviewed.

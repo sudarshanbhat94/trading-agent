@@ -208,6 +208,7 @@
     "reports/release-audit-2026-10-06/coverage.md",
     "reports/release-audit-2026-10-06/critical-fixes.md",
     "reports/release-audit-2026-10-06/current-source-scope.json",
+    "reports/release-audit-2026-10-06/exchange-key-diffs.patch",
     "reports/release-audit-2026-10-06/factor-ledger.json",
     "reports/release-audit-2026-10-06/factor-ledger.md",
     "reports/release-audit-2026-10-06/findings.json",
@@ -223,6 +224,7 @@
     "reports/release-audit-2026-10-06/runtime-paths.md",
     "reports/release-audit-2026-10-06/safety-reproductions.json",
     "reports/release-audit-2026-10-06/ui-evidence/approved-paper-mobile.png",
+    "reports/release-audit-2026-10-06/ui-evidence/exchange-cancel-desktop-2026-10-07.png",
     "reports/release-audit-2026-10-06/ui-evidence/exchange-lifecycle-mobile-2026-10-07.png",
     "reports/release-audit-2026-10-06/ui-evidence/paper-lifecycle-mobile-current.png",
     "reports/release-audit-2026-10-06/ui-evidence/readiness-mobile-2026-10-07.png",
@@ -430,6 +432,7 @@
     "tests/test_panel_ui_render.py",
     "tests/test_paper_exchange.py",
     "tests/test_paper_exchange_exits.py",
+    "tests/test_paper_exchange_sessions.py",
     "tests/test_paper_ledger.py",
     "tests/test_pattern_alerts.py",
     "tests/test_pattern_filter.py",
@@ -4706,7 +4709,7 @@
     },
     {
       "file": "app/execution_contracts.py",
-      "lines": 105,
+      "lines": 109,
       "imports": [
         "dataclasses",
         "datetime",
@@ -4738,12 +4741,12 @@
         },
         {
           "name": "protection_contract",
-          "line": 77,
+          "line": 81,
           "kind": "FunctionDef"
         },
         {
           "name": "order_contract",
-          "line": 99,
+          "line": 103,
           "kind": "FunctionDef"
         }
       ]
@@ -11615,13 +11618,16 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "lines": 498,
+      "lines": 543,
       "imports": [
         "dataclasses",
         "datetime",
         "hashlib",
         "json",
         "account_safety",
+        null,
+        null,
+        null,
         null,
         "sleeves.base",
         "sleeves.risk",
@@ -11667,93 +11673,103 @@
           "kind": "FunctionDef"
         },
         {
+          "name": "sync_sessions",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "_open_session",
+          "line": 63,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "_event",
-          "line": 36,
+          "line": 73,
           "kind": "FunctionDef"
         },
         {
           "name": "integrity_reason",
-          "line": 41,
+          "line": 78,
           "kind": "FunctionDef"
         },
         {
           "name": "_wait",
-          "line": 54,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "pending",
-          "line": 64,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "reserved_state",
-          "line": 74,
-          "kind": "FunctionDef"
-        },
-        {
-          "name": "reservation_summary",
           "line": 91,
           "kind": "FunctionDef"
         },
         {
+          "name": "pending",
+          "line": 101,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reserved_state",
+          "line": 111,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "reservation_summary",
+          "line": 128,
+          "kind": "FunctionDef"
+        },
+        {
           "name": "enqueue",
-          "line": 96,
+          "line": 133,
           "kind": "FunctionDef"
         },
         {
           "name": "status",
-          "line": 137,
+          "line": 174,
           "kind": "FunctionDef"
         },
         {
           "name": "_terminal",
-          "line": 146,
+          "line": 183,
           "kind": "FunctionDef"
         },
         {
           "name": "cancel",
-          "line": 156,
+          "line": 193,
           "kind": "FunctionDef"
         },
         {
           "name": "service",
-          "line": 170,
+          "line": 207,
           "kind": "FunctionDef"
         },
         {
           "name": "house_state",
-          "line": 238,
+          "line": 277,
           "kind": "FunctionDef"
         },
         {
           "name": "enqueue_house",
-          "line": 275,
+          "line": 314,
           "kind": "FunctionDef"
         },
         {
           "name": "service_house",
-          "line": 340,
+          "line": 379,
           "kind": "FunctionDef"
         },
         {
           "name": "managed_position",
-          "line": 402,
+          "line": 443,
           "kind": "FunctionDef"
         },
         {
           "name": "queue_exit",
-          "line": 409,
+          "line": 450,
           "kind": "FunctionDef"
         },
         {
           "name": "exit_pending",
-          "line": 448,
+          "line": 490,
           "kind": "FunctionDef"
         },
         {
           "name": "service_exits",
-          "line": 454,
+          "line": 496,
           "kind": "FunctionDef"
         }
       ]
@@ -13119,7 +13135,7 @@
     },
     {
       "file": "app/schema_migrations.py",
-      "lines": 87,
+      "lines": 88,
       "imports": [
         "hashlib",
         "json",
@@ -13145,7 +13161,7 @@
         },
         {
           "name": "validate_accounts",
-          "line": 78,
+          "line": 79,
           "kind": "FunctionDef"
         },
         {
@@ -16701,7 +16717,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "lines": 4924,
+      "lines": 4931,
       "imports": [
         "__future__",
         "json",
@@ -17259,17 +17275,17 @@
         },
         {
           "name": "loop",
-          "line": 4705,
+          "line": 4712,
           "kind": "FunctionDef"
         },
         {
           "name": "start_background",
-          "line": 4907,
+          "line": 4914,
           "kind": "FunctionDef"
         },
         {
           "name": "status",
-          "line": 4923,
+          "line": 4930,
           "kind": "FunctionDef"
         }
       ]
@@ -34553,6 +34569,79 @@
       ]
     },
     {
+      "file": "tests/test_paper_exchange_sessions.py",
+      "lines": 102,
+      "imports": [
+        "sqlite3",
+        "unittest",
+        "datetime",
+        "app",
+        "tests.test_approved_execution"
+      ],
+      "symbols": [
+        {
+          "name": "PaperSessionBoundaryTest",
+          "line": 10,
+          "kind": "ClassDef"
+        },
+        {
+          "name": "setUp",
+          "line": 11,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "session",
+          "line": 18,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "enter",
+          "line": 25,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "request",
+          "line": 32,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "quotes",
+          "line": 35,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_fresh_bid_after_sourced_early_close_never_fills_or_consumes_depth",
+          "line": 38,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_dated_closed_notice_overrides_open_cache_and_reopening_can_fill_once",
+          "line": 48,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_missing_expired_conflicting_or_future_session_does_not_invent_a_fill",
+          "line": 60,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_cached_session_survives_source_outage_and_is_immutable",
+          "line": 74,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_quote_before_sourced_open_cannot_fill_during_later_open_session",
+          "line": 80,
+          "kind": "FunctionDef"
+        },
+        {
+          "name": "test_exact_source_ordering_refuses_submillisecond_future_and_effective_boundaries",
+          "line": 87,
+          "kind": "FunctionDef"
+        }
+      ]
+    },
+    {
       "file": "tests/test_paper_ledger.py",
       "lines": 88,
       "imports": [
@@ -49516,7 +49605,7 @@
     {
       "name": "paper_order_intents",
       "file": "app/paper_exchange.py",
-      "line": 20,
+      "line": 22,
       "columns": [
         {
           "name": "id",
@@ -49551,7 +49640,7 @@
     {
       "name": "paper_order_state",
       "file": "app/paper_exchange.py",
-      "line": 24,
+      "line": 26,
       "columns": [
         {
           "name": "order_id",
@@ -49574,7 +49663,7 @@
     {
       "name": "paper_order_events",
       "file": "app/paper_exchange.py",
-      "line": 26,
+      "line": 28,
       "columns": [
         {
           "name": "id",
@@ -49601,7 +49690,7 @@
     {
       "name": "paper_depth_usage",
       "file": "app/paper_exchange.py",
-      "line": 28,
+      "line": 30,
       "columns": [
         {
           "name": "snapshot_id",
@@ -58078,7 +58167,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4920,
+      "line": 4927,
       "launcher": "threading.Thread",
       "target": "loop"
     },
@@ -60273,7 +60362,7 @@
     },
     {
       "file": "app/execution_contracts.py",
-      "line": 89,
+      "line": 93,
       "names": [],
       "fields": [
         "lot_size",
@@ -60282,7 +60371,7 @@
     },
     {
       "file": "app/execution_contracts.py",
-      "line": 90,
+      "line": 94,
       "names": [],
       "fields": [
         "freeze_quantity"
@@ -60290,7 +60379,7 @@
     },
     {
       "file": "app/execution_contracts.py",
-      "line": 94,
+      "line": 98,
       "names": [],
       "fields": [
         "expiry"
@@ -61807,7 +61896,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 122,
+      "line": 159,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61815,7 +61904,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 197,
+      "line": 235,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61823,7 +61912,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 209,
+      "line": 247,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61831,7 +61920,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 297,
+      "line": 336,
       "names": [
         "NSE",
         "NSE_EQ"
@@ -61840,7 +61929,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 299,
+      "line": 338,
       "names": [],
       "fields": [
         "tick_size"
@@ -61848,7 +61937,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 327,
+      "line": 366,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61856,7 +61945,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 364,
+      "line": 404,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61864,7 +61953,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 375,
+      "line": 415,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61872,7 +61961,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 439,
+      "line": 481,
       "names": [],
       "fields": [
         "instrument_key"
@@ -61880,7 +61969,7 @@
     },
     {
       "file": "app/paper_exchange.py",
-      "line": 477,
+      "line": 519,
       "names": [],
       "fields": [
         "instrument_key"
@@ -62098,7 +62187,7 @@
     },
     {
       "file": "app/schema_migrations.py",
-      "line": 83,
+      "line": 84,
       "names": [],
       "fields": [
         "instrument_key"
@@ -64192,7 +64281,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4779,
+      "line": 4786,
       "names": [
         "NSE"
       ],
@@ -64200,7 +64289,7 @@
     },
     {
       "file": "app/v2_live.py",
-      "line": 4835,
+      "line": 4842,
       "names": [
         "NSE"
       ],
@@ -66423,6 +66512,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/exchange-key-diffs.patch",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/factor-ledger.json",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -66483,6 +66576,10 @@
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
     {
+      "file": "reports/release-audit-2026-10-06/ui-evidence/exchange-cancel-desktop-2026-10-07.png",
+      "reason": "runtime/private values or report artifact excluded from source extraction; names only"
+    },
+    {
       "file": "reports/release-audit-2026-10-06/ui-evidence/exchange-lifecycle-mobile-2026-10-07.png",
       "reason": "runtime/private values or report artifact excluded from source extraction; names only"
     },
@@ -66536,8 +66633,8 @@
     }
   ],
   "baseline": {
-    "source_commit": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
-    "generated_at": "2026-10-07T04:31:11.951782+00:00",
+    "source_commit": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "generated_at": "2026-10-07T05:26:04.279526+00:00",
     "dirty_source": true,
     "coverage": "static declarations; semantic review recorded separately"
   },
@@ -66546,7 +66643,7 @@
     "AGENTS.md": "71f8aea0b72b5992a0f94824d91cb56b13e919b1a699f975e81d0d53add744e7",
     "BACKLOG.md": "2e12e8643a56ed5b21c9bd6562caf3991feb5deb74f9cfdf1a64f4b90900dd0c",
     "Dockerfile": "1f9d001f92129a44be59a2f1f40ec7f5cf88560ecf1a33d040e89fbd42d5295c",
-    "HANDOFF.md": "805bbf54f481a9bc39f89101e8d55d876aa431d973391cd8a3fa9c991bdedef2",
+    "HANDOFF.md": "e5604638f85763035d6ee1777568a48ce8d708e59eda05e609f106c5c746dab2",
     "README.md": "0b54fb4b0dcf1b9d74de46d55482266989e39baed507bea5d64102ef9e1fffb6",
     "app/__init__.py": "f2612cd63ebdd791933240e7cdd80f931c4316a73bc02e8956e68137f6ba1ce8",
     "app/account.py": "f78c9df6e75511b73c5793047e1a20a362291b2bb547dd681e4ed96a712d6f93",
@@ -66582,7 +66679,7 @@
     "app/entry_readiness.py": "21c5802b20d83c2acd6b76f8eb51d5ad0310d691d54ad0465f48f6dfbbddb827",
     "app/event_calendar.py": "dcd68af1759b6f7cd42872c6a705cb93e8a8bf87677951d227241fa712cf237f",
     "app/executable_quotes.py": "6e5f92368d83aaac059c66b6b9a2d8c31eca442e5aecb54ceeaac3a12f774fb2",
-    "app/execution_contracts.py": "82f4a5cf60556a9b5697c6eac11f1e8ee8fb8681885619af441897cc6c2973d1",
+    "app/execution_contracts.py": "ae4f5e288f0fd27768ec39bed003258f2829936ca04388465c5c7d3d4ab8e5f1",
     "app/execution_events.py": "b06436ec19f1599b154987984ffc22c241c20c69358ba8537fc47d4a0b1a6afe",
     "app/execution_outbox.py": "ac66ddf6b6b86f75028ab4e5a7578db2ad27e6ab78d438d1df4dfebb6d1c240f",
     "app/execution_ports.py": "2e9f1d4fedd02c2800c5681074c108569f80a5f8bc258f37141679e44aa56c88",
@@ -66627,7 +66724,7 @@
     "app/order_journal.py": "182621ef3332c5120c205855eb7a6bc58bc8b7938cf49dc21d0744f51887c2fb",
     "app/order_router.py": "6f3c1d575ddfed821fb4ad60f53a1a73d22c7f2ac2ed8a12c01b4a509946ca39",
     "app/paper_broker.py": "a7230d0f00fe35f2b42de26e6c8725121ecec4067ffac303aadafe27c19f99be",
-    "app/paper_exchange.py": "02d3036b74178afb0c756b4f1f6a8a53838a662358ea872e2e434a7bab1bcca4",
+    "app/paper_exchange.py": "6be653aa689a2e2401dcfe6ab9474a085e7fa5f69d1b871baba5b0d532fa9375",
     "app/paper_ledger.py": "6771b26c06813572470b47dccff1d1464739e3b8a7885335515ae4e4abdaf8e8",
     "app/personal_alerts.py": "dc9c6e0afd83e738dd1535c6a048502f437987d0e3cdddd26be0ffb869dd76fe",
     "app/personal_performance.py": "36cc664423e4f5df0d088b5b4d588e12e67cd3529ea40110a4852463843b4f3b",
@@ -66647,7 +66744,7 @@
     "app/request_context.py": "ee3bc252a3c3b0d972cb732e52d6e44bb8fcff9b964fdfa9b94601bd1a437069",
     "app/request_security.py": "f56d143c958d912e4c5a67944268fd6e92966c7f47803b8cf6ff5a6af4132777",
     "app/research_data.py": "2c70ec25d17130317b9e3a31b6ba652abfbb0edb453b768f0897ce2430492b9f",
-    "app/schema_migrations.py": "a437c46be39cb1b14fc17b5fb142d93e44da4e516f84677eccac95581b95e66e",
+    "app/schema_migrations.py": "22b1ef38953f5ae066afc1dd56590479993aecb707e34d7f800df339c27230fa",
     "app/screening/__init__.py": "19385a317dd043fc1325cf805633775273bf33b0119fbd01cc4898e2e6a2f1d7",
     "app/screening/confirmation.py": "ff838d73232dcce0652d16ad617ee51e603539847850b78eada4b6f14aca69ed",
     "app/screening/plans.py": "bd0f2b86edf9436adbe5dae004a8398a64f324d1265c97cf7cbd4a4582e4dc23",
@@ -66692,7 +66789,7 @@
     "app/upgrade_rehearsal.py": "a83fc609aae4a80c9a8a0da3578d00518fdf0442792f3c8e4a1e1ba3f47560a3",
     "app/us_top_movers.py": "eccbbdd1002646f52d1a122bfac85cd30c2810b658b2ec1099348fab3fe95ec2",
     "app/v2_engine.py": "1d01c8450e19b27fc87c82426b09b3b2b3e7a29548b9e398b852318454a7ed6b",
-    "app/v2_live.py": "027ad284c5cec2d993406c448aa631750491a1b945024d9f3fa3c2f78586e130",
+    "app/v2_live.py": "e1d62553d16e859ee301b6546c426f6f0bfb2829679d8dfe832d92eeee7e7162",
     "app/v2_web.py": "453fcee8fdf38d7311ee008b3cfd381191e769c5732b4107f45c4d07a98a585b",
     "app/whatsapp.py": "d90427b62fe12201677c267609e73b6a7f5d013e3db0b56a115c006f460ae663",
     "app/worker_fencing.py": "df45afe21edad792792018f5e726d8d3f2dbfdc323872d58271fbfec15f50290",
@@ -66718,7 +66815,7 @@
     "docs/idea-tracking.md": "afe21d4d03f2e62fe06d19594299d1c1912fd575ddf8abf7430af74065d02a07",
     "docs/next-session-readiness.md": "03182898ea35eb38431d74ce4bac19199625d52c910e9e5c3632987269037f85",
     "docs/paper-candidate-rollout.md": "8bcf12c58424199f37748606d90105e6824691c52d9465736dc722e47bc4f660",
-    "docs/paper-exchange-lifecycle.md": "41d3bcb2510ca813f6ed8b9b9550ad4490d7c87fcdeefd0cbb00fadef6979ef6",
+    "docs/paper-exchange-lifecycle.md": "ecf15a0852f25032190071a9f182b758569455d6cbd5ab41d4d371c888507d17",
     "docs/recovery-and-approved-paper.md": "84632ec477f4f11dd94ea598b0ae960ae0124c38d44395af6157d6bba5d99980",
     "docs/trading-integrity.md": "ac4955890fb4e5048d82ae737b5d4bac7f297c0654da72a3f416cf28663ea05f",
     "requirements-dev.txt": "aac0f89c008ade07883c0ccc3a8f2246ab0e82489376a772c0276186740d664e",
@@ -66915,6 +67012,7 @@
     "tests/test_panel_ui_render.py": "fe4c5037af388da433c94b0ef93dd6dedce5868b2e61d3a6b2252b6a4c8d04a0",
     "tests/test_paper_exchange.py": "fd853db5ba4e478c291983c85fbf0c85ba3730c561c70a64e480035a47fe9685",
     "tests/test_paper_exchange_exits.py": "cad2353e837d6c0d6f10799e0d7749c32bcbf364bb5dc203233a8efbc07b735c",
+    "tests/test_paper_exchange_sessions.py": "9df93195771d21a1fedd22e1325f9209d4d47ac5d8673eb57bb227676d9dd304",
     "tests/test_paper_ledger.py": "7c0dc42a1f4e23e62e7cd680310945e1b60924a1dc91d888f6e8dafc6394da2e",
     "tests/test_pattern_alerts.py": "b7226ee41bc3ebceec472a8faaceb23bd81d95bfeb2b6d783cc066ff351db9ec",
     "tests/test_pattern_filter.py": "41d5ee288d27af42edbc13f6d4824e0f74b2102fe7186d1e28db2e784d8b9055",
@@ -66951,7 +67049,7 @@
     "tests/test_reset_is_shared.py": "9a0ded709a31589086e7e3301ffe031ed7e2b0fba5d4f99fabf5cc24e3a889cf",
     "tests/test_retired_entry_controls.py": "781f861acd9972ca606e288d61994cf923284178f9b91671b6014e54cf8e379f",
     "tests/test_runtime_settings_preservation.py": "0761489e8713b1c9279d66995477df9e22e2ea5b609076f6af907e0b0b6d08e8",
-    "tests/test_schema_migrations.py": "d4606f61f44ca6011c1241d7082720d1e14635dc1f54bf7975bf8dff8be3610e",
+    "tests/test_schema_migrations.py": "7d8b89dc4b1a3b16014d775dbdeac657ef30d4f3d4c54df601030c7e92e49154",
     "tests/test_shareholding_ingest.py": "341595b407de3699b6d76b0379faf98fe31426d6aaf692ee2a46658aa78be859",
     "tests/test_sleeve_cold_imports.py": "ea2eb6b78994dd204dc529b87df0d9d7dabdca6a2ab44a84baafcde4a39f47e9",
     "tests/test_sleeve_data_integrity.py": "f33aeafb2bc800556aaab5bacada937cd37cd21a6597c7270562cf5e07f5749b",

@@ -997,7 +997,7 @@ def sleeve_view(market="IN"):
 
 def ensure_schema(v2):
     from .schema_migrations import apply,TRADING_CONTRACT,validate_trading
-    apply(v2,'trading-schema-v4',dict(TRADING_CONTRACT,version=4,paper_exchange='next-event-aon-v1'),_ensure_schema,validate_trading)
+    apply(v2,'trading-schema-v5',dict(TRADING_CONTRACT,version=5,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache'),_ensure_schema,validate_trading)
 
 
 def _ensure_schema(v2):
@@ -4689,6 +4689,13 @@ def service_personal_paper(personal, market):
     if not pending_symbols:return
     house=[r[0] for r in personal.execute("SELECT symbol FROM v2_positions WHERE market='IN'")]
     quotes=_live(market,set(pending_symbols+symbols+house))
+    # Protection is already evaluated. Refresh session evidence separately:
+    # failed entry rules never erase a valid current protective session cache.
+    try:
+        with entry_contracts.open_catalogue() as (catalogue,now):
+            paper_exchange.sync_sessions(personal,catalogue,now=now)
+    except (ValueError,sqlite3.Error,OSError):
+        _LOG.warning('Paper exit session refresh unavailable; retaining sourced cache',exc_info=True)
     paper_exchange.service_exits(personal,quotes)
     if not buys:return  # Exits require no entry catalogue or subscription.
     try:

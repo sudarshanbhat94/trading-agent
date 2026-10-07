@@ -58,11 +58,12 @@ def validate_trading(connection):
         'paper_order_intents':{'id','user_id','epoch','plan_id','payload'},
         'paper_order_state':{'order_id','status','result'},
         'paper_order_events':{'order_id','kind','payload','observed_at'},
+        'execution_contract_evidence':{'id','kind','identity','observed_at','effective_from','effective_until','source','payload'},
     }
     for table,columns in required.items():
         missing=columns-{r[1] for r in connection.execute('PRAGMA table_info('+table+')')}
         if missing:raise RuntimeError('Required migration contract incomplete: '+table+' '+str(sorted(missing)))
-    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings','paper_order_intents','paper_order_events'):
+    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings','paper_order_intents','paper_order_events','execution_contract_evidence'):
         triggers=[(r[0] or '').upper() for r in connection.execute('SELECT sql FROM sqlite_master WHERE type=? AND tbl_name=?',('trigger',table))]
         if any(not any(('BEFORE '+operation) in sql and 'RAISE(ABORT' in sql for sql in triggers) for operation in ('UPDATE','DELETE')):
             raise RuntimeError('Required immutable table protection unavailable: '+table)

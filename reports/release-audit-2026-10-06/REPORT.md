@@ -2,7 +2,7 @@
 
 **TRADING BEHAVIOUR CHANGED locally.** All three entry writers now require sourced canonical cash contracts and an available ON/NEUTRAL regime. Automatic trigger rounding uses sourced ticks without increasing initial risk. Manual paper requests freeze immutable owned approvals before the shared serialized risk/fill pipeline. New broker exposure needs exact build/account/route/model release and native-protection policy evidence. Strategy thresholds, production allowlist, ₹10,000 epoch and registered forward protocol are preserved. Nothing was deployed; no real order, production reset or credential change occurred.
 
-**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 57 findings: 23 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
+**Commercial/live release: NO-GO. Entire release plan: incomplete.** There are 59 findings: 25 locally repaired, 19 partially repaired, 11 missing capabilities and 4 unverified requirements. F01–F53 retain their IDs/history; F54 is a reproduced critical billing atomicity defect; F55 is a newly reproduced concurrent startup-import failure, both repaired locally. F56 revalidates false daily-job completion; F07/F10 receive further exposure/source fixes. Isolated pinned OCI runtime, production-copy migrations and app boot passed, without production cutover. Local engineering, deployed correctness, independent profitability and commercial permission are separate assessments.
 
 ## Baseline and scope
 
@@ -10,7 +10,7 @@ Original audit `b588ffdca0e0309500a6bc0e74699d5c1c586c2e`; this implementation p
 
 Read-only production evidence from 7 October at 04:13 UTC: build `2b300b4e7de90157362f104bf3654de7cde6215e`, service active; user 2 capital/cash/equity ₹10,000, zero positions; epoch `2026-09-22T13:34:11.273061+00:00`. Forward protocol SHA-256 `1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2`. Peak/drawdown were not queried. This is a dated observation, not a deployed repair or browser-visible production assurance.
 
-The current static inventory contains 145 app modules (88,449 lines), 78 scripts, 179 test modules, 163 decorated routes, 30 model declarations, 187 SQL declaration sites, 287 config fields, 320 unique environment **names**, 39 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
+The current static inventory contains 145 app modules (88,506 lines), 78 scripts, 180 test modules, 163 decorated routes, 30 model declarations, 187 SQL declaration sites, 287 config fields, 320 unique environment **names**, 39 launcher candidates and 7 UI surfaces. No environment values/credentials or runtime datasets were copied. [Coverage](coverage.md) explicitly distinguishes targeted semantic review from static inventory; full semantic review of every legacy module is unfinished. The app remains an assembled JavaScript SPA; an inventory match is not runtime certification.
 
 ## A. Readiness scores and top risks
 
@@ -27,7 +27,7 @@ Disclosed rubric: D implemented design, T relevant invariant tests, P deployed o
 | Product UI | 2/3/0/1/0 | 30 | Current account components/receipts and isolated mobile lifecycle; full deployed journeys unfinished. |
 | Commercial | 1/0/0/0/0 | 5 | Applicable requirements identified; qualified legal/broker/data permissions absent. |
 | Reliability | 2/3/0/1/0 | 30 | Atomic migrations/streaming disabled restore; actual supervised/off-host/SLO drills incomplete. |
-| Testing | 3/3/0/1/0 | 35 | 2,320 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
+| Testing | 3/3/0/1/0 | 35 | 2,330 passes + 102 functions; 133 skips and separate certification/market evidence remain. |
 
 Top risks: F01/F22 independent stock-model approval; F08 real broker-native protection including completed GTT/amendment/outage recovery; F09/F11 complete actual net/fee/margin/FX/settlement accounting; F10 real daily official rules/actions/calendars and historical binding; F21 Angel orchestration/additional assets; F16/F50 legal and data rights; F41 actual off-host complete backup/restore; F44 relevant paper sessions and exact release certification. The deployed build does not include the current local repairs.
 
@@ -95,6 +95,8 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 
 | F56 | High | Locally repaired | Not deployed / uncertified | Daily data job reports success for old history and failed markets — [scripts/candle_ingest.py:105](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:105), [scripts/candle_ingest.py:175](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:175), [scripts/candle_ingest.py:251](/Users/pavithramayya/Documents/Sudarshan/trading-agent/scripts/candle_ingest.py:251) | 2–4 |
 | F57 | Medium | Locally repaired | Not deployed / uncertified | No-op startup rewrites every runtime-setting timestamp — [app/main.py:108](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/main.py:108), [app/db.py:6360](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/db.py:6360) | 1–2 |
+| F58 | High | Locally repaired | Not deployed / uncertified | Fresh paper bid can fill outside the sourced exchange session — [app/paper_exchange.py:496](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:496), [app/paper_exchange.py:63](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:63), [app/v2_live.py:4693](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/v2_live.py:4693) | 1–4 |
+| F59 | High | Locally repaired | Not deployed / uncertified | Rounded source-time ordering can select superseded or future contract evidence — [app/execution_contracts.py:65](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/execution_contracts.py:65), [app/paper_exchange.py:38](/Users/pavithramayya/Documents/Sudarshan/trading-agent/app/paper_exchange.py:38) | 1–4 |
 
 ## C. Architecture/data models
 
@@ -118,7 +120,7 @@ Top risks: F01/F22 independent stock-model approval; F08 real broker-native prot
 
 ## Verification and limits
 
-Final frozen source: **2,453 unittest checks run; 2,320 passed, 133 skipped, zero failures/errors**, 19.221 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
+Final frozen source: **2,463 unittest checks run; 2,330 passed, 133 skipped, zero failures/errors**, 19.592 seconds, exit 0. Separate research/UI functions: **102 passed**, exit 0. Both isolated paper rehearsals pass; balanced cash, no duplicates/ownership errors/negative cash, zero broker orders. Earlier failed runs remain recorded separately; final source also repairs the actual copied-production startup no-op timestamp defect without weakening entry gates.
 
 [verification.json](verification.json) retains earlier failed runs, the initial local-test isolation defect and its repair, dependency evidence and browser scope. Legacy storage fixtures explicitly replace external contract/native authorization evidence; new boundary tests use actual dated synthetic catalogues and real risk/ledger/approval code. No source was edited during the final broad run.
 
@@ -149,3 +151,9 @@ Final frozen source: 2,453 run / 2,320 passed / 133 skipped / zero failures/erro
 F57 was reproduced only when the actual app booted against copied production data: all 234 runtime-setting timestamps changed despite zero changed values. Conditional UPSERT now preserves no-op configuration history; real updates retain their timestamp. The first startup harness also attempted to patch an optional uninstalled library; that harness error is recorded separately. No production setting was changed.
 
 Corrected final candidate actual-app startup passed on fresh guarded production copies after that repair: unauthenticated positions 401; capital/cash/equity ₹10,000, zero positions; all checked original paper/account/configuration values, epoch and protocol preserved. Outbound HTTP and workers were disabled; production was unchanged. Browser cancellation also retained ₹10,000/zero positions after a later executable quote. [Cancellation proof](ui-evidence/exchange-cancel-desktop-2026-10-07.png).
+
+## Sourced-session closure follow-up
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** F58 reproduces paper exits filling after an explicit early close; F59 reproduces rounded source ordering overlooking a newer notice. Current immutable session cache gates both quote/fill times, retains owned exits when source status is unknown/closed/expired/conflicting and permits unexpired sourced-cache exits through an entry catalogue outage. Source observation/effective ordering now uses exact aware times. Trading schema v5 verifies the cache and immutable triggers. Final frozen suite: 2,463 run / 2,330 passed / 133 skipped; 102 functions passed. These repairs do not certify full source coverage, production execution or strategy returns.
+
+The final sourced-session candidate also passed actual app startup and migration on new guarded production copies in the pinned OCI runtime. All checked original paper/account/configuration values and timestamps, epoch/protocol and ₹10,000 balances were preserved. Workers/outbound HTTP blocked, unauthenticated positions 401, production modified false, real orders zero. The 407 runtime code-file hashes match this reviewed source.
