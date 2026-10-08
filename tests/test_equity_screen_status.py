@@ -17,7 +17,7 @@ class EquityScreenStatusTest(unittest.TestCase):
         got = equity_screen_status(data, NOW)
         self.assertEqual((got['status'],got['universe_count'],got['screened_count'],got['evidence_passes']),
                          ('current',500,5,5))
-        self.assertNotIn('NIFTYBEES', [r['symbol'] for r in data['equities']])
+        self.assertNotIn('TEST_INDEX_FUND', [r['symbol'] for r in data['equities']])
         self.assertEqual(data, before)
 
     def test_score_cannot_make_failed_evidence_a_pass(self):
@@ -62,9 +62,9 @@ class EquityScreenStatusTest(unittest.TestCase):
         got = paper_execution_scope()
         self.assertEqual(got['production_sleeves'],list(PRODUCTION_SLEEVES))
         self.assertTrue(got['stock_entries_enabled'])
-        self.assertEqual(got['stock_model_version'], 'selective-paper-v1')
+        self.assertEqual(got['stock_model_version'], 'selective-paper-v2')
         self.assertEqual(got['stock_validation'], 'unvalidated paper trial')
-        self.assertEqual(got['automated_index_instruments'],['NIFTYBEES'])
+        self.assertEqual(got['automated_index_instruments'],[])
         self.assertEqual(SLEEVES,before)
 
     def test_overview_sends_actual_stock_coverage_alongside_execution_scope(self):

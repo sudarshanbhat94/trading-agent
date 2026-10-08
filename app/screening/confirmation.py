@@ -19,7 +19,7 @@ POLICY = dict(version=VERSION, volume_multiple=1.5, close_location=0.6,
               next_session_only=True, production_approved=False)
 # Selection v3 is tracked prospectively under the same entry checks. The
 # registered v2 portfolio experiment still selects v2 publications ONLY.
-SUPPORTED_MODELS = ('conditional-pullback-v2', 'conditional-pullback-v3')
+SUPPORTED_MODELS = ('conditional-pullback-v2', 'conditional-pullback-v3', 'conditional-pullback-v4')
 
 
 def next_session(day):
@@ -40,7 +40,7 @@ def assess(plan, state, bars, quote, context, now, previous=None):
         checks.append(dict(code=code,passed=bool(passed),reason=reason))
     supported=(plan.get('model_version') in SUPPORTED_MODELS
                and plan.get('confirmation_policy')==POLICY
-               and (plan.get('model_version')!=SELECTIVE_MODEL or plan.get('selection_policy')==SELECTION_POLICY))
+               and (plan.get('model_version') not in ('conditional-pullback-v3', SELECTIVE_MODEL) or plan.get('selection_policy')==SELECTION_POLICY))
     check('model',supported,'Supported forward research policy required; legacy scenarios are preserved')
     touch=state.get('entry_at')
     alive=state.get('status') not in t.TERMINAL
@@ -137,9 +137,10 @@ def refresh(main, path, paper, screen, regime, now=None):
     now=now or datetime.now(timezone.utc)
     con=t.connect(path)
     try:
+        marks=','.join('?' for _ in SUPPORTED_MODELS)
         rows=con.execute('SELECT p.id,p.user_id,p.payload,s.payload,a.payload '
             'FROM publications p JOIN states s ON s.publication_id=p.id '
-            'LEFT JOIN assessments a ON a.publication_id=p.id WHERE json_extract(p.payload,\'$.model_version\') IN (?,?)',
+            f'LEFT JOIN assessments a ON a.publication_id=p.id WHERE json_extract(p.payload,\'$.model_version\') IN ({marks})',
             SUPPORTED_MODELS).fetchall()
         if not rows:return 0
         market=sqlite3.connect(f'file:{Path(main).resolve()}?mode=ro',uri=True,timeout=5)

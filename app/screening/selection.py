@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from .screen import MIN_TURNOVER
 from .financials import valid_income_history
 
-MODEL_VERSION = "conditional-pullback-v3"
+MODEL_VERSION = "conditional-pullback-v4"
 POLICY = dict(version="selective-ideas-v1", max_ideas=3, min_ideas=0,
               max_per_sector=1, min_roe_pct=15., max_debt_equity=1.,
               min_cash_conversion=.5, min_earnings_years=3,

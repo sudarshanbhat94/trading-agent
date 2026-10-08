@@ -963,13 +963,16 @@ def _remember_sleeve_view(market, result, asof, today_s):
     else:
         reason = "no production candidate cleared every gate"
         state = "STAND ASIDE"
+    from .sleeves.regime import MODEL_VERSION as market_model_version
     _sleeve_views[market] = dict(
         state=state, reason=reason, regime=result.regime.state,
         regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
+        regime_source=result.regime.source, market_context=result.regime.diagnostics,
+        market_model_version=market_model_version,
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
         risk_rejections=[dict(symbol=s, reason=r) for s, r in result.risk_rejections[:5]],
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
-        cadence="stocks: each production screening cycle; index: monthly review", decisions=decisions,
+        cadence="stocks and actual indices: each production screening cycle", decisions=decisions,
         diagnostics=(primary.get("diagnostics", {}) if primary else {}))
     # Survive service restarts and closed-market deployments. This is display
     # state only; failure to persist it must never affect the trading pass.
@@ -992,7 +995,12 @@ def sleeve_view(market="IN"):
                 _sleeve_views.update(saved)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             pass
-    return dict(_sleeve_views.get(market) or {})
+    current = dict(_sleeve_views.get(market) or {})
+    from .sleeves.regime import MODEL_VERSION
+    if current and current.get('market_model_version') != MODEL_VERSION:
+        return dict(state='WAITING FOR DATA',regime=None,
+                    reason='Waiting for the first completed stock/index cycle under the current market model')
+    return current
 
 
 def ensure_schema(v2):
@@ -4506,6 +4514,8 @@ def sleeve_pass(market):
             eligible, quality_scores = snapshot(datetime.now(timezone.utc))
             from .screening import automation
             observed_at = datetime.now(timezone.utc)
+            from .index_history import load as load_index_history
+            tails = dict(tails, **load_index_history(observed_at))
             result = _SLEEVE_ENGINE.run(
                 tails, mdf, asof, live, book,
                 trade_date=today,

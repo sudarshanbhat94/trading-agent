@@ -221,6 +221,8 @@ def run(args):
         dates = [g.index[-1] for g in tails.values() if not g.empty]
         if not dates: raise ValueError("completed-session prices unavailable")
         asof = max(dates)
+        from app.index_history import capture as capture_index_history
+        tails.update(capture_index_history(con,asof,errors))
         sectors = {}
         wanted = []
         features = {}

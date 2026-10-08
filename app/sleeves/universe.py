@@ -30,7 +30,7 @@ MIN_PRICE, MAX_PRICE = 50.0, 1_200.0
 #: index products the index sleeve may trade
 INDEX_SYMBOLS = ("NIFTY", "BANKNIFTY")
 #: never treat these as stocks — they are cash-parking or index vehicles
-EXCLUDE_PREFIXES = ("NIFTYBEES", "BANKBEES", "LIQUIDBEES", "GOLDBEES", "JUNIORBEES")
+EXCLUDE_PREFIXES = ("LIQUIDBEES", "GOLDBEES", "JUNIORBEES")
 
 
 def liquid_universe(tails: dict, asof, min_turnover: float = MIN_TURNOVER,
@@ -38,7 +38,7 @@ def liquid_universe(tails: dict, asof, min_turnover: float = MIN_TURNOVER,
     """Symbols that are liquid enough and priced sensibly for this book."""
     rows = []
     for sym, g in tails.items():
-        if any(sym.upper().startswith(p) for p in EXCLUDE_PREFIXES):
+        if sym.upper().endswith('BEES') or any(sym.upper().startswith(p) for p in EXCLUDE_PREFIXES):
             continue
         try:
             if asof not in g.index:

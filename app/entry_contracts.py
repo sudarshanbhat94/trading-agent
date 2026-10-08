@@ -69,6 +69,8 @@ def check(market,symbol,quantity,price,stop,target,*,broker='paper',product='D',
         now=datetime.now(timezone.utc)
     try:
         spec,alias=resolve(catalogue,symbol=symbol,venue='NSE',segment='NSE_EQ',now=now)
+        from .instrument_policy import is_retired
+        if is_retired(alias):raise InstrumentError('Retired instrument: new entries are disabled')
         if key is not None and alias!=key:raise InstrumentError('Broker alias disagrees with canonical entry identity')
         spec,alias,evidence=execution_contracts.order_contract(catalogue,instrument_id=spec.id,
                                        quantity=quantity,price=price,now=now)

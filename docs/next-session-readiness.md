@@ -38,7 +38,7 @@ Ideas shows an owned **Trading readiness** panel. Enter up to 20 NSE cash symbol
   --paper /opt/opentrade/var/v2_paper.db \
   --market /opt/opentrade/var/trading_agent.db \
   --catalogue /opt/opentrade/var/instrument_catalogue.db \
-  --user-id "$ACCOUNT_ID" --symbols RELIANCE,HDFCBANK,NIFTYBEES
+  --user-id "$ACCOUNT_ID" --symbols RELIANCE,HDFCBANK,retired index fund
 ```
 
 Paths must already exist. Exit 0 means ready for further **paper** order checks; 2 means waiting/blocked; 1 means unavailable. This command never submits an order. Safety status remains accessible to the authenticated owner without a paid subscription.

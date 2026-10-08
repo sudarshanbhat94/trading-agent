@@ -15,7 +15,7 @@ Production lacks a required encryption dependency and has older packages. A sepa
 
 The actual FastAPI application booted in that isolated runtime with outbound HTTP blocked and workers disabled. Unauthenticated positions returned 401; copied paper balances stayed intact. The first verification used a nonexistent `n_positions` accessor; the corrected check used `books.positions()` and passed. No application repair is claimed for that harness error.
 
-This is not a production browser check, a running production paper cycle, broker reconciliation, a coordinated backup or profitability evidence. Read-only checks found October 6 daily bars for 2,628 symbols including NIFTYBEES. The stored OFF decision was not forced ON. Official NSE report-page/archive requests timed out locally and from OCI; no missing rules were fabricated.
+This is not a production browser check, a running production paper cycle, broker reconciliation, a coordinated backup or profitability evidence. Read-only checks found October 6 daily bars for 2,628 symbols including retired index fund. The stored OFF decision was not forced ON. Official NSE report-page/archive requests timed out locally and from OCI; no missing rules were fabricated.
 
 ## Reproduce the migration check
 

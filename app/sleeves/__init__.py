@@ -7,7 +7,7 @@ in the production orchestrator. Other sleeves remain research-only.
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
     quality_momentum  trial     — dated stock quality + confirmed pullback, ON/NEUTRAL
     early_momentum    tactical  — pre-top-gainer ignition detector
-    index_directional index     — monthly NIFTYBEES trend exposure
+    index_directional index     — actual Nifty and Bank Nifty context; contract-gated execution
     options_overlay   overlay   — defined-risk spreads only
 
 Design rules that apply to every sleeve, enforced by `base.Sleeve`:

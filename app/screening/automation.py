@@ -16,7 +16,7 @@ from . import confirmation, plans, selection, store, tracking
 from ..sleeves.base import Candidate, Sleeve
 from ..sleeves.risk import RiskManager
 
-MODEL_VERSION = 'selective-paper-v1'
+MODEL_VERSION = 'selective-paper-v2'
 # Namespace within the dedicated automation journal, NOT an account user ID.
 JOURNAL_OWNER = 1
 
@@ -37,7 +37,7 @@ def screen_path():
 
 
 def current_screen(now):
-    return store.report(str(screen_path()), now)
+    return store.current_report(str(screen_path()), now)
 
 
 def observe(quotes, now):

@@ -223,6 +223,8 @@ def _regime_bg(market):
             d = []
         if d:
             from .sleeves.regime import RegimeGate
+            from .index_history import load as load_index_history
+            syms.update(load_index_history())
             state = RegimeGate().view(syms, mdf, d[-1]).state
         else:
             state = None
@@ -2340,11 +2342,7 @@ def api_search(q: str = ""):
     q = q.strip().upper()
     if len(q) < 2:
         return JSONResponse([])
-    # INDICES FIRST. They are not rows in `universe` — an index is not a listed
-    # equity — so searching "nifty" returned only the ETFs that track it
-    # (NIFTYBEES, NIFTY1, NIFTYETF) and never NIFTY itself. There was no way to
-    # reach the index page from anywhere in the UI, which is why it looked like
-    # the page did not exist.
+    # Index levels have their own analysis route; they are not cash equities.
     out = []
     try:
         from . import v2_live as _vl
@@ -2359,7 +2357,10 @@ def api_search(q: str = ""):
         "SELECT symbol,name,exchange FROM universe WHERE enabled=1 AND (symbol LIKE ? OR upper(name) LIKE ?) "
         "ORDER BY CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END, length(symbol) LIMIT 8",
         (q + "%", "%" + q + "%", q + "%")).fetchall()
+    from .instrument_policy import retired_symbols
+    retired = retired_symbols(con)
     con.close()
+    rows = [r for r in rows if r[0] not in retired]
     out.extend(dict(symbol=r[0], name=(r[1] or "")[:40], kind="equity",
                     market="IN" if str(r[2]).upper() in ("NSE", "BSE") else "US")
                for r in rows)
@@ -2544,9 +2545,9 @@ def _decision_with_live_readiness(market, decision):
 def _evidence_screen(market):
     if market != "IN":
         return dict(status="unavailable", equities=[], indices=[], note="NSE evidence screen only")
-    from .screening.store import report
+    from .screening.store import current_report
     path = os.environ.get("SCREENING_DB", os.path.join(os.path.dirname(MAIN_DB), "screening.db"))
-    return report(path)
+    return current_report(path)
 
 
 @router.get("/api/screen")
@@ -2621,7 +2622,7 @@ def api_idea_publication(publication_id: int, user: dict = Depends(require_sessi
 
 
 @router.get('/api/trading-readiness')
-def api_trading_readiness(symbols: str = 'NIFTYBEES', user: dict = Depends(require_session)):
+def api_trading_readiness(symbols: str = 'RELIANCE,ITC', user: dict = Depends(require_session)):
     from . import books, entry_contracts, entry_readiness, v2_live
     selected = list(dict.fromkeys(s.strip().upper() for s in symbols.split(',') if s.strip()))
     if not selected or len(selected) > 20 or any(len(s) > 40 for s in selected):
@@ -2830,6 +2831,11 @@ def api_ideas(market: str = "IN", days: int = 30,
     v2 = _ro(V2_DB)
     try:
         rows = _ideas.visible(v2, market, plan, days=days)
+        from .instrument_policy import retired_symbols
+        master = _ro(MAIN_DB)
+        try: retired = retired_symbols(master)
+        finally: master.close()
+        rows = [r for r in rows if r['symbol'] not in retired]
         today_s = datetime.now(IST).date().isoformat()
         _source_marks = ",".join("?" * len(_ideas.SLEEVE_SOURCES))
         published_today = v2.execute(
@@ -5571,7 +5577,7 @@ function ideaTrackingStatus(s){return ({WAITING:'Waiting for entry',ZONE_TOUCHED
 function ideaTrackingBadge(r){return r?'<span>'+ideaTrackingStatus(r.status)+'</span><small>Tracking since '+ideaTime(r.issued_at)+' · '+r.samples+' quotes'+(r.gaps?' · '+r.gaps+' gaps':'')+'</small>':'<span>Tracking not available</span><small>Reload to check publication capture.</small>';}
 function ideaConfirmationHtml(r){
  var a=r.confirmation;
- if(!a)return '<p>Confirmed-entry model: '+(r.plan&&['conditional-pullback-v2','conditional-pullback-v3'].includes(r.plan.model_version)?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
+ if(!a)return '<p>Confirmed-entry model: '+(r.plan&&['conditional-pullback-v2','conditional-pullback-v3','conditional-pullback-v4'].includes(r.plan.model_version)?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
  return '<div class=idea-confirmation><b>Confirmed-entry research · '+esc(a.model_version)+'</b><p>'+esc(a.reason)+' · checked '+ideaTime(a.checked_at)+(a.fresh?'':' · historical assessment')+'. Execution remains unpromoted.</p>'
  +'<ul>'+(a.checks||[]).map(function(c){return '<li>'+ (c.passed?'✓ ':'○ ')+esc(c.reason)+'</li>';}).join('')+'</ul></div>';
 }
@@ -5667,7 +5673,7 @@ function renderEvidenceScreen(e){
  }).join('');
  var indices=(e.indices||[]).map(function(r){var m=r.metrics||{},o=r.options||{},last=r.last_option_snapshot||{},mk=r.market||{},v=mk.india_vix||{};
   return '<div class=ig-watch-row style="display:block"><b>'+esc(r.symbol)+'</b><div class=ig-watch-note>'
-   +'Price proxy '+esc(r.price_proxy)+' ₹'+(m.price==null?'unavailable':INR.format(m.price))
+   +'Actual index level '+esc(r.benchmark||r.symbol)+' '+(m.price==null?'unavailable':INR.format(m.price))
    +' · 20-session return '+num(m.return20_pct)+'% · PCR '+num(o.pcr_oi)
    +' · max pain '+num(o.max_pain)+' · India VIX '+num(v.value)+' ('+esc(v.session||'unavailable')+')'
    +' · liquid-stock breadth above 50-session mean '+num(mk.breadth_above50_pct)+'%'
@@ -5695,14 +5701,14 @@ function renderIdeas(d){
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
- var st=d.stats||{},dx=dec.diagnostics||{},preview=d.stock_plans;
+ var st=d.stats||{},dx=dec.market_context||{},preview=d.stock_plans;
  document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Selective stock ideas</h1><p>Only qualifying setups, with entry levels, exit scenarios and risk sized for your paper book.</p></div>'
   +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':dec.regime=='OFF'?'Entries paused':'Regime '+(dec.regime||'unavailable'))+'</small></div></div>' :!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
   +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
-  +'<div><div class=ig-sn>'+(dx.completed_close==null?'—':ccy+f.format(dx.completed_close))+'</div><div class=ig-sl2>NIFTYBEES close</div></div>'
-  +'<div><div class=ig-sn>'+(dx.sma200==null?'—':ccy+f.format(dx.sma200))+'</div><div class=ig-sl2>200-session gate</div></div>'
+  +'<div><div class=ig-sn>'+(dx.completed_close==null?'—':ccy+f.format(dx.completed_close))+'</div><div class=ig-sl2>Nifty 50 completed close</div></div>'
+  +'<div><div class=ig-sn>'+(dx.trend_mean==null?'—':f.format(dx.trend_mean))+'</div><div class=ig-sl2>50-session market trend</div></div>'
   +'</div>':
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+(st.win_pct==null?'—':st.win_pct+'%')+'</div>'
@@ -5720,11 +5726,7 @@ function renderIdeas(d){
     +'can watch it build, not as evidence.</div>':'');
  fdSet('ideasHead','fd-card',
   '<details class=ig-how><summary>How this is calculated</summary>'
-  +(allManaged?'<div class=fd-text style="margin-top:0">Funded NIFTYBEES entries use the '
-   +ccy+f.format(d.capital)+' shared paper book and the completed 200-session trend. '
-   +'There is no fixed profit target. The NSE Quality 50 stock screen is research only: '
-   +'it cannot open paper trades or publish buy ideas after its negative retrospective holdout. '
-   +'Real-broker mirroring is disabled for these ideas.</div>'
+  +(allManaged?'<div class=fd-text style="margin-top:0">Selective individual-stock ideas use dated quality, liquidity and participation evidence, published entry/stop/target levels, rebound confirmation and account risk checks. Actual Nifty 50 trend and stock breadth determine the market regime. Index levels provide context; derivative execution requires its own eligible contract. Paper results remain unvalidated.</div>'
    :'<div class=fd-text style="margin-top:0">Historical ideas retain their published stop and target levels.</div>')
   +'</details>');
  var head='';
@@ -5740,12 +5742,12 @@ function renderIdeas(d){
    +esc(dec.decision_stale?(dec.last_regime||'—'):(dec.regime||'—'))
    +(dec.breadth!=null?' · breadth '+esc(dec.breadth)+'%':'')
    +(dec.asof?' · data through '+esc(dec.asof):'')
-   +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
-     +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
+   +(dx.distance_pct!=null?'<br>Nifty 50 is '+Math.abs(dx.distance_pct)+'% '
+     +(dx.distance_pct>=0?'above':'below')+' its 50-session market trend.':'')
    +(stockDec.note?'<br>Quality stocks: '+esc(stockDec.note):'')
    +(dec.decision_stale?'<br>No new entries until a fresh completed-session paper cycle.':'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
-   +'<br>Market checked during every NSE session; Nifty entries reviewed monthly.</div></div>';
+   +'<br>Stocks and actual index context reviewed during each production screening cycle.</div></div>';
  var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
  var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>'
    +(dec.decision_stale?'Last NSE Quality 50 screen':'NSE Quality 50 stock screen')+'</b><span>'

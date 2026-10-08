@@ -105,10 +105,10 @@ class RegimeIsTheMasterGateTest(ContractStorageCase):
                 self.assertNotIn("OFF", sleeve.allowed_regimes,
                                  "no sleeve may open longs in an OFF regime")
 
-    def test_nifty_200_day_slope_compares_like_with_like(self) -> None:
+    def test_actual_nifty_trend_compares_completed_sessions(self) -> None:
         nifty = _panel(n_days=260, drift=.001, vol=0, seed=9)
         mdf = self._mdf(rising=True).reindex(nifty.index).ffill().bfill()
-        broad = {"NIFTYBEES": nifty}
+        broad = {"NIFTY": nifty}
         broad.update({f"S{i}": _panel(n_days=260, drift=.001, vol=0, seed=i)
                       for i in range(20)})
         view = RegimeGate().view(broad, mdf, nifty.index[-1])
@@ -116,50 +116,34 @@ class RegimeIsTheMasterGateTest(ContractStorageCase):
 
 
 class EvidenceBackedIndexSleeveTest(ContractStorageCase):
-    def test_nifty_etf_is_the_only_routable_index_candidate(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=7)
-        regime = SimpleNamespace(state="ON")
-        ctx = SimpleNamespace(regime=regime, tails={"NIFTYBEES":bars},
-                              asof=bars.index[-1], trade_date=bars.index[-1] + pd.offsets.MonthBegin(),
-                              live={"NIFTYBEES":{"price":float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
-        self.assertEqual(decision.candidates[0].instrument, "EQ")
-        self.assertEqual(decision.candidates[0].allocation_pct, .50)
+    def context(self,state="ON",tails=None):
+        bars=_panel(n_days=260,drift=.001,vol=0,seed=7)
+        return SimpleNamespace(regime=SimpleNamespace(state=state),
+            tails=tails if tails is not None else {"NIFTY":bars,"BANKNIFTY":bars},
+            asof=bars.index[-1],live={"NIFTY":{"price":23500}})
 
-    def test_fresh_book_can_enter_midmonth_once(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=17)
-        asof = bars.index[-2]
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON", strong=True),
-                              tails={"NIFTYBEES": bars}, asof=asof,
-                              trade_date=bars.index[-1], bootstrap_entry=True,
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
-        self.assertTrue(decision.diagnostics["bootstrap_entry"])
+    def test_actual_indices_are_analysis_never_fake_cash_candidates(self):
+        decision=IndexDirectionalSleeve().propose(self.context())
+        self.assertTrue(decision.active)
+        self.assertEqual(decision.candidates,[])
+        self.assertEqual([r['symbol'] for r in decision.diagnostics['indices']],['NIFTY','BANKNIFTY'])
+        self.assertTrue(all(r['status']=='analysis active' for r in decision.diagnostics['indices']))
+        self.assertIn('contract required',decision.diagnostics['execution'])
 
-    def test_nonfresh_book_still_waits_for_monthly_review(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=18)
-        asof = bars.index[-2]
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON"),
-                              tails={"NIFTYBEES": bars}, asof=asof,
-                              trade_date=bars.index[-1], bootstrap_entry=False,
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual(decision.candidates, [])
-        self.assertIn("monthly", decision.note)
+    def test_off_regime_keeps_index_analysis_without_opening_longs(self):
+        decision=IndexDirectionalSleeve().propose(self.context('OFF'))
+        self.assertTrue(decision.active)
+        self.assertEqual(decision.candidates,[])
+        self.assertFalse(IndexDirectionalSleeve().may_run('OFF'))
 
-    def test_off_regime_still_explains_the_live_index_gate(self) -> None:
-        bars = _panel(n_days=260, drift=-.0002, vol=0, seed=8)
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="OFF"),
-                              tails={"NIFTYBEES": bars}, asof=bars.index[-1],
-                              trade_date=bars.index[-1] + pd.offsets.Day(),
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual(decision.candidates, [])
-        self.assertEqual(decision.note, "regime OFF blocks Nifty exposure")
-        self.assertIn("sma200", decision.diagnostics)
-        self.assertIn("distance_pct", decision.diagnostics)
+    def test_missing_index_history_is_explicit(self):
+        decision=IndexDirectionalSleeve().propose(self.context(tails={}))
+        self.assertFalse(decision.active)
+        self.assertTrue(all(r['status']=='history unavailable' for r in decision.diagnostics['indices']))
+
+    def test_no_production_cash_index_route(self):
+        from app.sleeves.index_directional import SYMBOL
+        self.assertIsNone(SYMBOL)
 
 
 class RiskManagerTest(ContractStorageCase):
@@ -184,12 +168,12 @@ class RiskManagerTest(ContractStorageCase):
                     self.assertLessEqual(a.risk_amount, cap + price)
 
     def test_index_and_stock_share_one_hard_stop_budget(self) -> None:
-        index = Candidate("NIFTYBEES", "index_directional", .8, 260, 195,
+        index = Candidate("TEST_INDEX_FUND", "index_directional", .8, 260, 195,
                           allocation_pct=.50)
         stock = Candidate("QUALITY", "quality_momentum", .8, 500, 485)
         funded = self.rm.allocate([index, stock], _book())
         self.assertEqual([a.candidate.symbol for a in funded],
-                         ["NIFTYBEES", "QUALITY"])
+                         ["TEST_INDEX_FUND", "QUALITY"])
         self.assertLessEqual(sum(a.risk_amount for a in funded),
                              SLEEVES.capital * SLEEVES.max_drawdown)
         self.assertLessEqual(funded[0].risk_amount,

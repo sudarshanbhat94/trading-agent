@@ -13,7 +13,8 @@ from .store import latest
 from .financials import valid_income_history
 
 MIN_TURNOVER = 250_000_000
-BENCHMARKS = {"NIFTY": "NIFTYBEES", "BANKNIFTY": "BANKBEES"}
+DATA_CONTRACT_VERSION = 'screening-data-v3'
+BENCHMARKS = {"NIFTY": "NIFTY", "BANKNIFTY": "BANKNIFTY"}
 
 
 def _finite(value):
@@ -96,7 +97,7 @@ def _quality(f, sector, price, asof=None):
 
 def build(tails, eligible, sectors, con, now, asof):
     features = {s: _features(g, asof) for s, g in tails.items()}
-    benchmark = features.get("NIFTYBEES")
+    benchmark = features.get("NIFTY")
     def matched(feat):
         return bool(benchmark and (feat['return20_start'],feat['return20_end']) ==
                     (benchmark['return20_start'],benchmark['return20_end']))
@@ -158,7 +159,7 @@ def build(tails, eligible, sectors, con, now, asof):
             score=round(sum(points.values()), 2), components=points,
             metrics=dict(feat, rs_vs_nifty20_pct=round(rs, 2) if rs is not None else None,
                          sector_rs20_pct=round(sector_rs, 2) if sector_rs is not None else None,
-                         rs_benchmark="NIFTYBEES", rs_benchmark_kind="Nifty equity ETF proxy"),
+                         rs_benchmark="NIFTY", rs_benchmark_kind="Actual Nifty 50 index"),
             fundamentals=f, news=news, earnings=earnings, participation=participation,
             flags=flags, actionable=False))
     rows.sort(key=lambda r: (bool(r["flags"]), -r["score"], r["symbol"]))
@@ -180,13 +181,13 @@ def build(tails, eligible, sectors, con, now, asof):
         feat = features.get(proxy)
         options = latest(con, index, "options", now, 5/1440)
         historical_options = latest(con, index, "options_snapshot", now, 4)
-        indices.append(dict(symbol=index, price_proxy=proxy, metrics=feat,
+        indices.append(dict(symbol=index, benchmark=index, benchmark_kind='Actual index level', metrics=feat,
             options=options, last_option_snapshot=historical_options, market=market, actionable=False,
-            flags=(["price proxy history unavailable"] if not feat else []) +
+            flags=(["actual index history unavailable"] if not feat else []) +
                   (["fresh option chain unavailable"] if options is None else []),
-            note="ETF completed-session price proxy; no futures / options execution claim"))
+            note="Actual completed-session index history; derivatives require a separately eligible contract"))
     return dict(status="ok" if eligible else "membership_unavailable", version="evidence-v1",
-        generated_at=now.isoformat(), price_asof=str(asof)[:10], data_contract_version="screening-data-v2",
+        generated_at=now.isoformat(), price_asof=str(asof)[:10], data_contract_version=DATA_CONTRACT_VERSION,
         source="verified NSE membership + completed prices + independently captured evidence",
         universe_count=len(eligible or []), liquid_count=len(universe),
         equities=rows, indices=indices, exclusions=excluded,

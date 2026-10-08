@@ -112,6 +112,20 @@ def _current_rows(data, now):
             row['status'] = 'REVIEW REQUIRED'
 
 
+def current_report(path, now=None):
+    """Entry/UI consumers require the current benchmark contract.
+
+    report() remains available for immutable historical/experiment review.
+    A pre-change snapshot cannot be relabelled as a new-model publication.
+    """
+    from .screen import DATA_CONTRACT_VERSION
+    data = report(path, now)
+    if data.get('status') == 'ok' and data.get('data_contract_version') != DATA_CONTRACT_VERSION:
+        return dict(status='unavailable',equities=[],indices=[],
+                    note='Waiting for current stock evidence and actual index history; older proxy screens remain historical')
+    return data
+
+
 def report(path, now=None):
     now = now or datetime.now(timezone.utc)
     try:

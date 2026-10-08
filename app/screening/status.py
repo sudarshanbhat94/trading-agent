@@ -55,7 +55,7 @@ def equity_screen_status(screen, now=None):
 def paper_execution_scope():
     """Describe the actual allowlist and feature flags; never enable a sleeve."""
     from ..sleeves.config import PRODUCTION_SLEEVES, SLEEVES
-    from ..sleeves.index_directional import SYMBOL
+    from ..sleeves.index_directional import INDEX_SYMBOLS
     enabled = [name for name in PRODUCTION_SLEEVES if getattr(SLEEVES, name).enabled]
     stocks = [name for name in enabled if name in ("mean_reversion", "quality_momentum", "early_momentum")]
     from .automation import MODEL_VERSION
@@ -63,4 +63,5 @@ def paper_execution_scope():
                 stock_entries_enabled=bool(stocks),
                 stock_model_version=MODEL_VERSION if 'quality_momentum' in stocks else None,
                 stock_validation='unvalidated paper trial' if stocks else None,
-                automated_index_instruments=[SYMBOL] if "index_directional" in enabled else [])
+                automated_index_instruments=[], screened_indices=list(INDEX_SYMBOLS),
+                index_execution='eligible derivative contract required')

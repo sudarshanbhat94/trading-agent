@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--market', type=Path, required=True)
     parser.add_argument('--catalogue', type=Path, required=True)
     parser.add_argument('--user-id', type=int, required=True)
-    parser.add_argument('--symbols', default='NIFTYBEES')
+    parser.add_argument('--symbols', default='RELIANCE,ITC')
     parser.add_argument('--decision', type=Path)
     args = parser.parse_args()
     if args.user_id < 1 or any(not p.is_file() for p in (args.paper, args.market, args.catalogue)):

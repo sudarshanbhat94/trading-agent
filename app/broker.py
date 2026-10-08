@@ -595,6 +595,9 @@ def place_order(user_id, instrument_key, qty, side="BUY", price=0.0, product="D"
     gate lives in exactly one place and cannot be half-applied by a caller that
     forgot a parameter.
     """
+    from .instrument_policy import is_retired
+    if side.upper() == 'BUY' and is_retired(instrument_key):
+        return dict(ok=False,status=422,order_id=None,response=dict(error='Retired instrument: new entries are disabled'))
     import httpx
     # market_protection was missing. Upstox accepted the payload without it, but
     # it is in the documented body and defaults are not a thing to inherit

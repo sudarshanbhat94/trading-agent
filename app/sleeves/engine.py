@@ -25,7 +25,7 @@ from .early_momentum import EarlyMomentumSleeve
 from .index_directional import IndexDirectionalSleeve
 from .mean_reversion import MeanReversionSleeve
 from .options_overlay import OptionsOverlaySleeve
-from ..screening.automation import SelectivePaperSleeve
+from ..screening.automation import SelectivePaperSleeve, MODEL_VERSION as SELECTIVE_MODEL_VERSION
 from .regime import RegimeGate, RegimeView
 from .risk import Allocation, BookState, RiskManager
 
@@ -103,7 +103,7 @@ class SleeveEngine:
         }
 
     def run(self, tails, market_df, asof, live, book: BookState, **feeds) -> PassResult:
-        regime = self.gate.view(tails, market_df, asof)
+        regime = self.gate.view(tails, market_df, asof, feeds.get('eligible_symbols'))
         ctx = SleeveContext(tails=tails, market_df=market_df, asof=asof, live=live,
                             regime=regime, settings=self.settings, book=book, **feeds)
         result = PassResult(regime=regime)
@@ -169,7 +169,7 @@ class SleeveEngine:
                 elif (cand.instrument == "EQ" and cand.sleeve == "quality_momentum"
                       and cand.symbol not in (ctx.eligible_symbols or set())):
                     dec.reject(cand.symbol, "outside verified liquid NSE universe")
-                elif cand.sleeve == 'quality_momentum' and (cand.why.get('selective_paper') or {}).get('model_version') != 'selective-paper-v1':
+                elif cand.sleeve == 'quality_momentum' and (cand.why.get('selective_paper') or {}).get('model_version') != SELECTIVE_MODEL_VERSION:
                     dec.reject(cand.symbol, 'Legacy stock signal has no selective paper trial identity')
                 elif (cand.instrument == "EQ" and cand.sleeve in ("mean_reversion", "early_momentum")
                       and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols):

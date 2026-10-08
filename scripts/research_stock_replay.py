@@ -30,7 +30,7 @@ from scripts.audit_market_prices import bars_from_response
 
 
 SPEC = {
-    "version": 2,
+    "version": 3,
     "warmup_start": "2018-01-01",
     "development": ["2021-01-01", "2023-12-31"],
     "retrospective_holdout": ["2024-01-01", "2026-09-22"],
@@ -88,7 +88,7 @@ def _download(symbol: str, out: Path, cache_from: Path | None = None) -> tuple[s
         return symbol, str(cached) if cached.is_file() else ""
     start = int(pd.Timestamp(SPEC["warmup_start"], tz="UTC").timestamp())
     end = int(pd.Timestamp("2026-09-23", tz="UTC").timestamp())
-    url = "https://query1.finance.yahoo.com/v8/finance/chart/" + quote(symbol + ".NS")
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/" + quote({"NIFTY":"^NSEI","BANKNIFTY":"^NSEBANK"}.get(symbol, symbol + ".NS"))
     for attempt in range(3):
         try:
             response = httpx.get(url, params=dict(period1=start, period2=end,
@@ -281,7 +281,7 @@ def main():
     cache.mkdir(exist_ok=True)
     with ThreadPoolExecutor(max_workers=4) as pool:
         downloaded = dict(pool.map(lambda s: _download(s, cache, args.cache_from),
-                                   symbols + ["NIFTYBEES"]))
+                                   symbols + ["NIFTY"]))
     frames, excluded, source_hashes = {}, {}, {}
     for sym, path in downloaded.items():
         frame, why = _load(sym, path)
@@ -290,9 +290,9 @@ def main():
         else:
             frames[sym] = frame
             source_hashes[sym] = hashlib.sha256(Path(path).read_bytes()).hexdigest()
-    benchmark = frames.pop("NIFTYBEES", None)
+    benchmark = frames.pop("NIFTY", None)
     if benchmark is None:
-        raise SystemExit("NIFTYBEES benchmark missing; replay cannot run")
+        raise SystemExit("NIFTY benchmark missing; replay cannot run")
     results = {label: {rule: replay(frames, benchmark, rule, SPEC[label])
                        for rule in SPEC["rules"]}
                for label in ("development", "retrospective_holdout")}

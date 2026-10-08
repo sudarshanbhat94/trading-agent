@@ -1,3 +1,7 @@
+## Current work — actual index context and retired cash-fund removal
+
+**TRADING BEHAVIOUR CHANGED; not deployed.** Current stock model v4/paper intent v2 replace the fund-dependent benchmark and market gate. Upstox actual index daily history plus eligible stock breadth; fund route excluded from discovery/new orders. Old research runners removed, history/owned exits preserved. See `docs/actual-index-context.md`. Verified: 2,623 unittest checks (2,490 passed, 133 skipped), 106 additional UI/research checks; actual Upstox index histories have 372 completed bars through 7 October, both actual trends OFF. Browser preview passed desktop and 390px without overflow. Production stays unchanged pending the separately required deployment approval. Keep ₹10,000 epoch and registered forward experiment intact.
+
 ## Sourced-session paper safety — 7 October 2026
 
 **TRADING BEHAVIOUR CHANGED locally; not deployed.** F58/F59 reproduce paper closed-session fills and rounded source ordering. New immutable current session cache/original calendar guards quote and fill time, preserves pending owned protection when status is unavailable/closed/conflicting/expired, and tolerates entry catalogue outages while cached source evidence remains valid. Exact aware source/effective times prevent sub-millisecond future or superseded selection. Trading schema v5. Final source: 2,463 run / 2,330 passed / 133 skips; 102 functions and 42 focused checks passed. Keep production book/strategy/protocol unchanged; this is not the completed commercial release.

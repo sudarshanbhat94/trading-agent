@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 
 
-# PAPER entry boundary. The quality slot uses selective-paper-v1, not the old
+# PAPER entry boundary. The quality slot uses selective-paper-v2, not the old
 # Quality 50 replay. This is an authorised forward paper trial, NOT a claim of
 # validated returns or permission for a broker order. Legacy sleeves stay out.
 PRODUCTION_SLEEVES = ("quality_momentum", "index_directional")
@@ -87,7 +87,7 @@ class SleeveSettings:
             enabled=_bool("SLEEVE_QUALITY_MOMENTUM", True),
             risk_share=_float("SHARE_QUALITY_MOMENTUM", 0.30),
             max_positions=1,
-            note="selective-paper-v1 trial; liquid NSE stocks, dated quality evidence and confirmed pullback")
+            note="selective-paper-v2 trial; liquid NSE stocks, dated quality evidence and confirmed pullback")
         self.early_momentum = SleeveConfig(
             enabled=_bool("SLEEVE_EARLY_MOMENTUM", True),
             risk_share=_float("SHARE_EARLY_MOMENTUM", 0.20),
@@ -97,7 +97,7 @@ class SleeveSettings:
             enabled=_bool("SLEEVE_INDEX_DIRECTIONAL", True),
             risk_share=_float("SHARE_INDEX_DIRECTIONAL", 0.50),
             max_positions=1,
-            note="NIFTYBEES trend; 50% passed development and holdout after costs")
+            note="actual Nifty 50 and Bank Nifty screening; derivatives require a certified contract")
         self.options_overlay = SleeveConfig(
             enabled=_bool("SLEEVE_OPTIONS_OVERLAY", True),
             risk_share=_float("SHARE_OPTIONS_OVERLAY", 0.00),

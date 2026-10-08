@@ -128,7 +128,7 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
             net_r_at_targets=[round(p/allocation.risk_amount,2) for p in returns],
             price_asof=screen.get("price_asof"),quote_price=current,
             quote_at=quote.get("ts") if quote else None,state=state,
-            why=f"20-session strength versus NIFTYBEES (Nifty ETF proxy) +{float(m['rs_vs_nifty20_pct']):.1f}pp; sector +{float(m['sector_rs20_pct']):.1f}pp; volume {float(m['relative_volume']):.1f}x with delivery above average; quality and after-cost reward checks passed",
+            why=f"20-session strength versus Nifty 50 +{float(m['rs_vs_nifty20_pct']):.1f}pp; sector +{float(m['sector_rs20_pct']):.1f}pp; volume {float(m['relative_volume']):.1f}x with delivery above average; quality and after-cost reward checks passed",
             data_contract_version=screen.get("data_contract_version", "screening-data-v1"),
             model_version=MODEL_VERSION,selection_policy=dict(SELECTION_POLICY),
             confirmation_policy=dict(POLICY),

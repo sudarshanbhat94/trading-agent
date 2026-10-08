@@ -3175,7 +3175,9 @@ class Database:
             sql += " where " + " and ".join(clauses)
         sql += " order by symbol"
         with self.connect() as conn:
-            return [dict(row) for row in conn.execute(sql, params).fetchall()]
+            from .instrument_policy import is_retired
+            return [dict(row) for row in conn.execute(sql, params).fetchall()
+                    if not enabled_only or not is_retired(row['upstox_instrument_key'])]
 
     def universe_summary(self) -> dict[str, Any]:
         with self.connect() as conn:

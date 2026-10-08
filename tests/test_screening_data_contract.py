@@ -66,18 +66,18 @@ class ScreeningDataContractTest(unittest.TestCase):
     def test_relative_strength_requires_matching_return_dates(self):
         frame = fixtures.prices()
         stock = frame.drop(frame.index[-10])
-        result = build({'TEST': stock, 'NIFTYBEES': frame}, {'TEST'}, {}, self.con,
+        result = build({'TEST': stock, 'NIFTY': frame}, {'TEST'}, {}, self.con,
                        self.now, frame.index[-1])
         self.assertIsNone(result['equities'][0]['metrics']['rs_vs_nifty20_pct'])
         self.assertIn('Nifty comparison dates do not match', result['equities'][0]['flags'])
 
     def test_identical_return_dates_preserve_computed_strength(self):
         frame = fixtures.prices()
-        result = build({'TEST': frame, 'NIFTYBEES': frame}, {'TEST'}, {}, self.con,
+        result = build({'TEST': frame, 'NIFTY': frame}, {'TEST'}, {}, self.con,
                        self.now, frame.index[-1])
         self.assertEqual(result['equities'][0]['metrics']['rs_vs_nifty20_pct'], 0)
-        self.assertEqual(result['equities'][0]['metrics']['rs_benchmark'], 'NIFTYBEES')
-        self.assertIn('ETF proxy', result['equities'][0]['metrics']['rs_benchmark_kind'])
+        self.assertEqual(result['equities'][0]['metrics']['rs_benchmark'], 'NIFTY')
+        self.assertEqual('Actual Nifty 50 index', result['equities'][0]['metrics']['rs_benchmark_kind'])
 
     def test_unreviewed_jump_anywhere_in_momentum_window_is_not_evidence(self):
         frame = fixtures.prices()
