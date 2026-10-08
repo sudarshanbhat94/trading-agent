@@ -41,7 +41,9 @@ function personalReportHtml(report){PAPER_REPORT_CURRENCY=report.currency==='USD
  h+='<p>'+esc(s.trades||0)+' closed paper trades · net '+accountMoney(s.net_pnl)+'</p><p class=desk-note>Balance is the current snapshot. The selected date filters closed trades; research scenarios and broker orders are separate.</p>';
  if(!(report.current_epoch||{}).trades)h+='<p class=desk-note>No completed trades in this epoch. No win rate or profitability record is available.</p>';
  h+='</section>';return h+accountGroup('By sleeve',report[PAPER_REPORT_PERIOD==='day'?'by_sleeve':'by_sleeve_epoch'])+accountGroup('By entry regime',report[PAPER_REPORT_PERIOD==='day'?'by_regime':'by_regime_epoch']);}
-var accountOldLoadStats=loadStats;
+// The current desk has no legacy Stats loader. Optional enhancements must
+// never prevent authentication or the entire workspace from booting.
+var accountOldLoadStats=typeof loadStats==='function'?loadStats:function(){};
 loadStats=function(){if(BOOK!=='mine')return accountOldLoadStats();var el=document.getElementById('statlist');if(!el)return;
  var token=++PAPER_REPORT_LOAD,owner=ME&&ME.id,market=typeof MKT==='undefined'?'IN':MKT;el.innerHTML='<p role=status class=desk-empty>Loading your paper account…</p>';
  api('/v2/api/paper-performance?market='+encodeURIComponent(typeof MKT==='undefined'?'IN':MKT)+(PAPER_REPORT_DAY?'&day='+encodeURIComponent(PAPER_REPORT_DAY):'')).then(function(r){if(token!==PAPER_REPORT_LOAD||BOOK!=='mine'||!ME||ME.id!==owner||(typeof MKT==='undefined'?'IN':MKT)!==market||document.getElementById('statlist')!==el)return;if(!r.ok)throw Error(r.j.error||r.j.detail||'Paper report unavailable');el.innerHTML=personalReportHtml(r.j);}).catch(function(e){if(token===PAPER_REPORT_LOAD&&BOOK==='mine'&&ME&&ME.id===owner&&(typeof MKT==='undefined'?'IN':MKT)===market&&document.getElementById('statlist')===el)el.innerHTML='<section class=desk-panel role=alert><h2>Paper report unavailable</h2><p>'+esc(e.message)+'</p><button class=desk-action onclick="loadStats()">Retry</button></section>';});};
