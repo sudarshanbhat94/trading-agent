@@ -15,6 +15,7 @@ from ..sleeves.risk import BookState, RiskManager, SLIPPAGE
 from ..costs import round_trip
 from .confirmation import POLICY
 from .selection import MODEL_VERSION, POLICY as SELECTION_POLICY, reject_reason
+from .health import discovery_health
 
 
 def account_state(con, uid, quotes, now):
@@ -154,5 +155,6 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
             book.capital*SLEEVES.daily_loss_limit+min(book.day_pnl,0.)-book.open_risk+book.strategic_open_risk,
             book.capital*SLEEVES.max_drawdown-book.open_risk)),2),
         max_positions=SLEEVES.max_positions_total,book_error=book_error,
-        rejected=rejected,generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
+        rejected=rejected,discovery_health=discovery_health(screen,rejected,now),
+        generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
         note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Automatic paper entries require confirmed trial plans; independent validation remains required before live use.")

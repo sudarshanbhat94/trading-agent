@@ -20,6 +20,18 @@ Final suite 2,392 run / 2,259 pass / 133 skip / no failures or errors; separate 
 
 # OpenStocks handoff — 2026-09-23
 
+## Discovery repair — 8 October 2026
+
+**TRADING BEHAVIOUR CHANGED through evidence-refresh timing.** Cold/incompatible
+financial caches receive a paced, bounded catch-up with current-setup priority,
+failed-request cooldown and source-throttling stop. Source capture times and
+historical evidence remain immutable. Ideas now reports dated earnings-history
+coverage and counted rejections, separating missing data from failed setups.
+No entry thresholds, regime rules, portfolio epochs or registered forward
+protocol are changed. Passing research can appear during OFF; execution keeps
+the existing independent gates. See `docs/idea-discovery.md`. Deployment status
+must be read from the private rollout checkpoint and actual served build.
+
 ## Release-plan continuation — 7 October 2026
 
 **TRADING BEHAVIOUR CHANGED locally; not deployed.** All entry writers enforce sourced dated canonical NSE cash contracts and regime/risk gates. Manual paper requests freeze immutable owned plans and use the approved pipeline; retry/concurrency/rollback are tested. Actual Upstox trade-ID ledger posts gross cash/assessment/settlement/reversal history; final actual net/margin remain unavailable. Reviewed native policy can cancel partial remainders once and activate new canonical terminal fills only. No passing policy/release record was created.

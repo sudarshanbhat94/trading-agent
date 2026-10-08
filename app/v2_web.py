@@ -5487,10 +5487,14 @@ function ideaCards(p){
  var rows=ideaFiltered(p);
  if(!rows.length){
   var noSetups=!(p.ideas||[]).length;
-  var reasons=Array.from(new Set((p.rejected||[]).map(function(r){return r.reason;})));
-  return '<div class=ideas-empty><b>'+(noSetups?'No qualifying setups':IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
-   +esc(p.book_error||(noSetups?'No stock currently passes all evidence, participation, reward and account checks. We do not fill the list with weaker ideas.':IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector.'))+'</p>'
-   +(noSetups&&reasons.length?'<details><summary>Why ideas are waiting</summary><ul>'+reasons.map(function(r){return '<li>'+esc(r)+'</li>';}).join('')+'</ul></details>':'')
+  var health=p.discovery_health||{},incomplete=health.status=='incomplete',stale=health.status=='stale';
+  var reasons=health.rejection_counts||Array.from(new Set((p.rejected||[]).map(function(r){return r.reason;}))).map(function(r){return {reason:r};});
+  var title=stale?'Evidence refresh needed':incomplete?'Screening data incomplete':'No qualifying setups';
+  var message=stale?'The latest evidence is unavailable or stale. Fresh research is required before publishing new plans.':incomplete?'Earnings history is verified for '+health.earnings_history_ready+' of '+health.screened+' screened stocks; '+health.earnings_history_missing+' remain unavailable. No fully checked stock qualifies yet. Scheduled refresh retries missing data.':'All '+(health.screened==null?'screened':health.screened)+' stocks were checked. None currently passes all evidence, participation, reward and account checks.';
+  return '<div class=ideas-empty><b>'+(noSetups?title:IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
+   +esc(p.book_error||(noSetups?message:IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector.'))+'</p>'
+   +(noSetups&&health.screened!=null?'<p class=mut>Research discovery runs independently of the execution regime. OFF pauses new orders; it does not hide qualifying research plans. Last screen: '+esc(ideaTime(health.generated_at))+'.</p>':'')
+   +(noSetups&&reasons.length?'<details><summary>Why ideas are waiting</summary><p class=mut>Stocks can fail several checks; counts overlap.</p><ul>'+reasons.slice(0,8).map(function(r){return '<li>'+esc(r.reason)+(r.count==null?'':' · '+esc(r.count)+' stocks')+'</li>';}).join('')+'</ul></details>':'')
    +(!noSetups?'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button>':'')+'</div>';
  }
  return rows.map(function(r){
