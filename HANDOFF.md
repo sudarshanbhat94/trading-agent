@@ -1,6 +1,32 @@
-## Current work — actual index context and retired cash-fund removal
+## Current production — actual index context and retired cash-fund removal
 
-**TRADING BEHAVIOUR CHANGED; not deployed.** Current stock model v4/paper intent v2 replace the fund-dependent benchmark and market gate. Upstox actual index daily history plus eligible stock breadth; fund route excluded from discovery/new orders. Old research runners removed, history/owned exits preserved. See `docs/actual-index-context.md`. Verified: 2,623 unittest checks (2,490 passed, 133 skipped), 106 additional UI/research checks; actual Upstox index histories have 372 completed bars through 7 October, both actual trends OFF. Browser preview passed desktop and 390px without overflow. Production stays unchanged pending the separately required deployment approval. Keep ₹10,000 epoch and registered forward experiment intact.
+**TRADING BEHAVIOUR CHANGED; deployed with human authorization on 8 October 2026.**
+Production code is `21e9b55`; the stock model v4/paper intent v2 use actual Upstox
+index daily history and eligible individual-stock breadth. The retired fund route
+is excluded from discovery and new orders; history and owned exits are preserved.
+See `docs/actual-index-context.md`.
+
+Exact-build CI passed all three checks. Local verification: 2,623 unittest checks
+(2,490 passed, 133 skipped) plus 106 UI/research checks. A coordinated quiesced
+backup passed authenticated encrypted restore verification; all pre-existing paper
+and selected account values, book epochs, settings and the forward protocol were
+preserved. Original writers and timers resumed. No broker order was submitted.
+
+A normal production cycle on 8 October used `actual-index-breadth-v1` and
+`selective-paper-v2`: Nifty completed close 22,603.05 versus its 50-session mean
+23,796.13, eligible-stock breadth 28.7%, regime OFF, zero new entries. The refreshed
+screen covers 364 liquid stocks; earnings history is ready for 363. No research
+plan qualifies; 298 lack a controlled setup, with other quality/evidence failures.
+Actual browser Home/Ideas/Indices display no retired fund, personal capital/cash/
+equity ₹10,000, zero positions and realised P&L. Desktop and mobile checks show no
+horizontal overflow (mobile requested 390px; Chrome observed 433px).
+
+**Remaining limits:** OFF still pauses new long risk; reviewed instrument/session
+execution evidence is incomplete, one earnings source remains unavailable, and
+independent profitability/live certification are not established. Do not claim a
+profitable or fully tradable commercial release. The ₹10,000 epoch and registered
+experiment remain intact. Private verification: `var/deployment-21e9b55-2026-10-08.json`.
+The dated notes below describe prior milestones, not current deployment status.
 
 ## Sourced-session paper safety — 7 October 2026
 
