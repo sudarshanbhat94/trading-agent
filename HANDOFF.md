@@ -5,11 +5,13 @@ provenance, fast pending/origin reassessment, independent subscriber risk and
 managed cash-leg paise accounting are repaired. Home/Ideas/Portfolio/Orders use
 the new product workspace; owned allocation/orders/attribution are epoch-scoped,
 and Portfolio defaults to all holdings. A sourced three-minute NSE session job
-is included. Final suite: 2,643 checks (133 skips), 106 additional functions;
+is included. Final suite: 2,647 checks (133 skips), 106 additional functions;
 isolated automatic lifecycle/stop/target/ledger and 390px browser checks passed.
-See `docs/paper-workspace.md`. Current instrument-rule ingestion and independent
-profitability remain unverified/incomplete; do not call this a ready commercial
-or profitable release. Preserve all production epochs and the forward protocol.
+See `docs/paper-workspace.md`. The paper-only NSE stock contract producer passed
+an actual-source isolated rehearsal: 493/501 identities, nine restricted/action
+blocks and eight quarantined identities. Deployment and next-open-session refresh
+need verification. Independent profitability remains unproven; do not call this
+a ready commercial or profitable release. Preserve epochs and the forward protocol.
 
 ## Current production — actual index context and retired cash-fund removal
 

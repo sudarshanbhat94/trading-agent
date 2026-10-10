@@ -143,8 +143,16 @@ def resolve(con, *, instrument_id=None, symbol=None, venue=None, segment=None, p
     snapshot = con.execute("SELECT id,observed_at,source_day FROM instrument_snapshots WHERE provider=? "
                            "AND julianday(observed_at)<=julianday(?) ORDER BY julianday(observed_at) DESC LIMIT 1",
                            (provider, now.isoformat())).fetchone()
-    if not snapshot or now - datetime.fromisoformat(snapshot[1].replace("Z", "+00:00")) > timedelta(hours=25) or \
-            (now.date() - date.fromisoformat(snapshot[2])).days > 1:
+    source_stale = True
+    if snapshot:
+        source_day = date.fromisoformat(snapshot[2])
+        today = now.astimezone(timezone(timedelta(hours=5, minutes=30))).date() if provider in {'upstox','upstox-discovery'} else now.date()
+        if provider == 'upstox':
+            from .nse_cash_contract_feed import previous_session
+            source_stale = source_day not in {today, previous_session(today)}
+        else:
+            source_stale = not 0 <= (today-source_day).days <= 1
+    if not snapshot or now - datetime.fromisoformat(snapshot[1].replace("Z", "+00:00")) > timedelta(hours=25) or source_stale:
         raise InstrumentError("dated instrument catalogue is missing or stale")
     sql, args = "SELECT payload,broker_key FROM instrument_contracts WHERE snapshot_id=?", [snapshot[0]]
     for field, value in (("instrument_id", instrument_id), ("symbol", symbol), ("venue", venue), ("segment", segment)):

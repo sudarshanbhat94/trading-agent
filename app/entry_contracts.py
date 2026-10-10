@@ -74,6 +74,9 @@ def check(market,symbol,quantity,price,stop,target,*,broker='paper',product='D',
         if key is not None and alias!=key:raise InstrumentError('Broker alias disagrees with canonical entry identity')
         spec,alias,evidence=execution_contracts.order_contract(catalogue,instrument_id=spec.id,
                                        quantity=quantity,price=price,now=now)
+        _,rules=execution_contracts._latest(catalogue,'rules',spec.id,now)
+        if rules.get('execution_scope')=='paper' and broker!='paper':
+            raise InstrumentError('These sourced contracts are paper-only; live permission is not granted')
         route_for(broker,spec,product)
         spec.validate_order(quantity,stop,now=now)
         # Zero is the existing explicit trail/time-managed target sentinel.

@@ -33,10 +33,17 @@ delivery, current-epoch isolation, owned allocation, target exit, automatically
 triggered stop exit and exact costed cash reconciliation. Browser fixtures are
 disposable, synthetic and explicitly labelled; they are not performance evidence.
 
-Remaining release dependencies: reliable **current instrument rules** and
-restriction/corporate-action coverage still need an authenticated source-backed
-producer and production verification. A session ingester alone does not supply
-those rules. Unknown rules continue to refuse orders. OFF still blocks new longs.
+`scripts/refresh_nse_cash_contracts.py` supplies **paper-only** rules from the
+previous completed NSE MII master, current official Upstox JSON/CSV, ASM/GSM and
+a dated corporate-action window. ISIN, token, lot and tick units must agree.
+Restricted/action-affected names are blocked; ambiguous identities quarantine.
+NSE source dates remain original, including Friday's EOD master on Monday; rule
+reviews must still be new that day and expire at midnight. The timer refreshes
+before and during sessions. This does not grant broker execution permission.
+An isolated current-source rehearsal on 10 October covered 493 of 501 members,
+with nine restriction/action blocks and eight missing/ambiguous identities.
+Production cutover and the next actual open-session refresh require verification.
+Unknown rules continue to refuse orders. OFF still blocks new longs.
 Independent after-cost stock-model profitability and a relevant forward paper
 record remain unproven. This repair must not be described as a profitable or
 fully trading-ready commercial release.
