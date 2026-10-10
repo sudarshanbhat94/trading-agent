@@ -1,3 +1,16 @@
+## Paper workspace candidate — 10 October 2026
+
+**TRADING BEHAVIOUR CHANGED; deployment must be verified separately.** Quote
+provenance, fast pending/origin reassessment, independent subscriber risk and
+managed cash-leg paise accounting are repaired. Home/Ideas/Portfolio/Orders use
+the new product workspace; owned allocation/orders/attribution are epoch-scoped,
+and Portfolio defaults to all holdings. A sourced three-minute NSE session job
+is included. Final suite: 2,643 checks (133 skips), 106 additional functions;
+isolated automatic lifecycle/stop/target/ledger and 390px browser checks passed.
+See `docs/paper-workspace.md`. Current instrument-rule ingestion and independent
+profitability remain unverified/incomplete; do not call this a ready commercial
+or profitable release. Preserve all production epochs and the forward protocol.
+
 ## Current production — actual index context and retired cash-fund removal
 
 **TRADING BEHAVIOUR CHANGED; deployed with human authorization on 8 October 2026.**

@@ -5,6 +5,7 @@ Self-contained FastAPI router mounted at /v2/. Reads the paper book
 responsive page + JSON APIs. Zero coupling to the legacy dashboard.
 """
 from __future__ import annotations
+from contextlib import closing
 
 import logging
 import os
@@ -580,9 +581,15 @@ def api_overview(user: dict = Depends(require_session)):
                 rw.close()
     except Exception:
         _LOG.exception("user book stats failed")
-    from .screening.status import equity_screen_status, paper_execution_scope
-    stock_screen = equity_screen_status(_evidence_screen("IN"))
+    from .screening.status import equity_screen_status, paper_execution_scope, research_watch
+    from .product_status import paper_status, execution_data_status
+    evidence = _evidence_screen("IN")
+    stock_screen = equity_screen_status(evidence)
+    with closing(_ro(V2_DB)) as status_con:
+        pipeline = paper_status(status_con, int(user.get('id') or 0))
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
+                             research_watch=research_watch(evidence), paper_pipeline=pipeline,
+                             execution_data=execution_data_status(),
                              stock_screen=stock_screen, execution_scope=paper_execution_scope(),
                              equity_options_offset=round(contamination, 2),
                              regime={"IN": _regime("IN"), "US": _regime("US")},
@@ -3273,11 +3280,20 @@ async def api_stream(user: dict = Depends(require_session)):
 def _my_positions(uid, market="IN"):
     """The caller's own open positions, priced live."""
     from . import books
+    from .sleeves.feeds import fresh_quotes
     live = _live_map(market)
+    now = datetime.now(IST)
+    fresh = fresh_quotes(live, now)
     rw = _ro(V2_DB)                     # read path: must not open a writer
     try:
         out = []
         for p in books.positions(rw, uid, market):
+            quote = live.get(p['symbol']) or {}
+            try:
+                opened = datetime.fromisoformat(p.get('opened_at') or '')
+                today = opened.astimezone(IST).date() == now.date() if opened.utcoffset() is not None else False
+            except ValueError:
+                today = str(p['entry_date'])[:10] == now.date().isoformat()
             px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
             val = px * p["shares"]
             out.append(dict(id=p["id"], symbol=p["symbol"], market=market, ccy="₹",
@@ -3295,7 +3311,9 @@ def _my_positions(uid, market="IN"):
                             if p["entry_price"] else 0.0,
                             pnl_amt=round((px - p["entry_price"]) * p["shares"], 2),
                             stop=p["stop"], target=p["target"], trail=False,
-                            headroom=None, since=p["entry_date"], today=False))
+                            headroom=None, since=p["entry_date"], today=today,
+                            quote_at=quote.get('ts'),
+                            quote_status='fresh' if p['symbol'] in fresh else 'last_quote' if quote else 'entry_only'))
         return out
     finally:
         rw.close()
@@ -3312,12 +3330,13 @@ def _my_trades(uid, limit=60, market="IN", con=None):
     from . import books
     rw = con or _ro(V2_DB)              # read path when it opens its own
     try:
+        from . import books
         cols = ("market", "strategy", "symbol", "entry_date", "entry_price", "exit_date",
                 "exit_price", "shares", "pnl", "return_pct", "reason", "opened_at",
-                "closed_at","instrument_id","plan_id","model_version")
+                "closed_at","instrument_id","plan_id","model_version","sleeve","regime")
         rows = rw.execute(f"SELECT {','.join(cols)} FROM user_trades"
-                          " WHERE user_id=? AND market=? ORDER BY id DESC LIMIT ?",
-                          (int(uid), market, int(limit))).fetchall()
+                          " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=? ORDER BY id DESC LIMIT ?",
+                          (int(uid), market, books.LEGACY_EPOCH, books.current_epoch(rw,uid,market), int(limit))).fetchall()
         return [dict(zip(cols, r)) for r in rows]
     finally:
         if con is None:
@@ -3353,8 +3372,9 @@ def _my_orders(uid, limit=120, market="IN"):
     try:
         out = []
         for p in books.positions(rw, uid, market):
-            out.append(dict(side="BUY", status="open", symbol=p["symbol"], market=market,
+            out.append(dict(side="BUY", status="filled", symbol=p["symbol"], market=market,
                             ccy="₹", strategy=p["strategy"], qty=round(p["shares"], 2),
+                            sleeve=p.get('sleeve') or p['strategy'], regime=p.get('regime'),
                             price=round(p["entry_price"], 2),
                             value=round(p["entry_price"] * p["shares"]),
                             when=_ist(p["opened_at"] or p["entry_date"]),
@@ -3364,6 +3384,7 @@ def _my_orders(uid, limit=120, market="IN"):
                                    ("SELL", r["closed_at"] or r["exit_date"], r["exit_price"])):
                 out.append(dict(side=side, status="filled", symbol=r["symbol"],
                                 market=market, ccy="₹", strategy=r["strategy"],
+                                sleeve=r.get('sleeve') or r['strategy'], regime=r.get('regime'),
                                 qty=round(r["shares"], 2), price=round(px, 2),
                                 value=round(px * r["shares"]),
                                 when=_ist(when), ts=str(when)[:10], today=False,
@@ -3495,10 +3516,25 @@ def api_watch():
 
 
 @router.get("/api/portfolio")
-def api_portfolio(market: str = "IN"):
+def api_portfolio(market: str = "IN", scope: str = "mine", user: dict = Depends(require_session)):
     """Allocation, concentration, drawdown and per-lane realised-P&L curves."""
     v2 = _ro(V2_DB)
     try:
+        if not _wants_ai(scope,user):
+            from . import books
+            uid=int(user['id']);live=_live_map(market);epoch=books.current_epoch(v2,uid,market)
+            budget=books.budget_of(v2,uid,market)
+            positions=[(p['symbol'],p.get('sleeve') or p['strategy'],p['shares'],p['entry_price'],
+                        (live.get(p['symbol']) or {}).get('price')) for p in books.positions(v2,uid,market)]
+            curve=[(epoch,budget)]+books.equity_series(v2,uid,market)
+            trades=list(v2.execute("SELECT COALESCE(sleeve,strategy),exit_date,pnl FROM user_trades "
+                "WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",(uid,market,books.LEGACY_EPOCH,epoch)))
+            cash=books.cash(v2,uid,market)
+            payload=pf.build(positions,curve,trades,budget,cash=cash)
+            curve.append((datetime.now(IST).isoformat(),payload['equity']))
+            payload.update(drawdown=pf.drawdown(curve),market=market,ccy='₹' if market=='IN' else '$',scope='mine',epoch=epoch)
+            v2.close()
+            return JSONResponse(payload)
         row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
         budget = row[0] if row else 0.0
         live = _live_map(market)
@@ -5907,7 +5943,7 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  var rows=ps.map(posRow).join('');
  document.getElementById('poslist').innerHTML=rows?('<div class=k-list>'+rows+'</div>'):('<div class=mut style="font-size:12px;padding:14px 16px">'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>');}
 function loadPos(){api('/v2/api/positions?scope='+BOOK).then(r=>{POS=r.j;renderPos();});loadAttrib();loadPortfolio();}
-function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
+function loadAttrib(){api('/v2/api/attribution?scope='+BOOK).then(r=>{var d=r.j||{};
  var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
  document.getElementById('attrib').innerHTML=rows.map(s=>{var st=stratTag(s.strategy);var tot=s.realized+s.unrealized;
   return '<div class=card><div class=row><span class="badge '+st[1]+'">'+s.market+' '+st[0]+'</span><span class="'+col(tot)+'" style="font-size:13px;font-weight:600">'+(tot<0?'-':'+')+s.ccy+(s.ccy=='₹'?INR:USD).format(Math.abs(Math.round(tot)))+'</span></div>'
@@ -6664,7 +6700,7 @@ function pfHtml(d){
   h+='<span>'+s+(p.value!=null?p.value.toLocaleString():'0')+' <span class=mut>'+(p.pct_of_equity!=null?p.pct_of_equity:0)+'%</span> <span style="color:'+uc+'">'+(p.unrealised_pct>0?'+':'')+(p.unrealised_pct!=null?p.unrealised_pct:0)+'%</span></span></div>';
   h+='<div style="height:5px;border-radius:3px;background:var(--line);margin-top:4px"><div style="height:5px;border-radius:3px;width:'+w+'%;background:var(--ac)"></div></div></div>';}
  return h+'</div>';}
-function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefined'?MKT:'IN')).then(r=>{
+function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefined'?MKT:'IN')+'&scope='+BOOK).then(r=>{
  var el=document.getElementById('pfrisk');if(!el)return;
  el.innerHTML=pfHtml(r.j);
  var n=document.getElementById('pfnote');
@@ -6853,3 +6889,5 @@ from .desk_ui import enhance as _enhance_desk
 SPA_HTML = _enhance_desk(SPA_HTML)
 from .account_ui import enhance as _enhance_accounts
 SPA_HTML = _enhance_accounts(SPA_HTML)
+from .workspace_ui import enhance as _enhance_workspace
+SPA_HTML = _enhance_workspace(SPA_HTML)

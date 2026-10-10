@@ -53,6 +53,8 @@ def record(con,kind,identity,payload,*,source,observed_at,effective_from,effecti
         if type(payload.get('open')) is not bool:raise InstrumentError('session status unknown')
         if payload['open'] and not start<=_moment(payload.get('opens_at'))<_moment(payload.get('closes_at'))<=end:
             raise InstrumentError('session times outside effective interval')
+        if 'fresh_until' in payload and not observed < _moment(payload['fresh_until']) <= end:
+            raise InstrumentError('invalid sourced session freshness window')
     text=json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False)
     values=(kind,identity,observed.isoformat(),start.isoformat(),end.isoformat(),source,text)
     evidence_id=hashlib.sha256(json.dumps(values).encode()).hexdigest()
@@ -75,7 +77,10 @@ def _latest(con,kind,identity,now):
     latest=max(_moment(r[1]) for r in rows);tied=[r for r in rows if _moment(r[1])==latest]
     if len({r[2] for r in tied})!=1:raise InstrumentError('conflicting '+kind+' evidence')
     if kind=='rules' and now-latest>timedelta(hours=25):raise InstrumentError('contract rules are stale')
-    return tied[0][0],json.loads(tied[0][2])
+    payload=json.loads(tied[0][2])
+    if kind=='session' and 'fresh_until' in payload and now>=_moment(payload['fresh_until']):
+        raise InstrumentError('sourced exchange status is stale')
+    return tied[0][0],payload
 
 
 def protection_contract(con,*,instrument_id,quantity,price,provider='upstox',now=None):

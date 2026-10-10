@@ -336,7 +336,8 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
                                              int(accepted), reason or "approved", now.isoformat()))
         if not accepted:
             return 0
-        fee = entry_charge(qty * price, candidate.product) if market == "IN" else 0
+        from . import paper_ledger
+        fee = paper_ledger.minor(entry_charge(qty * price, candidate.product))/100 if market == "IN" else 0
         from .sleeves.risk import stop_loss_including_costs
         initial_risk = stop_loss_including_costs(price,stop,qty,candidate.product) if market == "IN" else None
         from . import paper_ledger
@@ -459,7 +460,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     assert_database_execution_allowed(con)
     epoch = current_epoch(con, user_id, market)
     sql = ("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
-                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt,instrument_id,plan_id,model_version"
+                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt,instrument_id,plan_id,model_version,product"
            " FROM user_positions WHERE user_id=? AND market=? AND symbol=? "
            "AND COALESCE(book_epoch,?)=?")
     args = [int(user_id), market, symbol, LEGACY_EPOCH, epoch]
@@ -469,7 +470,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     row = con.execute(sql, args).fetchone()
     if not row:
         return None
-    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk, instrument_id, plan_id, model_version = row
+    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk, instrument_id, plan_id, model_version, product = row
     price = float(price or 0)
     if not math.isfinite(price) or price <= 0:
         return None
@@ -484,6 +485,16 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     # Existing after-cost P&L already includes the entry fee. Only the
     # remaining exit charge belongs to this cash leg.
     exit_charge = shares*(price-entry)-net-paid_fee
+    if market == 'IN' and plan_id:
+        # Managed fills post each cash leg in paise. Rounding only the combined
+        # round trip can disagree by a paise with those immutable postings.
+        # Preserve historical unmanaged calculations; new managed fills use the
+        # stored entry product and the same rounded legs as their cash ledger.
+        from .costs import exit_charge as sell_charge
+        exit_charge = paper_ledger.minor(sell_charge(shares*price, product))/100
+        net = (paper_ledger.minor(shares*price)-paper_ledger.minor(shares*entry)
+               -paper_ledger.minor(paid_fee)-paper_ledger.minor(exit_charge))/100
+        pct = net/(shares*entry)*100 if shares*entry else 0
     paper_ledger.exit(con,user_id,market,epoch,pid,shares*entry,shares*price,exit_charge)
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"

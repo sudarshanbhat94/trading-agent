@@ -185,8 +185,10 @@ def submit_house_mirror(con,catalogue,user_id,payload,quotes,*,regime,now):
         if (payload['sleeve'] or payload['strategy']) == 'quality_momentum':
             from .screening import automation
             origin = automation.source_fill(con, payload['src_id'], payload['house_epoch'])
-            automation.binding(origin['selective_paper'], payload['symbol'], payload['stop'], payload['target'],
-                               payload['house_epoch'], catalogue, now)
+            # Signal validity is independent of the filled house slot. This
+            # subscriber still has its own risk check below and again at fill.
+            source = automation.binding(origin['selective_paper'], payload['symbol'], payload['stop'], payload['target'],
+                                        payload['house_epoch'], catalogue, now)
             ceiling = min(ceiling, origin['entry_high'])
             if price < origin['entry_low']:
                 raise ValueError('Current ask is below the original stock entry zone')
@@ -198,8 +200,6 @@ def submit_house_mirror(con,catalogue,user_id,payload,quotes,*,regime,now):
         if not allocation or not allocation.ok:raise ValueError(reason or (allocation.reason if allocation else 'Account risk unavailable'))
         quantity=min(allocation.shares,int(payload['max_shares']))
         if origin:
-            source = automation.binding(origin['selective_paper'], payload['symbol'], payload['stop'], payload['target'],
-                                        payload['house_epoch'], catalogue, now)
             automation.check_economics(source, quantity)
         plan=dict(user_id=user_id,market='IN',epoch=epoch,mode='paper',side='BUY',product='D',
             instrument_id=spec.id,symbol=payload['symbol'],quantity=quantity,stop=payload['stop'],target=payload['target'],

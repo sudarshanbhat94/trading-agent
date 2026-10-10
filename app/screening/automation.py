@@ -61,6 +61,110 @@ def _rows(con, epoch):
         (JOURNAL_OWNER, epoch)).fetchall()
 
 
+def _completed_bars(frame, asof, now):
+    bars = []
+    if frame is not None:
+        for index, bar in frame.iterrows():
+            session = str(bar.get('date', index))[:10]
+            if session <= str(asof)[:10]:
+                bars.append(dict(session=session, known_at=now.isoformat(),
+                    **{k: float(bar[k]) for k in ('open', 'high', 'low', 'close', 'volume')}))
+    return sorted(bars, key=lambda b: b['session'])[-21:]
+
+
+def _signal_checks(assessment):
+    # Account capacity is checked by the allocator at reservation AND fill.
+    # The research protocol still includes its risk check, unchanged; only this
+    # separate automation journal exposes the signal independently of the house.
+    return [c for c in assessment.get('checks', []) if c['code'] != 'risk']
+
+
+def _assess(plan, state, bars, quote, screen, current, regime, asof, now, previous, *,
+            regime_fresh, risk_ok=False, risk_reason='Account risk is checked at reservation and fill'):
+    reason = selection.reject_reason(current, screen, now)
+    context = dict(regime=regime, regime_fresh=regime_fresh,
+        price_asof=str(asof)[:10],
+        evidence_ok=bool(current) and not current.get('flags') and not screen.get('stale') and not screen.get('price_stale'),
+        news_checked_at=(current.get('news') or {}).get('checked_at'),
+        selection_ok=not reason, selection_reason=reason,
+        risk_ok=risk_ok, risk_reason=risk_reason)
+    result = confirmation.assess(plan, state, bars, quote, context, now, previous)
+    checks = _signal_checks(result)
+    result.update(context=context, quote=quote, signal_eligible=bool(checks) and all(c['passed'] for c in checks))
+    return result
+
+
+def refresh_pending(paper, quotes, regime_view, now):
+    """Recheck existing stock signals without publishing, sizing or a full screen.
+
+    Pending orders and open house origins need current signal evidence even
+    while their own reservation/fill occupies the only house stock slot. Read
+    current source bars and predicates; never renew a stored positive decision.
+    """
+    epoch_row = paper.execute("SELECT started_at FROM v2_book WHERE market='IN'").fetchone()
+    if not epoch_row:
+        return 0
+    epoch = epoch_row[0]
+    rows = paper.execute("SELECT i.payload FROM paper_order_intents i "
+        "JOIN paper_order_state s ON s.order_id=i.id "
+        "WHERE json_extract(i.payload,'$.plan.sleeve')='quality_momentum' "
+        "AND COALESCE(json_extract(i.payload,'$.plan.side'),'BUY')='BUY' "
+        "AND (s.status='pending' OR (i.user_id=0 AND s.status='filled' AND EXISTS "
+        "(SELECT 1 FROM v2_positions p WHERE p.id=json_extract(s.result,'$.position_id') AND p.market='IN')))").fetchall()
+    identities = set()
+    for (encoded,) in rows:
+        metadata = json.loads(encoded)['plan'].get('selective_paper') or {}
+        if metadata.get('model_version') == MODEL_VERSION and metadata.get('epoch') == epoch:
+            identities.add((metadata.get('publication_id'), metadata.get('fingerprint')))
+    if not identities:
+        return 0
+
+    from .. import v2_live, corpactions
+    from ..sleeves.reference import snapshot
+    import pandas as pd
+    screen = current_screen(now)
+    eligible, _ = snapshot(now)
+    counts = Counter(r.get('symbol') for r in screen.get('equities', []))
+    evidence = {r['symbol']: r for r in screen.get('equities', [])
+                if counts[r.get('symbol')] == 1 and r.get('symbol') in (eligible or set())}
+    asof = str(regime_view.get('asof') or '')[:10]
+    today = now.astimezone(tracking.IST).date()
+    try:
+        day = datetime.fromisoformat(asof).date()
+        regime_fresh = (day < today and confirmation.next_session(day) == today
+                        and regime_view.get('cycle_date') == today.isoformat()
+                        and screen.get('price_asof') == asof)
+    except ValueError:
+        regime_fresh = False
+    market = v2_live._ro(v2_live.MAIN_DB)
+    con = tracking.connect(default_path())
+    changed = 0
+    try:
+        for pid, fingerprint, encoded, stored, prev in _rows(con, epoch):
+            if (pid, fingerprint) not in identities:
+                continue
+            plan, state = json.loads(encoded), json.loads(stored)
+            if state.get('status') in tracking.TERMINAL:
+                continue
+            symbol = plan['symbol']
+            daily = market.execute("SELECT substr(ts,1,10),open,high,low,close,volume FROM candles "
+                "WHERE symbol=? AND source='upstox-live:day' AND substr(ts,1,10)<=? ORDER BY ts DESC LIMIT 21",
+                (symbol, asof)).fetchall()
+            frame = pd.DataFrame(daily, columns=['date', 'open', 'high', 'low', 'close', 'volume']).sort_values('date')
+            frame, _ = corpactions.clean(frame)
+            bars = _completed_bars(frame, asof, now)
+            result = _assess(plan, state, bars, quotes.get(symbol, {}), screen, evidence.get(symbol, {}),
+                regime_view.get('regime'), asof, now, json.loads(prev) if prev else {},
+                regime_fresh=regime_fresh and bool(bars) and bars[-1]['session'] == asof)
+            confirmation.record_assessment(con, pid, result, json.loads(prev) if prev else {})
+            changed += 1
+        con.commit()
+    finally:
+        con.close()
+        market.close()
+    return changed
+
+
 class SelectivePaperSleeve(Sleeve):
     name = 'quality_momentum'
     allowed_regimes = ('ON', 'NEUTRAL')
@@ -108,30 +212,16 @@ class SelectivePaperSleeve(Sleeve):
                     continue
                 symbol = plan['symbol']; quote = ctx.live.get(symbol, {})
                 current = evidence.get(symbol, {})
-                reason = selection.reject_reason(current, screen, now)
-                frame = ctx.tails.get(symbol)
-                bars = []
-                if frame is not None:
-                    for index, b in frame.iterrows():
-                        session = str(b.get('date', index))[:10]
-                        if session <= str(ctx.asof)[:10]:
-                            bars.append(dict(session=session, known_at=now.isoformat(),
-                                **{k: float(b[k]) for k in ('open', 'high', 'low', 'close', 'volume')}))
-                    bars = sorted(bars, key=lambda b: b['session'])[-21:]
+                bars = _completed_bars(ctx.tails.get(symbol), ctx.asof, now)
                 candidate = Candidate(symbol, self.name, plan['score']/100,
                     float(quote.get('price') or plan['entry_high']), plan['stop'], target=plan['t3'], max_hold_days=40,
                     why=dict(selective_paper=dict(model_version=MODEL_VERSION, publication_id=pid,
                         fingerprint=fingerprint, epoch=ctx.paper_epoch)))
                 allocation = RiskManager(ctx.settings).size(candidate, ctx.book)
-                context = dict(regime=ctx.regime.state, regime_fresh=screen.get('price_asof')==str(ctx.asof)[:10],
-                    price_asof=str(ctx.asof)[:10],
-                    evidence_ok=bool(current) and not current.get('flags') and not screen.get('stale') and not screen.get('price_stale'),
-                    news_checked_at=(current.get('news') or {}).get('checked_at'),
-                    selection_ok=not reason, selection_reason=reason,
-                    risk_ok=allocation.ok, risk_reason=allocation.reason)
                 previous = json.loads(prev) if prev else {}
-                result = confirmation.assess(plan, state, bars, quote, context, now, previous)
-                result.update(context=context, quote=quote)
+                result = _assess(plan, state, bars, quote, screen, current, ctx.regime.state, ctx.asof, now, previous,
+                    regime_fresh=screen.get('price_asof')==str(ctx.asof)[:10],
+                    risk_ok=allocation.ok, risk_reason=allocation.reason)
                 confirmation.record_assessment(con, pid, result, previous)
                 if result['eligible'] and symbol not in eligible:
                     eligible[symbol] = candidate
@@ -177,8 +267,9 @@ def binding(metadata, symbol, stop, target, epoch, catalogue, now):
         checked = store.timestamp(assessment['checked_at'])
         event = con.execute("SELECT payload FROM assessment_events WHERE publication_id=? AND kind='ASSESSMENT_OBSERVED' AND observed_at=?",
             (metadata['publication_id'], assessment['checked_at'])).fetchone()
-        if not event or json.loads(event[0]) != assessment or not assessment.get('eligible') or \
-                not assessment.get('checks') or not all(c['passed'] for c in assessment['checks']) or \
+        checks = _signal_checks(assessment)
+        if not event or json.loads(event[0]) != assessment or \
+                not checks or not all(c['passed'] for c in checks) or \
                 not 0 <= (now-checked).total_seconds() <= 120:
             raise ValueError('A fresh immutable confirmed stock decision is required')
     finally:

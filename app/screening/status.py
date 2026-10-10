@@ -5,8 +5,10 @@ The market benchmark must never be presented as the stock-screen universe.
 """
 from collections import Counter
 from datetime import datetime, timezone
+import math
 
-from .selection import reject_reason
+from .selection import reject_reason, number
+from .financials import valid_income_history
 
 
 def equity_screen_status(screen, now=None):
@@ -50,6 +52,49 @@ def equity_screen_status(screen, now=None):
                   rejections=[dict(reason=reason, count=count) for reason, count in rejected.most_common(3)],
                   note="Evidence passes precede entry-level, cost, account-risk and execution approval checks.")
     return result
+
+
+def research_watch(screen, now=None, limit=10):
+    """Dated research visibility, never a substitute for a qualified plan.
+
+    Expose failures as well as scores. Duplicate identities and non-finite
+    scores cannot receive a rank; stale screens retain the historical label.
+    """
+    now = now or datetime.now(timezone.utc)
+    status = equity_screen_status(screen, now)
+    if status['status'] == 'unavailable':
+        return dict(status='unavailable', rows=[], coverage=None)
+    rows = screen['equities']
+    counts = Counter(r['symbol'] for r in rows)
+    ranked, coverage = [], Counter()
+    for row in rows:
+        if counts[row['symbol']] != 1:
+            continue
+        metrics = row.get('metrics') or {}
+        fundamental = row.get('fundamentals') or {}
+        participation = row.get('participation') or {}
+        if not all(isinstance(obj, dict) for obj in (metrics, fundamental, participation)):
+            continue
+        coverage['stocks'] += 1
+        coverage['price'] += isinstance(metrics.get('price'), (int, float)) and math.isfinite(metrics['price']) and metrics['price'] > 0
+        coverage['earnings'] += valid_income_history(fundamental, screen.get('price_asof') or '')
+        coverage['participation'] += participation.get('session') == screen.get('price_asof')
+        coverage['news'] += bool((row.get('news') or {}).get('checked_at'))
+        score = row.get('score')
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+            continue
+        try:
+            reason = reject_reason(row, screen, now)
+        except (KeyError, TypeError, ValueError):
+            reason = 'Incomplete stock evidence requires review'
+        ranked.append(dict(symbol=row['symbol'], sector=row.get('sector') or 'Unclassified',
+            score=score, price=number(metrics.get('price')), relative_volume=number(metrics.get('relative_volume')),
+            rs_20=number(metrics.get('rs_vs_nifty20_pct')), reason=reason or 'Evidence passed; entry plan and execution checks still required',
+            evidence_pass=not bool(reason), price_asof=screen.get('price_asof')))
+    ranked.sort(key=lambda r: (-r['score'], r['symbol']))
+    return dict(status=status['status'], rows=ranked[:limit], coverage=dict(coverage),
+                generated_at=screen.get('generated_at'), price_asof=screen.get('price_asof'),
+                executable=False, note='Research watch only. Scores are not buy approvals or predicted returns.')
 
 
 def paper_execution_scope():

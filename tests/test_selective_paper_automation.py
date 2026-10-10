@@ -237,6 +237,88 @@ class SelectivePaperAutomationTest(unittest.TestCase):
             v2_live.service_personal_paper(self.con, 'IN')
         observe.assert_called_once()
 
+    def test_live_loader_preserves_source_required_by_confirmation(self):
+        market = Path(self.f.tmp.name)/'quotes.db'
+        with sqlite3.connect(market) as con:
+            con.execute('CREATE TABLE latest_quotes(symbol,price,open,high,low,close,volume,ts,source)')
+            con.execute('INSERT INTO latest_quotes VALUES(?,?,?,?,?,?,?,?,?)',
+                        ('TEST',95,94,99,90,95,100,ENTRY.isoformat(),'upstox-live'))
+        with patch.object(v2_live,'MAIN_DB',str(market)):
+            quote=v2_live._live('IN',['TEST'])['TEST']
+        self.assertEqual(quote['source'],'upstox-live')
+        self.assertEqual(quote['ts'],ENTRY.isoformat())
+
+    def test_refresh_reloads_completed_source_after_shorter_confirmation_ttl(self):
+        ctx,candidate,_,order=self.submit()
+        at=ctx.observed_at+timedelta(seconds=121)
+        market=Path(self.f.tmp.name)/'source.db'
+        with sqlite3.connect(market) as con:
+            con.execute('CREATE TABLE candles(symbol,ts,open,high,low,close,volume,source)')
+            for day,bar in self.rebound().iterrows():
+                con.execute('INSERT INTO candles VALUES(?,?,?,?,?,?,?,?)',('TEST',day.isoformat(),*list(bar),'upstox-live:day'))
+        view=dict(regime='ON',asof='2026-10-05',cycle_date='2026-10-06')
+        with patch.object(v2_live,'MAIN_DB',str(market)), \
+             patch('app.sleeves.reference.snapshot',return_value=({'TEST'},{})):
+            self.assertEqual(automation.refresh_pending(self.con,self.quotes(at),view,at),1)
+        plan=automation.binding(candidate.why['selective_paper'],'TEST',92,112,FIRST.isoformat(),self.f.catalogue,at)
+        self.assertEqual(plan['symbol'],'TEST')
+        # Missing/revised source bars cannot merely renew the previous positive.
+        with sqlite3.connect(market) as con:
+            con.execute("DELETE FROM candles WHERE substr(ts,1,10)='2026-10-05'")
+        at+=timedelta(seconds=1)
+        with patch.object(v2_live,'MAIN_DB',str(market)), \
+             patch('app.sleeves.reference.snapshot',return_value=({'TEST'},{})):
+            automation.refresh_pending(self.con,self.quotes(at),view,at)
+        with self.assertRaises(ValueError):
+            automation.binding(candidate.why['selective_paper'],'TEST',92,112,FIRST.isoformat(),self.f.catalogue,at)
+
+    def test_fast_refresh_runs_even_before_a_subscriber_has_a_pending_order(self):
+        with patch.object(automation,'symbols',return_value=[]), \
+             patch.object(v2_live,'_live',return_value={}), \
+             patch.object(automation,'refresh_pending') as refresh:
+            v2_live.service_personal_paper(self.con,'IN')
+        refresh.assert_called_once()
+
+    def test_house_capacity_does_not_revoke_a_signal_for_an_independent_subscriber(self):
+        ctx,candidate,allocation,order=self.submit()
+        at=ctx.observed_at+timedelta(seconds=1)
+        house=paper_exchange.service_house(self.con,self.f.catalogue,self.quotes(at),regime='ON',now=at)[0]
+        self.assertEqual(house['status'],'filled')
+        payload=json.loads(self.con.execute("SELECT payload FROM execution_outbox WHERE topic='house_entry'").fetchone()[0])
+        ctx.observed_at=at+timedelta(seconds=1);ctx.live=self.quotes(ctx.observed_at)
+        ctx.book.open_positions=100
+        self.assertEqual(self.sleeve.propose(ctx).candidates,[])
+        result=approved_execution.submit_house_mirror(self.con,self.f.catalogue,2,payload,ctx.live,regime='ON',now=ctx.observed_at)
+        self.assertEqual(result['status'],'pending')
+        # The subscriber still reserves risk; a duplicate delivery cannot reserve twice.
+        again=approved_execution.submit_house_mirror(self.con,self.f.catalogue,2,payload,ctx.live,regime='ON',now=ctx.observed_at)
+        self.assertEqual(result['order_id'],again['order_id'])
+
+    def test_automatic_owned_stop_trigger_waits_for_later_bid_and_reconciles(self):
+        ctx,_,_,_=self.submit()
+        at=ctx.observed_at+timedelta(seconds=1)
+        paper_exchange.service_house(self.con,self.f.catalogue,self.quotes(at),regime='ON',now=at)
+        payload=json.loads(self.con.execute("SELECT payload FROM execution_outbox WHERE topic='house_entry'").fetchone()[0])
+        at+=timedelta(seconds=1)
+        approved_execution.submit_house_mirror(self.con,self.f.catalogue,2,payload,self.quotes(at),regime='ON',now=at)
+        at+=timedelta(seconds=1)
+        paper_exchange.service(self.con,self.f.catalogue,self.quotes(at),regime='ON',now=at)
+        self.assertEqual(len(books.positions(self.con,2)),1)
+        at+=timedelta(seconds=1)
+        class Clock(datetime):
+            @classmethod
+            def now(cls,tz=None):return at.astimezone(tz) if tz else at.replace(tzinfo=None)
+        with patch.object(books,'datetime',Clock):
+            self.assertEqual(books.monitor_positions(self.con,'IN',self.quotes(at,91.95)),1)
+        self.assertEqual(len(books.positions(self.con,2)),1) # Trigger is not a sale.
+        at+=timedelta(seconds=1)
+        paper_exchange.service_exits(self.con,self.quotes(at,91.95),now=at)
+        self.assertEqual(books.positions(self.con,2),[])
+        row=self.con.execute('SELECT pnl,reason FROM user_trades WHERE user_id=2').fetchone()
+        self.assertLess(row[0],0);self.assertIn('stop',row[1])
+        ledger=paper_ledger.report(self.con,2,'IN',books.current_epoch(self.con,2),books.cash(self.con,2))
+        self.assertEqual(ledger['cash_difference_minor'],0)
+
     def test_old_factor_model_is_not_installed_and_no_broker_lane_is_enabled(self):
         from app import live_trade
         self.assertIsInstance(SleeveEngine().sleeves['quality_momentum'], automation.SelectivePaperSleeve)

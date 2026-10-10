@@ -1343,7 +1343,8 @@ def _live(market, symbols=None):
         except (TypeError, ValueError):
             continue
         if price > 0:
-            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts)
+            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts,
+                            source=LIVE_SOURCE[market])
             if sym in execution: out[sym]['execution'] = execution[sym]
     return out
 
@@ -4702,8 +4703,14 @@ def service_personal_paper(personal, market):
     from .screening import automation
     try:
         tracked = automation.symbols()
+        tracked_quotes = {}
         if tracked:
-            automation.observe(_live(market, tracked), datetime.now(timezone.utc))
+            tracked_quotes = _live(market, tracked)
+            automation.observe(tracked_quotes, datetime.now(timezone.utc))
+        # Also refresh filled house origins before subscriber delivery retries.
+        # Such a subscriber has no pending order yet, so this must precede the
+        # early return below. Actual allocation still occurs per owned account.
+        automation.refresh_pending(personal, tracked_quotes, sleeve_view(market) or {}, datetime.now(timezone.utc))
     except (ValueError, sqlite3.Error, OSError):
         _LOG.exception('Stock paper trial observations unavailable; exit management continues')
     buys=paper_exchange.pending(personal)
