@@ -11,9 +11,10 @@ import logging
 import os
 import sqlite3
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from time import monotonic, sleep
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -21,12 +22,86 @@ import httpx
 import pandas as pd
 from app.screening import providers, store
 from app.screening.screen import build, _features, MIN_TURNOVER
+from app.screening.financials import valid_income_history
 from app.sleeves.reference import refresh_membership, snapshot
 from app.v2_engine import load_panel
 
 LOG = logging.getLogger("openstocks.screening")
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = os.getenv("SCREENING_DB", str(ROOT / "var" / "screening.db"))
+
+
+def statement_due(f,asof):
+    """Recollect incompatible caches promptly without refetching honest gaps."""
+    return (not f or f.get('financial_contract_version')!='annual-statements-v2'
+            or not valid_income_history(f,str(asof)[:10]))
+
+
+def statement_queue(symbols, cached, features, attempts, now):
+    """Repair current setups first; failed sources rotate behind untried names.
+
+    This orders evidence requests only. It never changes selection predicates.
+    A recent failed request waits an hour rather than consuming every refresh.
+    """
+    due = [s for s in symbols if statement_due(cached.get(s), now.astimezone(providers.IST).date())]
+    def recent_failure(s):
+        attempt = attempts.get(s) or {}
+        if attempt.get('status') != 'failed': return False
+        try:
+            age = (now-store.timestamp(attempt['known_at'])).total_seconds()
+            return 0 <= age < 3600
+        except (KeyError,ValueError,TypeError):
+            return False
+    def priority(s):
+        f = features.get(s) or {}
+        setup = f.get('setup') in ('pullback','controlled breakout')
+        return (s in attempts, not setup, (attempts.get(s) or {}).get('known_at',''), s)
+    return sorted((s for s in due if not recent_failure(s)), key=priority)
+
+
+def capture_statements(http, con, symbols, errors, limit, budget_seconds=480, min_interval=1.):
+    """Bound both request concurrency and wall time, including a cold cache.
+
+    Keep at most three requests in flight. At the deadline drain those requests
+    and archive their actual capture times; do not submit the rest of the queue.
+    Stop new requests on source throttling. The next scheduled run resumes.
+    """
+    if not 0 <= limit <= 400 or budget_seconds < 0 or min_interval < 0:
+        raise ValueError('bounded statement refresh required')
+    queue = iter(symbols[:limit])
+    deadline = monotonic()+budget_seconds
+    next_request = monotonic()
+    submitted = captured = 0
+    paused = False
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        tasks = {}
+        while True:
+            while not paused and len(tasks)<3 and monotonic()<deadline:
+                symbol = next(queue,None)
+                if symbol is None: break
+                delay = max(0.,next_request-monotonic())
+                if monotonic()+delay >= deadline: break
+                if delay: sleep(delay)
+                tasks[pool.submit(providers.fetch_statements,http,symbol,datetime.now(timezone.utc))] = symbol
+                next_request = monotonic()+min_interval
+                submitted += 1
+            if not tasks: break
+            done, _ = wait(tasks,return_when=FIRST_COMPLETED)
+            for task in done:
+                symbol = tasks.pop(task)
+                seen = datetime.now(timezone.utc)
+                outcome = 'captured'
+                try:
+                    data = task.result()
+                    store.save(con,symbol,'fundamentals','Yahoo Finance financial-statement timeseries',data,seen.isoformat(),seen)
+                    captured += 1
+                except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
+                    outcome = 'failed'
+                    errors.append(symbol+' fundamentals unavailable: '+type(exc).__name__)
+                    if isinstance(exc,httpx.HTTPStatusError) and exc.response.status_code in (429,503):
+                        paused = True
+                store.save(con,symbol,'fundamental_attempt','screen refresh',dict(status=outcome),seen.isoformat(),seen)
+    return dict(requested=submitted,captured=captured,deferred=len(symbols)-submitted,source_paused=paused)
 
 
 def _rows(con, sql, params=()):
@@ -146,11 +221,15 @@ def run(args):
         dates = [g.index[-1] for g in tails.values() if not g.empty]
         if not dates: raise ValueError("completed-session prices unavailable")
         asof = max(dates)
+        from app.index_history import capture as capture_index_history
+        tails.update(capture_index_history(con,asof,errors))
         sectors = {}
         wanted = []
+        features = {}
         for s in sorted(eligible or []):
             f = _features(tails[s], asof) if s in tails else None
-            if f and f["turnover"] >= MIN_TURNOVER and f["price"] >= 50: wanted.append(s)
+            if f and f["turnover"] >= MIN_TURNOVER and f["price"] >= 50:
+                wanted.append(s);features[s]=f
         headers = {"User-Agent":"Mozilla/5.0", "Referer":providers.NSE+"/"}
         with httpx.Client(timeout=15, follow_redirects=True, headers=headers) as http:
             try: http.get(providers.NSE)
@@ -181,33 +260,24 @@ def run(args):
             capture_participation(main, con, wanted, asof, now, delivery, flows)
             capture_events(http, con, wanted, now, errors)
             capture_options(http, con, now, errors)
-            missing = [s for s in wanted if store.latest(con, s, "fundamentals", now, 7) is None]
-            # Oldest/never-fetched first. Bound traffic; successful captures rotate
-            # out of the queue, failures do not permanently starve other names.
-            previous_attempts = {s:r for s,r in _rows(con,
-                "SELECT symbol,MAX(known_at) FROM evidence WHERE kind='fundamental_attempt' GROUP BY symbol")}
-            missing.sort(key=lambda s:(previous_attempts.get(s, ""), s))
-            with ThreadPoolExecutor(max_workers=3) as pool:
-                tasks = {pool.submit(providers.fetch_statements, http, s, now):s for s in missing[:args.fundamentals_limit]}
-                for task in as_completed(tasks):
-                    symbol = tasks[task]
-                    seen = datetime.now(timezone.utc)
-                    try:
-                        data = task.result()
-                        store.save(con, symbol, "fundamentals", "Yahoo Finance financial-statement timeseries", data, seen.isoformat(), seen)
-                    except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                        errors.append(symbol+" fundamentals unavailable: "+type(exc).__name__)
-                    store.save(con, symbol, "fundamental_attempt", "screen refresh", {}, seen.isoformat(), seen)
+            now = datetime.now(timezone.utc)
+            cached = {s:store.latest(con,s,'fundamentals',now,7) for s in wanted}
+            previous_attempts = {s:store.latest(con,s,'fundamental_attempt',now,14) for s in wanted}
+            previous_attempts = {s:r for s,r in previous_attempts.items() if r}
+            missing = statement_queue(wanted,cached,features,previous_attempts,now)
+            refresh = capture_statements(http,con,missing,errors,args.fundamentals_limit)
         now = datetime.now(timezone.utc)
         result = build(tails, eligible, sectors, con, now, asof)
         result["feed_errors"] = errors
+        result['fundamentals_refresh'] = refresh
         result["price_stale"] = (now.astimezone(providers.IST).date()-asof.date()).days > 4
         con.execute("INSERT INTO screens VALUES(?,?)", (now.isoformat(), json.dumps(result, allow_nan=False)))
         con.commit()
         print(json.dumps(dict(status=result["status"], generated_at=result["generated_at"],
             price_asof=result["price_asof"], liquid=result["liquid_count"],
             fundamentals=sum(bool(r["fundamentals"]) for r in result["equities"]),
-            feed_errors=errors, output=str(output))))
+            earnings_history_ready=sum(valid_income_history(r['fundamentals'],now.astimezone(providers.IST).date().isoformat()) for r in result['equities']),
+            refresh=refresh,feed_errors=errors, output=str(output))))
         return result
     finally:
         main.close()
@@ -219,9 +289,10 @@ def main():
     parser.add_argument("--market-db", default=os.getenv("OPENSTOCKS_DB", str(ROOT/"var"/"trading_agent.db")))
     parser.add_argument("--output-db", default=DEFAULT_DB)
     parser.add_argument("--reference-db", default=os.getenv("SLEEVE_REFERENCE_DB", str(ROOT/"var"/"sleeve_reference.db")))
-    parser.add_argument("--fundamentals-limit", type=int, default=40)
+    parser.add_argument("--fundamentals-limit", type=int, default=400,
+                        help="Maximum statement requests per refresh (3 concurrent, paced 1/s, 8-minute submission budget)")
     args = parser.parse_args()
-    if not 0 <= args.fundamentals_limit <= 100: parser.error("fundamentals limit must be 0..100")
+    if not 0 <= args.fundamentals_limit <= 400: parser.error("fundamentals limit must be 0..400")
     run(args)
 
 

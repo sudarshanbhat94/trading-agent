@@ -466,6 +466,8 @@ def service(v2, main_db, quotes):
         if not broker.state(uid).get("exit_ready") or not journal.refresh(v2, uid):
             continue
         from . import protection
+        protection.settle_partial_entries(v2,uid)
+        protection.activate_reviewed_fills(v2,uid)
         from .execution_ports import UpstoxPort
         # Only obligations explicitly activated under current account-scoped
         # native authorization are transmitted. Recovery never blind-retries.
@@ -473,12 +475,21 @@ def service(v2, main_db, quotes):
         for entry_id, in v2.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? AND state='required'",(uid,)).fetchall():
             protection.submit_stop(v2,uid,entry_id,UpstoxPort())
         protection.refresh(v2,uid,UpstoxPort())
+        from .portfolio_stream import order_updates
+        journal.reconcile(v2,uid,order_updates(v2,uid))
         # Triggered native stops create an owned exit intent before ordinary
         # order reconciliation; application exits cannot race that SELL.
         if v2.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND state='triggered' LIMIT 1",(uid,)).fetchone():
             journal.refresh(v2,uid)
+        protection.cancel_overreserved_children(v2,uid,UpstoxPort())
         from . import broker_reconciliation
         broker_reconciliation.refresh(v2,uid)
+        from .protection_amendments import reduce
+        # Only exact owned inventory, a fresh matching broker account and the
+        # existing separately reviewed policy can reduce a scheduled stop.
+        for entry_id, in v2.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? "
+                                    "AND state IN ('armed','unknown') AND native_id IS NOT NULL",(uid,)).fetchall():
+            reduce(v2,uid,entry_id,UpstoxPort())
         state, why = account_risk_state(v2, uid, broker.state(uid), quotes)
         if state is None:
             _LOG.warning("broker account risk valuation u%s unavailable: %s", uid, why)

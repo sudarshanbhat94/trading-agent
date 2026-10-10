@@ -17,6 +17,7 @@ from __future__ import annotations
 import inspect
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 
 from app import v2_live
 
@@ -34,7 +35,7 @@ GOOD = dict(market="IN", strategy="swing_meanrev", symbol="TCS", entry_date="202
             conviction=0.7, why=None)
 
 
-class RecordEntryTest(unittest.TestCase):
+class RecordEntryTest(ContractStorageCase):
     def setUp(self) -> None:
         self.db = sqlite3.connect(":memory:")
         _schema(self.db)
@@ -115,7 +116,7 @@ class RecordEntryTest(unittest.TestCase):
         self.assertEqual(len(self.rows()), 2)
 
 
-class SingleWriterTest(unittest.TestCase):
+class SingleWriterTest(ContractStorageCase):
     def test_only_one_insert_statement_exists(self) -> None:
         """If this fails someone added a sixth buy path with its own INSERT, and
         every guard now has to be remembered in one more place."""

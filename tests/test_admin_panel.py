@@ -94,7 +94,7 @@ def _client(tmp):
     from fastapi.testclient import TestClient
     from app import main as m, v2_web
     v2_web.V2_DB = v2
-    return TestClient(m.app), m
+    return TestClient(m.app,headers={"Origin":"http://testserver"}), m
 
 
 class AdminApiTest(unittest.TestCase):

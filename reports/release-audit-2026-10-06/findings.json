@@ -6,11 +6,11 @@
     "status": "Partially repaired locally",
     "title": "Advertised scope has no executable individual-stock or multi-asset route",
     "evidence": [
-      "app/approved_execution.py:1",
-      "app/execution_contracts.py:1",
-      "app/v2_live.py:1"
+      "app/approved_execution.py:82",
+      "app/approved_execution.py:136",
+      "app/entry_contracts.py:46"
     ],
-    "rootCause": "Historical boundary: Research, production and broker allowlists represent different models; EQ-only production is ETF-only. Current implementation: Owned, immutable approved NSE cash-stock paper lifecycle is implemented and exercised through real API handlers. This is manual/synthetic operational evidence; no stock model or wider asset route is promoted.",
+    "rootCause": "Historical cause: Research, production and broker allowlists represent different models; EQ-only production is ETF-only. Current local implementation: Reviewed NSE cash paper plans, manual intents and current allowlisted house decisions converge on a durable reservation/later-event fill journal. Subscriber mirrors are independently sized approved pending orders. No independent stock model or additional route is promoted.",
     "fix": "Create a versioned strategy/instrument/broker capability registry; connect only independently approved stock and index contracts to the shared paper/live path.",
     "acceptance": "Every supported instrument has a tested route; unsupported combinations return explicit refusal. Actual stock paper fills cite approved model/plan IDs.",
     "hours": [
@@ -30,17 +30,18 @@
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Owned, immutable approved NSE cash-stock paper lifecycle is implemented and exercised through real API handlers. This is manual/synthetic operational evidence; no stock model or wider asset route is promoted.",
-    "remaining": "Official production contract ingestion; convergence of all execution paths; independent individual-stock validation and separately certified additional asset/broker routes.",
-    "test_evidence": "tests.test_approved_execution; tests.test_approved_order_api",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Reviewed NSE cash paper plans, manual intents and current allowlisted house decisions converge on a durable reservation/later-event fill journal. Subscriber mirrors are independently sized approved pending orders. No independent stock model or additional route is promoted.",
+    "remaining": "Official raw source connectors; live all-adapter convergence; independently validated individual-stock and additional-asset routes.",
+    "test_evidence": "tests.test_manual_approved_execution; tests.test_approved_execution; tests.test_account_boundaries",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       80,
       140
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F02",
@@ -50,7 +51,7 @@
     "title": "Monthly ETF exits after five held sessions",
     "evidence": [
       "app/exit_policy.py:15",
-      "app/v2_live.py:3808",
+      "app/v2_live.py:3822",
       "app/sleeves/index_directional.py:31"
     ],
     "rootCause": "Historical cause: Candidate exit policy is discarded; legacy HOLD_DAYS overrides the monthly model. Local repair: Monthly exit policy is persisted and the five-session regression is repaired.",
@@ -82,8 +83,9 @@
       12,
       20
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F03",
@@ -93,7 +95,7 @@
     "title": "Personal manual entries bypass the daily-loss brake",
     "evidence": [
       "app/books.py:261",
-      "app/order_journal.py:155",
+      "app/order_journal.py:159",
       "app/live_trade.py:381"
     ],
     "rootCause": "Historical cause: Personal and live sizing are separate from the house cost-aware allocator. Local repair: Personal and managed broker entries use serialized cost-aware account risk. Native margin and all-route certification remain separate.",
@@ -124,8 +126,9 @@
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F04",
@@ -134,8 +137,8 @@
     "status": "Locally repaired",
     "title": "Personal paper holdings have no independent exit monitor",
     "evidence": [
-      "app/books.py:639",
-      "app/v2_live.py:3947"
+      "app/books.py:647",
+      "app/v2_live.py:3961"
     ],
     "rootCause": "Historical cause: Only house positions are selected by the fast monitor; personal exits depend on house symbol events or user action. Local repair: Personal exits are evaluated independently of house membership and subscription.",
     "fix": "Persist exit obligations for personal positions and run ordered-price exit evaluation independent of house membership or subscription.",
@@ -164,8 +167,9 @@
       16,
       28
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F05",
@@ -174,9 +178,9 @@
     "status": "Locally repaired",
     "title": "A house exit closes an unrelated manual position",
     "evidence": [
-      "app/books.py:618"
+      "app/books.py:626"
     ],
-    "rootCause": "Historical cause: Mirror exit keys by market/symbol rather than source position identity. Local repair: House mirrors close only the exact source-position origin. Unknown ownership is refused.",
+    "rootCause": "Historical cause: Mirror exit keys by market/symbol rather than source position identity. Current local implementation: House mirrors close only the exact source-position origin. Unknown ownership is refused. New exchange-managed personal exits are evaluated before entry catalogue checks, then filled from later bids; a production-cycle test verifies stops continue through catalogue outage.",
     "fix": "Reference origin_position_id, account, instrument_id and epoch; close only confirmed mirrored ownership.",
     "acceptance": "An unrelated manual holding of the same stock survives a house exit, including after a user reset.",
     "hours": [
@@ -194,8 +198,8 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Locally repaired",
-    "current_state": "House mirrors close only the exact source-position origin. Unknown ownership is refused.",
-    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_only_exact_origin_mirrors_close",
+    "current_state": "House mirrors close only the exact source-position origin. Unknown ownership is refused. New exchange-managed personal exits are evaluated before entry catalogue checks, then filled from later bids; a production-cycle test verifies stops continue through catalogue outage.",
+    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_only_exact_origin_mirrors_close; tests.test_paper_exchange_exits.PaperBidExitTest.test_production_cycle_checks_and_fills_stop_despite_entry_catalogue_outage",
     "remaining": "Deployment and relevant operational certification; no production repair claimed.",
     "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
     "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
@@ -203,8 +207,9 @@
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F06",
@@ -245,8 +250,9 @@
       12,
       24
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F07",
@@ -255,9 +261,11 @@
     "status": "Locally repaired",
     "title": "Personal/live residual holdings can miss the hot feed",
     "evidence": [
-      "scripts/v2_quote_feed.py:53"
+      "scripts/v2_quote_feed.py:58",
+      "scripts/v2_quote_feed.py:86",
+      "scripts/candle_ingest.py:42"
     ],
-    "rootCause": "Historical cause: The fast held set queries house positions only. Local repair: Held-symbol hot feed includes personal, pending and residual exposure.",
+    "rootCause": "Historical cause: fast watch omitted personal exposure. Follow-up reproduced: enabled-only lookup dropped disabled holdings; one unavailable table discarded the combined watch; daily history prioritized only house holdings.",
     "fix": "Union all personal/managed broker positions, pending orders and protection obligations with hot research/watch symbols; prioritise risk exposures within API budgets.",
     "acceptance": "A position absent from house/research remains within the configured execution freshness SLA.",
     "hours": [
@@ -274,17 +282,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Locally repaired",
-    "current_state": "Held-symbol hot feed includes personal, pending and residual exposure.",
-    "test_evidence": "tests.test_release_safety.ReleaseSafetyTest.test_hot_feed_includes_personal_pending_and_residual_exposure",
-    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
+    "current_state": "Quote-only disabled rows are retained, mappings refresh, conflicting aliases refuse, inventory scopes fail independently and residuals group by contract alias. Daily candles prioritize the same exposure inventory. Unknown removed identities stay coverage gaps.",
+    "test_evidence": "tests.test_exposure_quote_coverage; tests.test_candle_job_completion",
+    "remaining": "Production cutover and exposure freshness certification; unknown removed identities/canonical historical ownership still require sourced resolution.",
     "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
     "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
     "original_hours": [
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F08",
@@ -293,11 +302,12 @@
     "status": "Partially repaired locally",
     "title": "Stops depend on the app and local polling",
     "evidence": [
-      "app/protection.py:1",
-      "app/broker.py:1",
-      "app/live_trade.py:1"
+      "app/protection.py:291",
+      "app/protection_amendments.py:60",
+      "app/portfolio_stream.py:131",
+      "scripts/broker_portfolio_feed.py:24"
     ],
-    "rootCause": "Historical boundary: Protection is local state; order wrapper supplies zero trigger_price and no active native-protection route. Current implementation: Explicitly authorized native SELL GTT obligations now survive timeout/restart, exact-status checks, partial fills, same-ticker re-entry and cancellation/trigger races. Production service submits only explicitly activated obligations; APP_ONLY remains labelled.",
+    "rootCause": "Historical boundary: Protection is local state; order wrapper supplies zero trigger_price and no active native-protection route. Current implementation: Exact reviewed native policy can activate new canonical terminal fills; a partial remainder is durably cancelled once before its confirmed filled quantity is protected. Unknown/cancel/fill races and restored-disable guards retain blocking obligations.",
     "fix": "Implement broker-supported SL/GTT protection tied to confirmed filled size, with amendment/cancellation reconciliation and unprotected-position escalation.",
     "acceptance": "Simulated app outage leaves confirmed supported protection active; partial fills and racing exits cannot oversell.",
     "hours": [
@@ -315,17 +325,18 @@
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Explicitly authorized native SELL GTT obligations now survive timeout/restart, exact-status checks, partial fills, same-ticker re-entry and cancellation/trigger races. Production service submits only explicitly activated obligations; APP_ONLY remains labelled.",
-    "remaining": "Automatic certified-fill activation/amendment; broker sandbox and real protection/recovery certification, sell authorization, completed-GTT resolution and incident escalation.",
-    "test_evidence": "tests.test_protection_lifecycle",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Fenced owned protection now reconciles remaining quantities, claims scheduled reductions once, cancels oversized raced children once, and retains exact completed children from authenticated owner-bound stream observations. Notifications cannot arm a stop or release inventory.",
+    "remaining": "Actual authenticated broker operation, quantity/cancel/trigger/outage/credential/ownership and authorization certification; collector installation and scoped cutover remain separate.",
+    "test_evidence": "tests.test_protection_lifecycle; tests.test_entry_contract_gate",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F09",
@@ -334,10 +345,11 @@
     "status": "Partially repaired locally",
     "title": "App order fills are not actual inventory reconciliation",
     "evidence": [
-      "app/broker_reconciliation.py:53",
-      "app/broker_reconciliation.py:132"
+      "app/broker_ledger.py:128",
+      "app/broker_ledger.py:182",
+      "app/broker_reconciliation.py:128"
     ],
-    "rootCause": "Historical boundary: Only owned orders/tags update managed holdings; external account changes are ignored. Current implementation: Owned append-only normalized journal observations accompany monotonic reconciliation. Late acknowledgements are fenced; duplicate callbacks retain one observation.",
+    "rootCause": "Historical boundary: Only owned orders/tags update managed holdings; external account changes are ignored. Current implementation: Actual owned Upstox trade IDs now create immutable balanced INR postings; active external/unknown orders are reconciled and block new exposure. Fee assessment, actual cash settlement and reversal retain independent source references. Gross FIFO P&L is available; final net P&L and margin are explicitly unavailable.",
     "fix": "Reconcile tradebook, holdings, positions, funds and owned orders at startup and continuously; quarantine discrepancies and consume portfolio events with fallback.",
     "acceptance": "External sells/corporate changes never create an oversell or automatic adoption of unrelated assets; mismatches block entries.",
     "hours": [
@@ -356,17 +368,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Owned append-only normalized journal observations accompany monotonic reconciliation. Late acknowledgements are fenced; duplicate callbacks retain one observation.",
-    "remaining": "Actual trade-ID/fee/settlement ledger and active broker-order divergence certification still required.",
-    "test_evidence": "tests.test_execution_events",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Actual owned balanced postings now use exact source-time FIFO and reject nested reversal. Closed-unit net P&L requires matching terminal fills and one sourced final total fee assessment covering each participating order; unknown or ambiguous evidence is not a profit.",
+    "remaining": "Automatic final-fee and settlement source connectors, broker margin, FX/multi-asset convergence and real reconciliation certification.",
+    "test_evidence": "tests.test_broker_ledger; tests.test_execution_hardening",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F10",
@@ -375,11 +388,11 @@
     "status": "Partially repaired locally",
     "title": "Ticker-only identity can collide across exchanges",
     "evidence": [
-      "app/instrument_catalog.py:18",
-      "app/instrument_catalog.py:137",
-      "app/v2_web.py:2695"
+      "app/entry_contracts.py:46",
+      "app/catalogue_ingestion.py:36",
+      "app/catalogue_ingestion.py:103"
     ],
-    "rootCause": "Historical boundary: Universe primary key and downstream position uniqueness omit venue/series/contract identity. Current implementation: Dated lot/tick/freeze/circuit/settlement/restriction/action-review/session evidence now gates approved cash-paper entry and native protective activation.",
+    "rootCause": "Historical boundary: Universe primary key and downstream position uniqueness omit venue/series/contract identity. Current implementation: House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk.",
     "fix": "Add immutable instrument_id plus venue/segment/series/expiry/strike/right and versioned broker bindings; migrate existing references with an ambiguity report.",
     "acceptance": "The same NSE/BSE ticker and a same-underlying derivative coexist without overwritten prices, orders or books.",
     "hours": [
@@ -398,17 +411,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Dated lot/tick/freeze/circuit/settlement/restriction/action-review/session evidence now gates approved cash-paper entry and native protective activation.",
-    "remaining": "Official daily ingestion, full series/asset rules and canonical legacy ownership migration/quarantine remain.",
-    "test_evidence": "tests.test_execution_contracts",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "House, personal and durable broker entry writers share dated canonical rules, sessions, identity, alias, lot/tick/freeze/circuit/action checks. Reviewed normalized official bundles import atomically with hashes/rights references; ambiguous legacy identities are quarantined. Automatic trigger prices round to sourced ticks without increasing risk. Daily import now checks each new row's own effective interval/current payload; an expired review cannot borrow older valid evidence for the same identity. Dedicated licensed NSE identity normalization and exact-date delivery research joins are now implemented locally; raw source acceptance and execution-rule completion remain open.",
+    "remaining": "Actual exchange raw master/action/calendar connectors and production evidence bundles; complete effective historical binding/migration; extra venue certification.",
+    "test_evidence": "tests.test_catalogue_ingestion; tests.test_entry_contract_gate; tests.test_manual_approved_execution; tests.test_catalogue_refresh.DailyReviewedRuleJobTest.test_expired_same_identity_cannot_borrow_previous_valid_rule_or_session; tests.test_official_research_sources",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F11",
@@ -417,12 +431,11 @@
     "status": "Partially repaired locally",
     "title": "Personal cash checks and fills are not a complete atomic ledger",
     "evidence": [
-      "app/paper_ledger.py:36",
-      "app/books.py:261",
-      "app/books.py:441",
-      "app/execution_outbox.py:28"
+      "app/paper_ledger.py:65",
+      "app/approved_execution.py:82",
+      "app/broker_ledger.py:74"
     ],
-    "rootCause": "Historical boundary: Personal read-check-write is separate; entry charges/pending cash are not fully reserved; open and realised costs differ in presentation. Current implementation: Immutable approved-plan/risk/fill events and position/trade provenance extend the balanced personal paper ledger; journal observations are atomic with applied snapshots.",
+    "rootCause": "Historical boundary: Personal read-check-write is separate; entry charges/pending cash are not fully reserved; open and realised costs differ in presentation. Current implementation: Personal ledger/approval/position writes remain one serialized transaction; manual approval/binding rolls back on fill failure. Actual owned broker fills now have balanced postings, independently sourced fee/settlement/reversal events.",
     "fix": "Introduce account cash/reservation/fill/fee postings under a serialized transaction; keep the already fixed fee schedule unchanged.",
     "acceptance": "Concurrent actions cannot create negative free cash; equity, positions and net ledger reconcile through partial fills/cancels.",
     "hours": [
@@ -442,17 +455,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Immutable approved-plan/risk/fill events and position/trade provenance extend the balanced personal paper ledger; journal observations are atomic with applied snapshots.",
-    "remaining": "One all-adapter reservation/fill/actual-fee/margin/settlement accounting model is incomplete.",
-    "test_evidence": "tests.test_approved_execution; tests.test_execution_events",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Personal ledger/approval/position writes remain one serialized transaction; manual approval/binding rolls back on fill failure. Actual owned broker fills now have balanced postings, independently sourced fee/settlement/reversal events.",
+    "remaining": "All-adapter actual net/margin/FX/settlement convergence and broker approval provenance.",
+    "test_evidence": "tests.test_paper_ledger; tests.test_manual_approved_execution; tests.test_broker_ledger",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F12",
@@ -493,8 +507,9 @@
       16,
       28
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F13",
@@ -503,7 +518,7 @@
     "status": "Locally repaired",
     "title": "Manual market guard fails open on an exception",
     "evidence": [
-      "app/v2_web.py:1846"
+      "app/v2_web.py:1859"
     ],
     "rootCause": "Historical cause: Unknown calendar state is treated as permission to continue. Local repair: Manual entry calendars and required-component checks fail closed.",
     "fix": "Return an explicit MARKET_STATE_UNKNOWN refusal for entries; use venue/segment calendar versions and a separate protective-exit recovery path.",
@@ -531,8 +546,9 @@
       4,
       8
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F14",
@@ -541,9 +557,9 @@
     "status": "Locally repaired",
     "title": "Legacy HTTP and bridge controls can run a second agent",
     "evidence": [
-      "app/main.py:919",
-      "app/main.py:5012",
-      "app/main.py:3574"
+      "app/main.py:921",
+      "app/main.py:5014",
+      "app/main.py:3576"
     ],
     "rootCause": "Historical cause: Startup-only disable does not gate route handlers; two ledgers/strategy stacks remain accessible. Local repair: Legacy HTTP entry controls and bridge entry paths are retired at their boundaries.",
     "fix": "Retire legacy mutation controls or redirect to the canonical approved workflow; retain labelled historical reads.",
@@ -573,8 +589,9 @@
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F15",
@@ -583,7 +600,7 @@
     "status": "Locally repaired",
     "title": "Untrusted filing text is inserted into innerHTML",
     "evidence": [
-      "app/v2_web.py:6659"
+      "app/v2_web.py:6718"
     ],
     "rootCause": "Historical cause: External subject strings reach HTML without escaping; inline handlers also interpolate data. Local repair: External filing text is escaped or written with textContent; injected-text regression passes. Independent full-browser security review remains pending.",
     "fix": "Render untrusted fields with textContent/escaped text, attach event handlers without HTML interpolation and review analogous sinks; deploy a compatible CSP.",
@@ -613,8 +630,9 @@
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F16",
@@ -654,8 +672,10 @@
       16,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false,
+    "current_followup": "7 October: bounded official BOD discovery and owned selected-symbol readiness UI verified; complete raw NSE rule/action/calendar normalization and full production journeys still unverified."
   },
   {
     "id": "F17",
@@ -665,7 +685,7 @@
     "title": "Readiness reports a different open-risk calculation",
     "evidence": [
       "app/sleeves/readiness.py:10",
-      "app/v2_live.py:4310",
+      "app/v2_live.py:4324",
       "app/screening/plans.py:18"
     ],
     "rootCause": "Historical cause: UI readiness uses gross stop distance, while production includes costs and strategic risk. Local repair: Readiness now uses account risk and refuses unknown held stops.",
@@ -696,8 +716,9 @@
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F18",
@@ -706,10 +727,10 @@
     "status": "Locally repaired",
     "title": "Buy ignores idea stop/targets and requested size",
     "evidence": [
-      "app/v2_web.py:1869",
-      "app/manual_execution.py:5"
+      "app/v2_web.py:1884",
+      "app/approved_execution.py:82"
     ],
-    "rootCause": "Historical cause: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Local repair: Manual quantity is exact-or-refused; research publication requests cannot fall back to manual execution. An approved stock model is still missing (F01/F22).",
+    "rootCause": "Historical boundary: Symbol-only manual route substitutes \u00b16% levels and separate sizing. Current implementation: Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
     "fix": "Require immutable plan ID/version and server-approved size/mode for an idea action; expose a separate explicit discretionary action if needed.",
     "acceptance": "Displayed and ordered levels/size reconcile; expired or research-only plans cannot execute.",
     "hours": [
@@ -727,17 +748,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Locally repaired",
-    "current_state": "Manual quantity is exact-or-refused; research publication requests cannot fall back to manual execution. An approved stock model is still missing (F01/F22).",
-    "test_evidence": "tests.test_execution_hardening",
-    "remaining": "Deployment and relevant operational certification; no production repair claimed.",
-    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "current_state": "Legacy manual paper requests now freeze their exact owner/epoch/request/quantity/stop/target plan before the approved pipeline. Retries retain original filled receipt, even after closing; rebinding refuses. Research publications cannot masquerade as manual approvals.",
+    "test_evidence": "tests.test_account_boundaries; tests.test_manual_approved_execution",
+    "remaining": "No independent stock-model execution approval is supplied; broader live approved-plan convergence tracked by F01/F21.",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining local review/rollout engineering estimate; operational/external certification is separate and overlaps other findings. Original fix estimate preserved in original_hours.",
     "original_hours": [
       16,
       24
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F19",
@@ -746,8 +768,8 @@
     "status": "Locally repaired",
     "title": "UUID per submission is not durable signal idempotency",
     "evidence": [
-      "app/execution_outbox.py:37",
-      "app/order_journal.py:155"
+      "app/execution_outbox.py:39",
+      "app/order_journal.py:159"
     ],
     "rootCause": "Historical cause: Distinct deliveries receive different UUID tags; unresolved recovery is based on owned daily order evidence. Local repair: Outbox, personal receipts and broker intents retain semantic identity through retries/restart; unknown outcomes retain commitments. Historical rows are not relabelled.",
     "fix": "Use account/epoch/plan/action identity, full tradebook recovery, bounded escalation and reconciliation-backed resolution of unknown states.",
@@ -775,8 +797,9 @@
       16,
       28
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F20",
@@ -785,10 +808,10 @@
     "status": "Partially repaired locally",
     "title": "Failure-alert helper is not called by the active journal",
     "evidence": [
-      "app/live_trade.py:340",
-      "app/order_journal.py:155"
+      "app/incident_inbox.py:26",
+      "app/v2_web.py:2663"
     ],
-    "rootCause": "Historical boundary: Persistence/logging and owner notification are separate, unconnected paths. Current implementation: Native unknown/failed/triggered outcomes now create owned incidents; resolved stop states close those incidents.",
+    "rootCause": "Historical boundary: Persistence/logging and owner notification are separate, unconnected paths. Current implementation: Owned incident inbox now records immutable acknowledgements to the current incident fingerprint. Acknowledgement never resolves exposure or removes a risk block; changed incidents require acknowledgement again. UI and API preserve account ownership.",
     "fix": "Add durable alert outbox for reject/unknown/mismatch/unprotected/failed-exit events, acknowledgements and escalation.",
     "acceptance": "Each injected incident produces one owner-visible actionable alert without leaking another account's details.",
     "hours": [
@@ -806,17 +829,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Native unknown/failed/triggered outcomes now create owned incidents; resolved stop states close those incidents.",
-    "remaining": "Authenticated delivery, on-call acknowledgement/escalation and outage exercise remain.",
-    "test_evidence": "tests.test_protection_lifecycle",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Owned incident inbox now records immutable acknowledgements to the current incident fingerprint. Acknowledgement never resolves exposure or removes a risk block; changed incidents require acknowledgement again. UI and API preserve account ownership.",
+    "remaining": "Consented external incident transport, on-call escalation and real broker incident drills.",
+    "test_evidence": "tests.test_incident_inbox; tests.test_account_ui",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       12,
       20
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F21",
@@ -825,10 +849,10 @@
     "status": "Partially repaired locally",
     "title": "No single capability-aware adapter contract; Angel One absent",
     "evidence": [
-      "app/execution_ports.py:36",
-      "app/execution_ports.py:54"
+      "app/angelone_port.py:35",
+      "app/execution_ports.py:117"
     ],
-    "rootCause": "Historical boundary: Legacy routers, active Upstox journal and EQ-only paper writer implement different semantics. Current implementation: Upstox port now defines and transports modify, margin, native SELL GTT/status/cancellation; the approved paper lifecycle is separately operationally tested.",
+    "rootCause": "Historical boundary: Legacy routers, active Upstox journal and EQ-only paper writer implement different semantics. Current implementation: Angel One transport now implements strict owner-bound encrypted sessions, single-attempt submit/modify/cancel/status/current-day fills/inventory/holdings/funds/margin with official-host wire fixtures. Native protection is unsupported; orchestration_enabled and live_certified remain false.",
     "fix": "Define broker ports for instruments, quotes, margins, intent submission, order/trade status and protection; add Paper and Upstox first, then broker-certified SmartAPI/Kite/Dhan adapters.",
     "acceptance": "Capabilities reject unsupported product/order/validity/segment combinations before submission; adapters pass shared contract fixtures.",
     "hours": [
@@ -848,17 +872,19 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Upstox port now defines and transports modify, margin, native SELL GTT/status/cancellation; the approved paper lifecycle is separately operationally tested.",
-    "remaining": "Durable modify orchestration, identical paper/live adapter contract, actual settlement/margin evidence and Angel One remain.",
-    "test_evidence": "tests.test_execution_capabilities; tests.test_protection_lifecycle",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Angel One transport now implements strict owner-bound encrypted sessions, single-attempt submit/modify/cancel/status/current-day fills/inventory/holdings/funds/margin with official-host wire fixtures. Native protection is unsupported; orchestration_enabled and live_certified remain false.",
+    "remaining": "Paper/Upstox domain orchestration convergence and actual Upstox operational certification; additional asset routes need separate certification.",
+    "test_evidence": "tests.test_angelone_port",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       80,
       140
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false,
+    "scope_override": "Latest human instruction: Upstox only. Angel One is outside current implementation scope; its historical observation is preserved."
   },
   {
     "id": "F22",
@@ -899,8 +925,9 @@
       40,
       80
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F23",
@@ -910,7 +937,7 @@
     "title": "Equity cost formula cannot price every requested asset",
     "evidence": [
       "app/costs.py:1",
-      "app/v2_live.py:1559",
+      "app/v2_live.py:1564",
       "app/strategy_backtest.py:14"
     ],
     "rootCause": "Different paths use delivery/intraday or generic bps; futures/options/commodity/US costs and settlement cash are not a unified versioned contract.",
@@ -941,8 +968,9 @@
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F24",
@@ -953,7 +981,7 @@
     "evidence": [
       "app/sleeves/options_overlay.py:1",
       "app/nfo_contracts.py:82",
-      "app/v2_live.py:4310"
+      "app/v2_live.py:4324"
     ],
     "rootCause": "Synthetic spread candidates are not actual confirmed legs; nearest-index chain is not a complete derivatives lifecycle.",
     "fix": "Add broker margin/SPAN exposure preflight, lot/tick/freeze slicing, bid/ask/greeks age checks, expiry/roll/ITM/physical delivery guards and compensating leg execution.",
@@ -983,21 +1011,23 @@
       120,
       200
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F25",
     "area": "Execution / market data",
     "severity": "High",
-    "status": "Missing capability",
+    "status": "Partially repaired locally",
     "title": "A sampled LTP does not prove an executable price or liquidity",
     "evidence": [
-      "app/v2_live.py:4310",
-      "app/broker.py:590",
-      "app/sleeves/feeds.py:1"
+      "app/executable_quotes.py:1",
+      "app/paper_exchange.py:1",
+      "app/v2_live.py:4681",
+      "app/account_ui.py:13"
     ],
-    "rootCause": "Current paper entries and broker references use sampled prices, without a unified spread/depth/price-band preflight.",
+    "rootCause": "Historical cause: Current paper entries and broker references use sampled prices, without a unified spread/depth/price-band preflight. Current local implementation: NSE cash delivery paper uses immutable pending commitments, strictly later fresh sourced best-ask/bid snapshots, whole-order displayed-capacity fills shared across accounts, atomic risk/ledger posting, restart/cancel/rollback and protected exits. LTP remains a valuation mark, never proof of executable depth.",
     "fix": "Use valid bid/ask/depth, circuit bands, permissible price type and later-event fill simulation; distinguish requested, acknowledged and filled states.",
     "acceptance": "Stale/wide/locked/circuit-limited markets reject or remain pending; fills never occur at an unavailable historical price.",
     "hours": [
@@ -1015,18 +1045,19 @@
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
-    "local_status": "Missing capability",
-    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
-    "remaining": "Use valid bid/ask/depth, circuit bands, permissible price type and later-event fill simulation; distinguish requested, acknowledged and filled states.",
-    "test_evidence": "Acceptance test specified; not completed/certified",
+    "local_status": "Partially repaired locally",
+    "current_state": "NSE cash delivery paper uses immutable pending commitments, strictly later fresh sourced best-ask/bid snapshots, whole-order displayed-capacity fills shared across accounts, atomic risk/ledger posting, restart/cancel/rollback and protected exits. LTP remains a valuation mark, never proof of executable depth.",
+    "remaining": "Production quote capture/operational proof; partial fills/queue/multi-depth simulation and other asset routes; actual broker liquidity/fill certification.",
+    "test_evidence": "tests.test_executable_quotes; tests.test_paper_exchange; tests.test_house_paper_exchange; tests.test_paper_exchange_exits; isolated real-handler/shared-component browser lifecycle",
     "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F26",
@@ -1067,8 +1098,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F27",
@@ -1109,21 +1141,21 @@
       16,
       32
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F28",
     "area": "Data / fundamentals",
     "severity": "High",
-    "status": "Missing capability",
+    "status": "Partially repaired locally",
     "title": "Secondary quality ratios are not verified point-in-time fundamentals",
     "evidence": [
-      "app/screening/providers.py:74",
-      "app/screening/providers.py:74",
-      "app/screening/screen.py:56"
+      "app/research_data.py:28",
+      "app/research_data.py:69"
     ],
-    "rootCause": "Ratios use secondary statements and limited annual variability; bank/financial asset-quality inputs are missing.",
+    "rootCause": "Historical boundary: Ratios use secondary statements and limited annual variability; bank/financial asset-quality inputs are missing. Current implementation: Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions.",
     "fix": "Reconcile dated filings/availability/restatements, quarterly stability and sector-specific metrics; retain a provenance/gap ledger.",
     "acceptance": "Each selection uses available-before-entry evidence; unsupported financial-sector metrics are not invented.",
     "hours": [
@@ -1141,18 +1173,19 @@
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
-    "local_status": "Missing capability",
-    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
-    "remaining": "Reconcile dated filings/availability/restatements, quarterly stability and sector-specific metrics; retain a provenance/gap ledger.",
-    "test_evidence": "Acceptance test specified; not completed/certified",
-    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "local_status": "Partially repaired locally",
+    "current_state": "Immutable decision-time research facts now support canonical membership, quality metrics with earnings periods/filing evidence, adjusted bars/actions, delivery, news and benchmarks. Corrections are observed later and cannot rewrite earlier decisions. Official current membership/delivery archive and replay now preserve first observation, source hashes and missing coverage. Exact PIT cutoffs/correction ordering are repaired in F73. F75 repairs exact annual-history/duplicate/conflict/financial-shape acceptance through the actual screening job; verified filing provenance and source rights remain incomplete.",
+    "remaining": "Actual licensed/public-source acceptance, verified filing fundamentals, action-aware price history, news/benchmark data, operational coverage and independent model approval.",
+    "test_evidence": "tests.test_research_point_in_time; tests.test_official_research_sources; tests.test_research_time_boundaries; tests.test_financial_history_contract",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       32,
       64
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F29",
@@ -1191,8 +1224,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F30",
@@ -1231,8 +1265,9 @@
       32,
       64
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F31",
@@ -1273,8 +1308,9 @@
       16,
       32
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F32",
@@ -1315,8 +1351,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F33",
@@ -1356,8 +1393,9 @@
       4,
       8
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F34",
@@ -1396,8 +1434,9 @@
       12,
       24
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F35",
@@ -1438,8 +1477,9 @@
       16,
       32
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F36",
@@ -1478,8 +1518,9 @@
       16,
       32
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F37",
@@ -1488,11 +1529,10 @@
     "status": "Partially repaired locally",
     "title": "Cross-route ownership/CSRF/proxy boundaries need independent proof",
     "evidence": [
-      "app/auth.py:185",
-      "app/v2_web.py:134",
-      "app/main.py:5012"
+      "app/request_security.py:19",
+      "app/auth.py:40"
     ],
-    "rootCause": "Original boundary: Authentication exists, but a source inventory cannot establish every legacy/admin/bridge/export permission or deployment boundary. Remaining gap: Independent CSRF/proxy/privileged-route/session boundary review and penetration testing are incomplete. Dependency override fixtures do not certify real authentication.",
+    "rootCause": "Historical boundary: Authentication exists, but a source inventory cannot establish every legacy/admin/bridge/export permission or deployment boundary. Current implementation: Origin/Fetch-Site browser mutation boundary refuses cross-site or originless cookie mutations; rate limits and secure-cookie logic use ASGI-resolved client/scheme rather than raw forwarded headers. Owner race protections and incident API refuse unsafe rebinding.",
     "fix": "Build negative ownership/role/session/origin tests, explicit CSRF protection where cookie-authenticated mutations apply, safe trusted-proxy and egress policies.",
     "acceptance": "Changing IDs/mode/routes cannot operate another account; cross-origin unsafe mutations and forbidden callbacks are refused.",
     "hours": [
@@ -1511,17 +1551,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "New ledger/performance/publication assessment APIs are read-only and tenant-owned; router dependency checks pass.",
-    "remaining": "Independent CSRF/proxy/privileged-route/session boundary review and penetration testing are incomplete. Dependency override fixtures do not certify real authentication.",
-    "test_evidence": "tests.test_account_evidence_api; tests.test_v2_api_auth",
-    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "current_state": "Origin/Fetch-Site browser mutation boundary refuses cross-site or originless cookie mutations; rate limits and secure-cookie logic use ASGI-resolved client/scheme rather than raw forwarded headers. Owner race protections and incident API refuse unsafe rebinding.",
+    "remaining": "Full independent production CSP/XSS/security/privacy/host/proxy review and browser authentication acceptance.",
+    "test_evidence": "tests.test_request_security; tests.test_auth_session_security; tests.test_account_ui_races",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F38",
@@ -1530,10 +1571,12 @@
     "status": "Partially repaired locally",
     "title": "Cookie deletion does not provide per-session revocation",
     "evidence": [
-      "app/auth.py:372",
-      "app/auth.py:475"
+      "app/login_guard.py:1",
+      "app/auth.py:224",
+      "app/auth.py:501",
+      "app/db.py:2004"
     ],
-    "rootCause": "Original boundary: Signed stateless tokens carry a nonce that is not checked against a revocable session registry. Remaining gap: All-session revocation, shared rate-limit persistence and production migration/reauthentication remain pending.",
+    "rootCause": "Historical cause: Signed stateless tokens carry a nonce that is not checked against a revocable session registry. Current local implementation: Server-session revocation includes atomic all-session invalidation on password/role/active changes and owned logout-all. Durable SQLite reservations count in-flight password work across workers/restarts; successful attempts cannot erase concurrent failures.",
     "fix": "Persist revocable session IDs/user auth versions; rotate on credential/security changes and enforce expiry/revocation server-side.",
     "acceptance": "A captured token is refused after logout/revocation/password reset; active user/role checks remain authoritative.",
     "hours": [
@@ -1551,28 +1594,31 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Persisted hashed sessions permit logout revocation without revoking another session.",
-    "remaining": "All-session revocation, shared rate-limit persistence and production migration/reauthentication remain pending.",
-    "test_evidence": "tests.test_execution_hardening.VaultSessionTest.test_logout_revokes_copied_cookie_but_not_other_session",
+    "current_state": "Server-session revocation includes atomic all-session invalidation on password/role/active changes and owned logout-all. Durable SQLite reservations count in-flight password work across workers/restarts; successful attempts cannot erase concurrent failures.",
+    "remaining": "Production account migration/cookie/session/security verification and independent security certification.",
+    "test_evidence": "tests.test_auth; tests.test_persistent_login_guard; tests.test_request_security",
     "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       12,
       24
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F39",
     "area": "Dependencies",
     "severity": "High",
-    "status": "Unverified requirement",
+    "status": "Partially repaired locally",
     "title": "No locked dependency/SBOM/advisory evidence",
     "evidence": [
-      "requirements.txt:1"
+      "requirements.lock:1",
+      "requirements-dev.lock:1",
+      "scripts/audit_dependencies.py:1"
     ],
-    "rootCause": "Broad version ranges allow drift; the audit environment has no pip-audit module.",
+    "rootCause": "Historical boundary: Broad version ranges allow drift; the audit environment has no pip-audit module. Current implementation: Exact hash-locked runtime/development dependencies, CycloneDX SBOM and OSV evidence are committed; four distinct known AnyIO/Starlette advisories were addressed. Current scan: 39 packages, zero active known OSV advisories. CI checks the exact lock; Linux CPython 3.12 wheel/hash dry-run passed.",
     "fix": "Lock tested runtime versions; generate SBOM and run supported advisory/SAST/secret checks in CI with explicit exceptions.",
     "acceptance": "No unresolved applicable Critical/High advisories; reproducible build and installed-versus-lock verification. No CVE finding is asserted here.",
     "hours": [
@@ -1589,18 +1635,19 @@
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
-    "local_status": "Unverified requirement",
-    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
-    "remaining": "Lock tested runtime versions; generate SBOM and run supported advisory/SAST/secret checks in CI with explicit exceptions.",
-    "test_evidence": "Acceptance test specified; not completed/certified",
-    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "local_status": "Partially repaired locally",
+    "current_state": "Exact hash-locked runtime/development dependencies, CycloneDX SBOM and OSV evidence are committed; four distinct known AnyIO/Starlette advisories were addressed. Current scan: 39 packages, zero active known OSV advisories. CI checks the exact lock; Linux CPython 3.12 wheel/hash dry-run passed.",
+    "remaining": "Independent SAST/license/security applicability review; CI exact-build result and deployed dependency verification.",
+    "test_evidence": "reports/dependencies/advisories.json; reports/dependencies/pre-patch-advisories.json; pip check; Linux lock dry-run",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F40",
@@ -1609,11 +1656,10 @@
     "status": "Partially repaired locally",
     "title": "Ad-hoc additive migrations and swallowed failures lack a release contract",
     "evidence": [
-      "app/v2_live.py:998",
-      "app/db.py:1131",
-      "app/main.py:670"
+      "app/schema_migrations.py:48",
+      "app/v2_live.py:999"
     ],
-    "rootCause": "Original boundary: Runtime ensure-schema blocks and broad catches can leave partially migrated or missing v2 components without failing startup. Remaining gap: A comprehensive versioned migration/rollback and complete restoration programme is not implemented.",
+    "rootCause": "Historical boundary: Runtime ensure-schema blocks and broad catches can leave partially migrated or missing v2 components without failing startup. Current implementation: Required account/trading schema setup now uses serialized versioned/checksummed migrations, immutable receipts, no implicit executescript commits, rollback on faults and structural/FK/trigger validation. Existing book epochs, capital and positions remain intact.",
     "fix": "Version transactional migrations with backfill/invariant checks; fatal startup on missing required engine/schema and health readiness false until valid.",
     "acceptance": "Failed migration/engine import cannot serve a ready trading app; restore/rollback verifies ledger identity and constraints.",
     "hours": [
@@ -1632,17 +1678,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Required startup schema/import failures now block startup and execution. New migrations are additive and isolated fixtures preserve old epochs.",
-    "remaining": "A comprehensive versioned migration/rollback and complete restoration programme is not implemented.",
-    "test_evidence": "tests.test_execution_hardening; tests.test_paper_ledger",
-    "revalidation_method": "Current cited implementation plus targeted isolated regression; deployed baseline separately read-only verified",
+    "current_state": "Transactional trading schema v6 adds separate coverage quantities, immutable amendment intents/events and account-bound stream observations. Fresh private OCI copies preserve all checked original values and boot the actual app with execution/outbound HTTP disabled.",
+    "remaining": "Auxiliary market-schema migrations, coordinated encrypted backup/restore, real rollout/rollback and deployed worker acceptance.",
+    "test_evidence": "tests.test_schema_migrations",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       24,
       40
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F41",
@@ -1651,11 +1698,10 @@
     "status": "Partially repaired locally",
     "title": "Backup covers paper DB only and keeps copies locally",
     "evidence": [
-      "app/recovery_bundle.py:1",
-      "app/recovery_guard.py:1",
-      "scripts/backup_db.py:1"
+      "app/recovery_stream.py:111",
+      "app/recovery_stream.py:159"
     ],
-    "rootCause": "Historical boundary: Auth, research/protocol/config/execution dependencies are not a complete recoverable snapshot set. Current implementation: Encrypted declared-deployment capture and private disabled restoration verify integrity, exact protocol and account-bound broker escrow. Backup no longer prunes live equity history.",
+    "rootCause": "Historical boundary: Auth, research/protocol/config/execution dependencies are not a complete recoverable snapshot set. Current implementation: Authenticated bounded-memory v2 recovery supports ordered 1MiB frames up to 50GiB staging, complete declared roles/schema checks, whole-source-set mutation detection, separate escrow and private execution-disabled restore. Legacy v1 remains readable.",
     "fix": "Add consistent encrypted off-host backups, independent persistent peaks, retention and restore drills for all sources of truth.",
     "acceptance": "A separate restore reconciles balances, owned inventory, pending intents and immutable publications without placing orders.",
     "hours": [
@@ -1672,17 +1718,18 @@
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "Encrypted declared-deployment capture and private disabled restoration verify integrity, exact protocol and account-bound broker escrow. Backup no longer prunes live equity history.",
-    "remaining": "Real complete-source inventory, external writer quiescence, off-host retention/monitoring and actual production restore/cutover certification. Current archive limit is 512 MiB; large-source streaming/memory verification remains.",
-    "test_evidence": "tests.test_recovery_bundle",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Authenticated bounded-memory v2 recovery supports ordered 1MiB frames up to 50GiB staging, complete declared roles/schema checks, whole-source-set mutation detection, separate escrow and private execution-disabled restore. Legacy v1 remains readable.",
+    "remaining": "Actual supervised full-source quiescence, scheduled encrypted complete backups, off-host retention, actual escrow/key rotation, load/production restore and reviewed cutover.",
+    "test_evidence": "tests.test_recovery_stream; tests.test_recovery_bundle",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       16,
       32
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F42",
@@ -1721,8 +1768,9 @@
       12,
       24
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F43",
@@ -1760,8 +1808,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F44",
@@ -1770,7 +1819,7 @@
     "status": "Partially repaired locally",
     "title": "Existing CI is not a production/live release gate",
     "evidence": [
-      "app/release_gate.py:20",
+      "app/release_gate.py:25",
       ".github/workflows/tests.yml:1"
     ],
     "rootCause": "Historical boundary: Unit matrices exist; staging parity, schema/capability certification, controlled rollout and rollback evidence do not. Current implementation: A private reviewed exact-build/account/route/model authorization is checked on actual new broker-risk submissions; arming/connect alone refuses.",
@@ -1801,8 +1850,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F45",
@@ -1811,8 +1861,8 @@
     "status": "Locally repaired",
     "title": "Account page contradicts reset capital/history behaviour",
     "evidence": [
-      "app/v2_web.py:6243",
-      "app/v2_web.py:6575"
+      "app/v2_web.py:6302",
+      "app/v2_web.py:6634"
     ],
     "rootCause": "Historical cause: Multiple stale inline renderers/copy survive accumulated SPA replacements. Local repair: Reset copy and display contracts distinguish the current epoch from retained history. Deployed production UI still requires verification after rollout.",
     "fix": "Consolidate account UI and capital/mode source; display active epoch only, retired history separately and exact reset semantics.",
@@ -1841,8 +1891,9 @@
       8,
       16
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F46",
@@ -1851,10 +1902,9 @@
     "status": "Partially repaired locally",
     "title": "Polling/error/empty state and account-mode correctness need end-to-end proof",
     "evidence": [
-      "app/v2_web.py:5433",
-      "app/v2_web.py:5438"
+      "app/account_ui.py:1"
     ],
-    "rootCause": "Historical boundary: Large inline SPA uses independent polling/HTML updates; some error paths hide content; active browser coverage is incomplete. Current implementation: The actual SPA includes approved paper review, owned protection incidents and loading/error/empty/missing-mark states; selected real-handler fixture tested desktop/390px.",
+    "rootCause": "Historical boundary: Large inline SPA uses independent polling/HTML updates; some error paths hide content; active browser coverage is incomplete. Current implementation: Actual account/approved-paper/performance/protection/manual receipt components retain owner/mode guards across asynchronous responses, empty/error/loading states and synthetic mobile lifecycle evidence. Incident acknowledgement stays blocked until actual resolution.",
     "fix": "Use typed versioned responses, account/plan-bound query keys, request-generation cancellation and explicit loading/stale/unavailable/research states.",
     "acceptance": "Out-of-order responses and lost feeds cannot show another mode/account's numbers or label unavailable inventory as zero.",
     "hours": [
@@ -1873,17 +1923,18 @@
     "production_status": "Not deployed; baseline finding remains",
     "deployed_repair": false,
     "local_status": "Partially repaired locally",
-    "current_state": "The actual SPA includes approved paper review, owned protection incidents and loading/error/empty/missing-mark states; selected real-handler fixture tested desktop/390px.",
-    "remaining": "Full deployed authentication/watchlist/order/onboarding/billing journeys, account race and all viewport/accessibility acceptance remain.",
-    "test_evidence": "tests.test_account_ui; tests.test_approved_order_api",
-    "revalidation_method": "Current targeted runtime paths plus isolated invariant/API/browser evidence; external/production acceptance remains separate",
+    "current_state": "Actual account/approved-paper/performance/protection/manual receipt components retain owner/mode guards across asynchronous responses, empty/error/loading states and synthetic mobile lifecycle evidence. Incident acknowledgement stays blocked until actual resolution.",
+    "remaining": "Full deployed authentication, ideas/watchlist/billing/risk/help/accessibility journeys and all legacy SPA async-state audit.",
+    "test_evidence": "tests.test_account_ui_races; tests.test_approved_order_api; browser-approved-paper-check.md",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       40,
       72
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F47",
@@ -1892,8 +1943,8 @@
     "status": "Unverified requirement",
     "title": "No completed WCAG/mobile/performance acceptance evidence",
     "evidence": [
-      "app/v2_web.py:6325",
-      "app/v2_web.py:6423"
+      "app/v2_web.py:6384",
+      "app/v2_web.py:6482"
     ],
     "rootCause": "Code-based renderer tests do not measure keyboard focus, responsive overflow, contrast or chart semantics.",
     "fix": "Adopt a design system; semantic controls, accessible dialogs/tables/charts, responsive tests and measured frontend budgets.",
@@ -1923,21 +1974,23 @@
       40,
       72
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false,
+    "current_followup": "7 October: bounded official BOD discovery and owned selected-symbol readiness UI verified; complete raw NSE rule/action/calendar normalization and full production journeys still unverified."
   },
   {
     "id": "F48",
     "area": "Product / billing / onboarding",
     "severity": "Medium",
-    "status": "Missing capability",
+    "status": "Partially repaired locally",
     "title": "Manual UPI/admin approval is not automated billing/onboarding",
     "evidence": [
-      "app/v2_web.py:1096",
-      "app/v2_web.py:1189",
-      "app/plans.py:110"
+      "app/billing_ledger.py:25",
+      "app/db.py:2112",
+      "app/v2_web.py:1226"
     ],
-    "rootCause": "Plans exist but payment receipt/reconciliation and account-risk/broker readiness remain separate manual steps.",
+    "rootCause": "Historical boundary: Plans exist but payment receipt/reconciliation and account-risk/broker readiness remain separate manual steps. Current implementation: Verified manual payment reference, immutable receipt, renewal expiry and access grant now commit atomically; duplicate payment references and concurrent review cannot double grant. Owner-scoped receipt API/UI distinguishes manual records from tax invoices.",
     "fix": "Design idempotent payment/renewal/refund/expiry with a manual fallback, guided broker/permission/risk setup, owner notifications, help and a public landing page.",
     "acceptance": "Paid access matches verified receipt and accepted scope; expiry cannot strand exits; marketing makes no unsupported profit claim.",
     "hours": [
@@ -1955,18 +2008,19 @@
     "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
     "production_status": "Current deployed capability gap / requirement remains",
     "deployed_repair": false,
-    "local_status": "Missing capability",
-    "current_state": "No repair claimed. Targeted source revalidation retains this finding; missing runtime/external evidence is not inferred from passing tests.",
-    "remaining": "Design idempotent payment/renewal/refund/expiry with a manual fallback, guided broker/permission/risk setup, owner notifications, help and a public landing page.",
-    "test_evidence": "Acceptance test specified; not completed/certified",
-    "revalidation_method": "Cited path and baseline diff inspection; independent acceptance evidence unavailable",
+    "local_status": "Partially repaired locally",
+    "current_state": "Verified manual payment reference, immutable receipt, renewal expiry and access grant now commit atomically; duplicate payment references and concurrent review cannot double grant. Owner-scoped receipt API/UI distinguishes manual records from tax invoices.",
+    "remaining": "Automated gateway/webhook signatures, subscription renewals/refunds/reconciliation/tax/onboarding/help and production journey certification.",
+    "test_evidence": "tests.test_billing_atomicity; tests.test_trial_and_upgrade; tests.test_account_ui",
+    "revalidation_method": "Current targeted runtime boundary + isolated invariant/API tests; external/deployed acceptance explicitly not claimed",
     "hours_basis": "Remaining engineering estimate; overlapping ranges exclude external lead time and market sessions",
     "original_hours": [
       48,
       80
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F49",
@@ -2006,8 +2060,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F50",
@@ -2016,7 +2071,7 @@
     "status": "Unverified requirement",
     "title": "Privacy, grievance and data-redistribution obligations are not established",
     "evidence": [
-      "app/auth.py:500",
+      "app/auth.py:501",
       "app/db.py:1131",
       "README.md:1"
     ],
@@ -2048,8 +2103,9 @@
       24,
       48
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F51",
@@ -2082,8 +2138,9 @@
       2,
       4
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F52",
@@ -2116,8 +2173,9 @@
       2,
       4
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
   },
   {
     "id": "F53",
@@ -2129,7 +2187,7 @@
     "deployed_repair": false,
     "title": "Journal transport lacked an explicit supported-route guard",
     "evidence": [
-      "app/order_journal.py:155",
+      "app/order_journal.py:159",
       "app/execution_ports.py:54"
     ],
     "rootCause": "Journal transport lacked an explicit supported-route guard",
@@ -2150,7 +2208,754 @@
       2,
       4
     ],
-    "revalidated_working_parent": "3ca1a9d9ae9c5a19ab5bc6f8f90af1de788ccb98",
-    "revalidation_source": "inventory.json source_hashes; current local changes; deployed read-only snapshot retained"
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "revalidation_source": "inventory.json immutable source hashes; current local code/tests; retained read-only deployed snapshot",
+    "release_certification": false
+  },
+  {
+    "id": "F54",
+    "area": "Billing / account atomicity",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Interrupted subscription approval commits status before access",
+    "evidence": [
+      "app/db.py:2112",
+      "app/billing_ledger.py:25"
+    ],
+    "rootCause": "Prior implementation committed approved request status before the separate access grant; a crash left approval without access and no durable receipt.",
+    "fix": "Serialize pending check, verified unique payment receipt, expiry/access grant and decision status in one atomic transaction; invalid existing expiry requires review.",
+    "acceptance": "Injected failure leaves request pending and access unchanged; concurrent reviewers grant once; duplicate payment references cannot fund two subscriptions.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_status": "Reproduced defect on exact parent 8abd708",
+    "original_evidence": [
+      "app/db.py:decide_plan_request at 8abd708"
+    ],
+    "original_rootCause": "Approved status and plan grant used separate commits.",
+    "revalidated_against": "b588ffdca0e0309500a6bc0e74699d5c1c586c2e",
+    "revalidated_working_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; deployed reproduction not performed",
+    "deployed_repair": false,
+    "current_state": "Reproduced historical parent failure in disposable SQLite using exact Git AST method; repaired current method rolls back status and access together.",
+    "remaining": "Separately authorized deployed revalidation; automated billing is F48.",
+    "test_evidence": "billing-safety-reproduction.json; tests.test_billing_atomicity",
+    "revalidation_method": "Exact historical method + fault injection and current concurrency/rollback tests",
+    "hours_basis": "Local repair implemented; remaining estimate is deployed acceptance only",
+    "release_certification": false
+  },
+  {
+    "id": "F55",
+    "area": "Startup / account UI",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Concurrent cold account requests can deadlock sleeve imports",
+    "evidence": [
+      "app/sleeves/__init__.py:31",
+      "tests/test_sleeve_cold_imports.py:7"
+    ],
+    "rootCause": "Eager package exports acquire package/config locks during concurrent submodule imports. Browser account-performance and readiness requests reproduced _DeadlockError and an HTTP 500.",
+    "fix": "Resolve public sleeve exports lazily after package initialization, preserving the same settings/classes.",
+    "acceptance": "Concurrent cold imports complete in fresh processes; real-handler browser account page shows balances and entry checks together.",
+    "hours": [
+      1,
+      4
+    ],
+    "original_status": "Reproduced candidate browser failure",
+    "original_evidence": [
+      "app/sleeves/__init__.py:27 at ef60987"
+    ],
+    "original_rootCause": "Package __init__ eagerly imports config and regime while holding package initialization lock.",
+    "revalidated_working_parent": "ef609871b0c7fc4e36282ece3304d2f53daad7bd",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; deployed cold-start reproduction not performed",
+    "deployed_repair": false,
+    "current_state": "Cold subprocess regression and isolated browser pass; production remains old build.",
+    "remaining": "Exact-candidate deployment and cold-start acceptance",
+    "test_evidence": "tests.test_sleeve_cold_imports; ui-evidence/readiness-mobile-2026-10-07.png",
+    "revalidation_method": "Observed real-handler browser exception, concurrent process regression, selected-handler desktop/mobile rehearsal",
+    "hours_basis": "Local repair implemented; estimate includes deployed acceptance",
+    "release_certification": false
+  },
+  {
+    "id": "F56",
+    "area": "Data / operations",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Daily data job reports success for old history and failed markets",
+    "evidence": [
+      "scripts/candle_ingest.py:105",
+      "scripts/candle_ingest.py:175",
+      "scripts/candle_ingest.py:251"
+    ],
+    "rootCause": "Returned daily history was counted as current coverage; stale-tail retries stopped after older bars arrived. Future dates satisfied freshness and main swallowed failures with process exit zero.",
+    "fix": "Check exact expected closed-session coverage, exclude later sessions, retry actual stale symbols and return nonzero for partial/failed/unsupported jobs; prioritize personal/managed disabled holdings and use the shared notified holiday list.",
+    "acceptance": "Older/future history never replaces the target session; incomplete jobs fail visibly without deleting useful data; held disabled names retain priority.",
+    "hours": [
+      2,
+      4
+    ],
+    "test_evidence": "tests.test_candle_job_completion; tests.test_candle_ingest_freshness",
+    "current_state": "Reproduced paths repaired locally with retry, completion, holiday and disabled-exposure fixtures.",
+    "production_build": "2b300b4",
+    "production_status": "Not deployed",
+    "deployed_repair": false,
+    "remaining": "Authorized deployed revalidation, exceptional-session and historical-provenance coverage.",
+    "release_certification": false
+  },
+  {
+    "id": "F57",
+    "area": "Operations / configuration",
+    "severity": "Medium",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "No-op startup rewrites every runtime-setting timestamp",
+    "evidence": [
+      "app/main.py:108",
+      "app/db.py:6360"
+    ],
+    "rootCause": "Startup normalizes existing runtime settings; unconditional UPSERT rewrites updated_at for every unchanged row. The actual OCI startup copy changed 234 timestamps while zero configuration values changed.",
+    "original_rootCause": "Unconditional update_runtime_settings UPSERT touches unchanged values and timestamps.",
+    "original_status": "Reproduced on isolated production copies",
+    "original_evidence": [
+      "app/main.py:108",
+      "app/db.py:6360"
+    ],
+    "fix": "Update a conflicting setting only when its stored serialized value differs. Preserve unchanged values/timestamps; still record a genuine change.",
+    "current_state": "No-op normalization preserves every original runtime-setting row. A genuine changed key updates exactly that row and timestamp.",
+    "remaining": "Production cutover and its configuration/operational verification.",
+    "acceptance": "No-op current startup leaves all original setting values/timestamps identical; a real single-key update changes only that row; migration and actual app boot preserve the copied production book/protocol.",
+    "hours": [
+      1,
+      2
+    ],
+    "hours_basis": "Local repair implemented; remaining estimate covers scoped production verification, excluding authorization lead time.",
+    "test_evidence": "tests.test_runtime_settings_preservation; guarded OCI actual app startup preservation",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed; startup behavior remains",
+    "deployed_repair": false,
+    "revalidated_working_parent": "e6c22fe33adcd4b41047a4ef9be1dc3429c0a77a",
+    "revalidation_method": "Actual private snapshot comparison plus meaningful no-op/genuine-change invariant test",
+    "release_certification": false
+  },
+  {
+    "id": "F58",
+    "area": "Execution / source contracts",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Fresh paper bid can fill outside the sourced exchange session",
+    "evidence": [
+      "app/paper_exchange.py:496",
+      "app/paper_exchange.py:63",
+      "app/v2_live.py:4693"
+    ],
+    "original_evidence": [
+      "app/paper_exchange.py:496",
+      "app/paper_exchange.py:63",
+      "app/v2_live.py:4693"
+    ],
+    "rootCause": "Paper exit fill checks verified later depth and ownership but not the sourced session. A fresh bid after an early-close notice closed the synthetic owned position.",
+    "original_rootCause": "Paper exit fill checks verified later depth and ownership but not the sourced session. A fresh bid after an early-close notice closed the synthetic owned position.",
+    "original_status": "Reproduced on disposable real-code fixture",
+    "fix": "Freeze the original canonical calendar, copy immutable current sourced sessions, refresh separately from entry rules and require both the quote and fill time inside the dated open session. Unknown, closed, conflicting or expired sessions retain pending protection and owned inventory.",
+    "current_state": "Implemented and verified on the final frozen source; no production repair claimed.",
+    "remaining": "Production source/session coverage, cutover and scoped operational certification.",
+    "acceptance": "Fresh quotes after early close, before open, on a closed/unknown/conflicting/expired session do not fill, release inventory or consume depth. A valid cached session permits exit through entry catalogue outage; sourced reopening fills once.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_paper_exchange_sessions; tests.test_paper_exchange_exits",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidated_working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidation_method": "Exact pre-repair real-code synthetic reproduction, current invariant tests, full frozen-source suite",
+    "revalidation_source": "inventory.json source hashes; private immutable runtime candidate; existing read-only production observation",
+    "release_certification": false
+  },
+  {
+    "id": "F59",
+    "area": "Execution / source contracts",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded source-time ordering can select superseded or future contract evidence",
+    "evidence": [
+      "app/execution_contracts.py:65",
+      "app/paper_exchange.py:38"
+    ],
+    "original_evidence": [
+      "app/execution_contracts.py:65",
+      "app/paper_exchange.py:38"
+    ],
+    "rootCause": "SQLite julianday rounds source times below one millisecond. The old selector trusted its first row and could overlook a newer close notice; approximate time predicates could admit a future observation or misclassify effective boundaries.",
+    "original_rootCause": "SQLite julianday rounds source times below one millisecond. The old selector trusted its first row and could overlook a newer close notice; approximate time predicates could admit a future observation or misclassify effective boundaries.",
+    "original_status": "Reproduced on disposable real-code fixture",
+    "fix": "Use padded SQLite candidate selection only, then exact aware observed/effective timestamps and exact maximum ordering; cache only exact currently eligible source records.",
+    "current_state": "Implemented and verified on the final frozen source; no production repair claimed.",
+    "remaining": "Production source/session coverage, cutover and scoped operational certification.",
+    "acceptance": "A notice one microsecond newer wins; future observations/effective starts refuse; a just-valid end remains eligible and the exact expiry refuses; no future source is cached.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_paper_exchange_sessions.PaperSessionBoundaryTest.test_exact_source_ordering_refuses_submillisecond_future_and_effective_boundaries",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidated_working_parent": "ed9a03a1d379e0a428b68ef070083a4c669a3cea",
+    "revalidation_method": "Exact pre-repair real-code synthetic reproduction, current invariant tests, full frozen-source suite",
+    "revalidation_source": "inventory.json source hashes; private immutable runtime candidate; existing read-only production observation",
+    "release_certification": false
+  },
+  {
+    "id": "F60",
+    "area": "Execution / protection / accounting",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Late worker writes native children and broker state before fencing",
+    "evidence": [
+      "app/protection.py:291"
+    ],
+    "original_evidence": [
+      "app/protection.py:291"
+    ],
+    "rootCause": "Native child insertion committed before a separate late lease check; other fee/reconciliation/stop/exit writes missed fencing.",
+    "original_rootCause": "Native child insertion committed before a separate late lease check; other fee/reconciliation/stop/exit writes missed fencing.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Fence all relevant mutations; make child/status binding atomic and preserve caller transactions.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Takeover during I/O cannot attach a SELL; stale accounting/stop/exit/reconciliation writes refuse.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_protection_races.ProtectionRaceTest.test_worker_takeover_during_status_read_cannot_attach_exit",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F61",
+    "area": "Execution / protection / accounting",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Oversized native coverage remains armed after confirmed partial exit",
+    "evidence": [
+      "app/protection.py:111"
+    ],
+    "original_evidence": [
+      "app/protection.py:111"
+    ],
+    "rootCause": "Protection quantity tracked cumulative buys rather than remaining owned inventory.",
+    "original_rootCause": "Protection quantity tracked cumulative buys rather than remaining owned inventory.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Separate native coverage, block mismatches, claim-once reductions and oversized-child cancellation; await actual evidence.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Partial exit cannot remain ARMED at the old size; timeout/restart/cancel/trigger/takeover races cannot repeat writes or release inventory.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_protection_amendments.NativeAmendmentTest",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F62",
+    "area": "Execution / protection / accounting",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Pending owned sell does not block native activation",
+    "evidence": [
+      "app/protection.py:98"
+    ],
+    "original_evidence": [
+      "app/protection.py:98"
+    ],
+    "rootCause": "Activation verified filled inventory but not pending exit commitments.",
+    "original_rootCause": "Activation verified filled inventory but not pending exit commitments.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Check exact contract/product pending sells under the activation lock.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "A submitted owned sell refuses native activation before transmission.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_protection_races.ProtectionRaceTest.test_pending_exit_prevents_native_activation",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F63",
+    "area": "Execution / protection / accounting",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Successful repeated native polling falsely becomes stale",
+    "evidence": [
+      "app/protection.py:53"
+    ],
+    "original_evidence": [
+      "app/protection.py:53"
+    ],
+    "rootCause": "Unchanged status returned before updating observation time.",
+    "original_rootCause": "Unchanged status returned before updating observation time.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Retain and timestamp repeated valid status observations.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Old ARMED timestamp blocks; exact valid refresh restores freshness without changing fills.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_protection_races.ProtectionRaceTest.test_repeated_valid_status_refreshes_coverage_age",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F64",
+    "area": "Execution / protection / accounting",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Sell can consume another product or contract holding",
+    "evidence": [
+      "app/order_journal.py:207"
+    ],
+    "original_evidence": [
+      "app/order_journal.py:207"
+    ],
+    "rootCause": "Symbol aggregation pooled delivery and intraday quantities.",
+    "original_rootCause": "Symbol aggregation pooled delivery and intraday quantities.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Use exact owned instrument/product quantity for sells; preserve symbol entry limit.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "20-unit delivery sell with 10 delivery + 10 intraday units refuses before transport.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_broker_worker_fencing.BrokerWriteFenceTest.test_sell_cannot_use_another_product_or_contract_inventory",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F65",
+    "area": "Execution / protection / accounting",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded FIFO source times can invert actual fill ordering",
+    "evidence": [
+      "app/broker_ledger.py:182"
+    ],
+    "original_evidence": [
+      "app/broker_ledger.py:182"
+    ],
+    "rootCause": "SQLite Julian ordering rounded submillisecond execution times and fell back to receipt IDs.",
+    "original_rootCause": "SQLite Julian ordering rounded submillisecond execution times and fell back to receipt IDs.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Sort original aware source times at exact precision; refuse indistinguishable opposite-side P&L.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Reverse receipt order one microsecond apart yields correct actual FIFO; ties publish no invented profit.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_broker_ledger.ActualBrokerLedgerTest.test_microsecond_execution_order_beats_arrival_and_julian_rounding",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F66",
+    "area": "Execution / protection / accounting",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Nested reversal makes postings disagree with active fills",
+    "evidence": [
+      "app/broker_ledger.py:166"
+    ],
+    "original_evidence": [
+      "app/broker_ledger.py:166"
+    ],
+    "rootCause": "A reversal could be reversed while active-event queries only supported direct reversals.",
+    "original_rootCause": "A reversal could be reversed while active-event queries only supported direct reversals.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Reject reversing REVERSAL events; corrections require sourced replacement evidence.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Nested reversal refuses atomically and cannot restore cash/inventory with an excluded fill.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_broker_ledger.ActualBrokerLedgerTest.test_reversed_reversal_cannot_restore_cash_with_missing_active_trade",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F67",
+    "area": "Execution / protection / accounting",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Missing or changed native child can re-arm or duplicate an exit",
+    "evidence": [
+      "app/protection.py:291"
+    ],
+    "original_evidence": [
+      "app/protection.py:291"
+    ],
+    "rootCause": "Status observations did not preserve the prior child identity.",
+    "original_rootCause": "Status observations did not preserve the prior child identity.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Keep a bound child stable and refuse disappearing/different child evidence.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Disappearing, cancelled-without-child and changed-child observations remain unknown; no second SELL is attached.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_protection_races.ProtectionRaceTest.test_disappearing_or_changed_child_cannot_release_sell_reservation",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F68",
+    "area": "Execution / protection / accounting",
+    "severity": "Medium",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Capability response advertises unsupported paper intraday lifecycle",
+    "evidence": [
+      "app/execution_ports.py:123"
+    ],
+    "original_evidence": [
+      "app/execution_ports.py:123"
+    ],
+    "rootCause": "Capability projection used low-level prototype routes even though immutable approved-order orchestration accepts delivery only.",
+    "original_rootCause": "Capability projection used low-level prototype routes even though immutable approved-order orchestration accepts delivery only.",
+    "original_status": "Reproduced defect / current invariant",
+    "fix": "Report paper intraday implementation false and explicitly unsupported; no strategy/threshold/route enabling change.",
+    "current_state": "Implemented and tested locally; no deployed repair claimed.",
+    "remaining": "Scoped rollout and relevant operational certification; broader programme dependencies remain explicit.",
+    "acceptance": "Response advertises paper delivery only, all live certification false, and clear intraday rejection scope.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped review/rollout verification; external acceptance is separate.",
+    "test_evidence": "tests.test_execution_capabilities.ExecutionCapabilityTest.test_capabilities_do_not_advertise_unimplemented_paper_intraday_lifecycle",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidated_working_parent": "027bf2b6dc913bf194450704c21f364a3735715f",
+    "revalidation_method": "Pre-repair exact-source disposable reproductions where applicable; current invariant and full-source checks",
+    "revalidation_source": "inventory.json hashes; private candidate rehearsals",
+    "release_certification": false
+  },
+  {
+    "id": "F69",
+    "area": "Execution / reconciliation / risk",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Recent broker permission survives changes to its owned order snapshot",
+    "evidence": [
+      "app/broker_reconciliation.py:54",
+      "app/broker_reconciliation.py:172"
+    ],
+    "original_evidence": [
+      "app/broker_reconciliation.py:58",
+      "app/broker_reconciliation.py:151"
+    ],
+    "rootCause": "Inventory/trade comparisons preceded the serialized write, and readiness used only status/age without binding the checked owned order state.",
+    "original_rootCause": "Inventory/trade comparisons preceded the serialized write, and readiness used only status/age without binding the checked owned order state.",
+    "original_status": "Reproduced defect against exact 984d36a parent",
+    "fix": "Run owned-order comparisons and evidence publication in one fenced transaction; bind permission to a financial/order-state fingerprint and validate that fingerprint in the entry transaction.",
+    "current_state": "Reproduced and repaired locally; no deployment, broker order or strategy change.",
+    "remaining": "Scoped production rollout and broker operational certification; external inventory changes and broker endpoint snapshot timing still require fresh complete evidence.",
+    "acceptance": "A competing owned-fill commit before lock yields mismatch, changed fills or pending commitments invalidate recent permission, zero-inventory closed trades cannot transmit with old funds evidence, other users/identical observation timestamps do not invalidate the account.",
+    "hours": [
+      1,
+      4
+    ],
+    "hours_basis": "Remaining scoped rollout and operational verification; broader programme acceptance is separate.",
+    "test_evidence": "tests.test_reconciliation_snapshot (six tests; exact parent fails)",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "revalidated_against": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "revalidated_working_parent": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "revalidation_method": "Exact parent disposable regression plus current risk/journal path, locked snapshot tests and complete suite",
+    "revalidation_source": "inventory.json hashes; private exact candidate startup",
+    "release_certification": false
+  },
+  {
+    "id": "F70",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Valid provider millisecond timestamps are discarded",
+    "evidence": [
+      "app/executable_quotes.py:40"
+    ],
+    "rootCause": "Full quote depth accepted ISO only, despite the provider documenting epoch milliseconds. Valuation could arrive while executable liquidity was silently absent.",
+    "fix": "Decode only integer/digit epoch milliseconds or aware ISO; canonicalize UTC, reject ambiguous units, floats, naive and future inputs.",
+    "acceptance": "Integer and string provider milliseconds produce identical ISO snapshot fingerprints; actual provider-to-pending-paper fill and balanced ledger pass; invalid timestamps retain valuation but no executable permission.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Decode only integer/digit epoch milliseconds or aware ISO; canonicalize UTC, reject ambiguous units, floats, naive and future inputs.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F71",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded depth ordering can retain obsolete liquidity",
+    "evidence": [
+      "app/executable_quotes.py:102"
+    ],
+    "rootCause": "SQLite Julian-day ordering collapses distinct submillisecond source instants; superseded ask quantity can remain eligible for paper fills.",
+    "fix": "Serialize exact aware source-time comparison and update under a parent-preserving atomic boundary; older workers cannot restore old depth.",
+    "acceptance": "Ten-microsecond updates replace depth; two workers retain the latest source snapshot; enclosing rollback retains ownership.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Serialize exact aware source-time comparison and update under a parent-preserving atomic boundary; older workers cannot restore old depth.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F72",
+    "area": "Market data / paper execution",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Equal-time contradictory depth retains first executable quote",
+    "evidence": [
+      "app/executable_quotes.py:133"
+    ],
+    "rootCause": "The first same-time response stayed executable when another response contradicted its depth, authorizing uncertain liquidity.",
+    "fix": "Append immutable conflict evidence and withhold the conflicting snapshot from readers until strictly newer source evidence arrives; repeating either response cannot clear it. Account-schema-v4 validates the additive structure.",
+    "acceptance": "Same-time conflicting depth is unavailable, original replay cannot clear it, strictly later evidence restores permission, conflicts are immutable and outer rollback is respected.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "Not deployed / uncertified",
+    "deployed_repair": false,
+    "current_state": "Append immutable conflict evidence and withhold the conflicting snapshot from readers until strictly newer source evidence arrives; repeating either response cannot clear it. Account-schema-v4 validates the additive structure.",
+    "remaining": "Production source coverage, approved exact deployment and operational/strategy certification remain separate.",
+    "test_evidence": "tests.test_executable_quote_times; tests.test_schema_migrations",
+    "revalidated_working_parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "revalidation_method": "Exact-parent disposable regressions, current provider-to-paper path and production-copy migrations/startup",
+    "revalidation_source": "inventory.json hashes; private candidate source manifest",
+    "release_certification": false
+  },
+  {
+    "id": "F73",
+    "area": "Research / point-in-time validation",
+    "severity": "High",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Rounded research times admit future facts and reverse corrections",
+    "evidence": [
+      "app/research_data.py:69",
+      "app/research_data.py:80"
+    ],
+    "rootCause": "Julian-day cutoffs can admit a future submillisecond observation; effective-time ordering can put an older version after a later correction. Offset string comparison misses same-instant contradictions.",
+    "fix": "Use padded SQL candidates with exact aware three-time filtering, observation-ordered revisions and normalized same-instant content conflicts.",
+    "acceptance": "Exact-parent future/equivalent-offset/reversed-correction counterexamples fail; current regressions exclude every future boundary, select later corrections and refuse contemporaneous contradictions.",
+    "hours": [
+      1,
+      4
+    ],
+    "production_status": "Deployment and production research consumption unverified",
+    "deployed_repair": false,
+    "current_state": "Five exact-parent failed assertions repaired locally, with the new official-source adapters retaining original publication and first-observation dates.",
+    "remaining": "Actual source/feed acceptance, independent strategy validation, reviewed deployment and all open programme work remain separate.",
+    "test_evidence": "tests.test_research_time_boundaries; tests.test_research_point_in_time; tests.test_official_research_sources",
+    "revalidated_working_parent": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
+    "revalidation_method": "Exact-parent disposable module regressions; current isolated fixtures and full suite",
+    "revalidation_source": "inventory.json source hashes; reports/official-research-review-2026-10-07.md",
+    "release_certification": false
+  },
+  {
+    "id": "F74",
+    "area": "Data / Ideas / engine",
+    "severity": "Critical",
+    "status": "Locally repaired",
+    "local_status": "Locally repaired",
+    "title": "Screening and engine data boundaries accept mutable, mismatched or noncurrent evidence",
+    "evidence": [
+      "app/screening/store.py:45",
+      "app/screening/store.py:65",
+      "app/screening/screen.py:25",
+      "app/sleeves/feeds.py:6"
+    ],
+    "rootCause": "Evidence replacement and coarse timestamp selection; return comparisons lack shared dates; cached expiry and quote validation are incomplete.",
+    "fix": "Immutable evidence and exact availability/conflict checks, current cached-evidence validation, matching comparison dates, complete momentum-window price checks and strict engine quote timestamps.",
+    "current_state": "Fifteen new regression methods and full local suite pass. No deployment or promotion.",
+    "acceptance": "Changed evidence cannot rewrite history; conflicting/future/corrupt evidence is unavailable; comparison endpoints match; expired review facts lose eligibility; engine refuses invalid quotes; existing order/tracking lifecycle passes.",
+    "hours": [
+      2,
+      6
+    ],
+    "hours_basis": "Remaining scoped source/deployment acceptance; independent strategy validation is separate.",
+    "test_evidence": "tests.test_screening_data_contract; 2552 unittest and 102 research/UI function fixtures; isolated execution rehearsal.",
+    "revalidated_against": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
+    "revalidated_working_parent": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
+    "deployed_repair": false,
+    "production_status": "Not deployed / uncertified",
+    "remaining": "Authorized verified rollout, real source/canonical execution-rule coverage and independent strategy evidence.",
+    "release_certification": false
+  },
+  {
+    "id": "F75",
+    "area": "Data / research fundamentals",
+    "severity": "High",
+    "status": "Locally repaired",
+    "title": "Conflicting and disconnected financial periods manufacture earnings quality",
+    "evidence": [
+      "app/screening/providers.py:84",
+      "app/screening/financials.py:25",
+      "app/screening/financials.py:38",
+      "app/screening/selection.py:42",
+      "app/screening/store.py:87",
+      "scripts/evidence_screen.py:33"
+    ],
+    "rootCause": "Same-period values and split series used last-block/value wins; disconnected profitable years counted as stable annual history; counts without dated amounts could pass Ideas. No independently dated filing resolution was available.",
+    "fix": "Merge unambiguous metric/period points; reject conflicts and malformed duration/date/currency/amounts; retain comparable contiguous periods; check dated earnings against counts/current income and decision-date age; recollect incompatible caches through the actual job. The cached API rechecks fiscal availability/expiry without rewriting stored screens; consumer age uses the actual IST decision day, not a lagging price session.",
+    "acceptance": "Duplicate/split/conflict/order/gap/foreign-currency/future/stale/count-only/overflow cases preserve exact normalized facts or reject; short coverage is not three years; no book/protocol write.",
+    "hours": [
+      2,
+      6
+    ],
+    "original_evidence": [
+      "app/screening/providers.py:74",
+      "app/screening/selection.py:38"
+    ],
+    "original_status": "Reproduced at exact parent bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "original_rootCause": "Last-block/value wins and undated nonconsecutive year-count acceptance",
+    "revalidated_against": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "production_build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "production_status": "No deployed repair; current production acceptance not inferred",
+    "deployed_repair": false,
+    "local_status": "Locally repaired",
+    "current_state": "The actual refresh, cached API, screen, Ideas and current assessment paths now require the annual history contract. 18 new unit methods cover normalized gaps/conflicts/availability, real job recollection, and cached-reader/decision-day expiry bypasses.",
+    "remaining": "Separate authorized deployment/browser/source acceptance; official verified filings/rights remain F28",
+    "test_evidence": "tests.test_financial_history_contract; focused 101 checks +48 subtests and revised class 18/24 subtests; full 2578/2445/133, zero failures/errors; 103 function fixtures",
+    "revalidation_method": "Exact-parent synthetic counterexamples and full current-source checks; negative real-source probes retained privately",
+    "hours_basis": "Remaining engineering review estimate, excluding source licensing/external lead time",
+    "original_hours": [
+      8,
+      16
+    ],
+    "revalidated_working_parent": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "revalidation_source": "reports/financial-history-hardening-2026-10-07.md; current hashes/tests; no production certification",
+    "release_certification": false
   }
 ]

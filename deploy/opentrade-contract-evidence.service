@@ -1,0 +1,15 @@
+[Unit]
+Description=Import reviewed daily instrument rules and exchange sessions
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python scripts/refresh_contract_catalogue.py --db ${OPENSTOCKS_CATALOGUE_DB} --archive /opt/opentrade/var/contract_sources
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/opentrade/var
+UMask=0077

@@ -57,7 +57,7 @@ class IndexRoutingTest(unittest.TestCase):
     def test_an_equity_is_not_an_index(self) -> None:
         """The routing must not swallow ordinary symbols — RELIANCE has to keep
         reaching the stock panel."""
-        for sym in ("RELIANCE", "ITC", "TCS", "NIFTYBEES"):
+        for sym in ("RELIANCE", "ITC", "TCS", "TEST_INDEX_FUND"):
             with self.subTest(sym=sym):
                 self.assertFalse(_run(f"isIndexSym({json.dumps(sym)})"))
 
@@ -115,7 +115,7 @@ class SpaCacheHeaderTest(unittest.TestCase):
         os.environ["DATABASE_PATH"] = os.path.join(tempfile.mkdtemp(), "a.db")
         from fastapi.testclient import TestClient
         from app import main as m
-        self.client = TestClient(m.app)
+        self.client = TestClient(m.app,headers={"Origin":"http://testserver"})
 
     def test_the_spa_is_not_cacheable(self) -> None:
         r = self.client.get("/")
@@ -145,7 +145,7 @@ if __name__ == "__main__":
 class IndexSearchTest(unittest.TestCase):
     """You must be able to REACH the index page.
 
-    Searching "nifty" returned only the ETFs that track it — NIFTY1, NIFTYBEES,
+    Searching "nifty" returned only the ETFs that track it — NIFTY1, TEST_INDEX_FUND,
     NIFTYETF — and never NIFTY itself, because search reads `universe` and an
     index is not a listed equity. So the index view existed and nothing in the
     UI could navigate to it, which is indistinguishable from it not existing.
@@ -163,14 +163,14 @@ class IndexSearchTest(unittest.TestCase):
         con = sqlite3.connect(main_db)
         con.execute("CREATE TABLE universe(symbol TEXT, name TEXT, exchange TEXT, enabled INTEGER)")
         con.executemany("INSERT INTO universe VALUES(?,?,?,1)",
-                        [("NIFTYBEES", "NIP IND ETF NIFTY BEES", "NSE"),
+                        [("TEST_INDEX_FUND", "NIP IND ETF NIFTY BEES", "NSE"),
                          ("NIFTY1", "KOTAK NIFTY ETF", "NSE"),
                          ("RELIANCE", "RELIANCE INDUSTRIES", "NSE")])
         con.commit(); con.close()
         from fastapi.testclient import TestClient
         from app import main as m, v2_web
         v2_web.MAIN_DB = main_db
-        self.client = TestClient(m.app)
+        self.client = TestClient(m.app,headers={"Origin":"http://testserver"})
         from app.auth import hash_password
         name = "s_" + uuid.uuid4().hex[:8]
         u = m.db.create_user(name, hash_password("Str0ngPassw0rd!x"), role="user", active=True)
@@ -191,7 +191,7 @@ class IndexSearchTest(unittest.TestCase):
     def test_the_index_ranks_above_the_etfs_that_track_it(self) -> None:
         """Someone typing "nifty" wants the index, not a fund holding it."""
         syms = [x["symbol"] for x in self.results("nifty")]
-        self.assertLess(syms.index("NIFTY"), syms.index("NIFTYBEES"))
+        self.assertLess(syms.index("NIFTY"), syms.index("TEST_INDEX_FUND"))
 
     def test_banknifty_is_findable_by_its_own_name(self) -> None:
         self.assertIn("BANKNIFTY", [x["symbol"] for x in self.results("banknifty")])
@@ -199,7 +199,7 @@ class IndexSearchTest(unittest.TestCase):
     def test_the_etfs_are_still_returned(self) -> None:
         """Adding indices must not push the equities out of the results."""
         syms = [x["symbol"] for x in self.results("nifty")]
-        self.assertIn("NIFTYBEES", syms)
+        self.assertIn("TEST_INDEX_FUND", syms)
 
     def test_an_index_row_is_marked_as_one(self) -> None:
         row = [x for x in self.results("nifty") if x["symbol"] == "NIFTY"][0]
@@ -312,7 +312,7 @@ class OptionContractRoutingTest(unittest.TestCase):
     def test_an_equity_is_not_mistaken_for_a_contract(self) -> None:
         """The routing must not swallow ordinary symbols. ONGC and NESTLEIND
         end in the letters that would trip a careless check."""
-        for sym in ("RELIANCE", "ITC", "NIFTYBEES", "ABCAPITAL", "URBANCO"):
+        for sym in ("RELIANCE", "ITC", "TEST_INDEX_FUND", "ABCAPITAL", "URBANCO"):
             with self.subTest(sym=sym):
                 self.assertEqual(self._u(sym), "")
 

@@ -134,7 +134,7 @@ Common adapter methods: instrument sync, market status/calendar references, quot
 
 ## Current implementation boundary — audit refresh
 
-The diagrams above are target architecture. Implemented locally: immutable exit policy, cost-aware serialized personal/live sizing, atomic house/outbox publication, SQLite worker fencing, monotonic broker journal, actual inventory reconciliation, encrypted state/revocable sessions, dated instrument discovery, owner-scoped research and personal currency postings/performance. Only Upstox NSE cash MARKET/DAY transport is implemented; all reported routes remain `live_certified=false`. Canonical identity migration, full pending commitments/settlement ledger, native protection, Paper/Upstox orchestration parity and Angel One remain open.
+The diagrams above are target architecture. Actual local additions: sourced all-writer canonical gate; immutable approved/manual NSE cash-paper pipeline; actual owned Upstox fill ledger with independently sourced assessment/settlement events; reviewed native terminal-fill policy and partial-remainder cancellation; Angel One transport only; atomic receipt/access and startup migrations; immutable decision-time facts; authenticated streaming disabled restore. All reported live routes remain uncertified. House/live approved-plan convergence, complete net/margin/FX accounting, production official raw connectors, broker-native certification and Angel orchestration remain open.
 
 ```mermaid
 erDiagram
@@ -160,7 +160,7 @@ Canonical quantities, money, currencies, settlement and effective rules remain e
 
 ```mermaid
 flowchart LR
-  Review["Trusted frozen owned approval"] --> Rules["Dated canonical rules/session"]
+  Review["Trusted reviewed or human-owned frozen approval"] --> Rules["Dated canonical rules/session"]
   Rules --> Risk["Shared serialized account risk"]
   Risk --> Fill["Paper fill + balanced postings"]
   Fill --> Position["Owned position / plan / model / policy"]
@@ -169,10 +169,54 @@ flowchart LR
   Live["New broker risk"] --> Auth["Exact build/account/route/model authorization"]
   Auth --> Intent["Durable intent + append-only observations"]
   Intent --> Owned["Confirmed owned inventory"]
-  Owned --> Stop["Explicit native activation / durable obligation"]
+  Owned --> Stop["Separate reviewed native policy / durable obligation"]
   Stop --> Unknown["Claim / UNKNOWN / exact status / cancellation"]
   Unknown --> Intent
-  Archive["Encrypted declared recovery"] --> Disabled["New private restore / execution disabled"]
+  Archive["Authenticated streaming declared recovery"] --> Disabled["New private restore / execution disabled"]
 ```
 
-Added actual entities: `approved_execution_plans/events`, `execution_contract_evidence`, `live_execution_events`, `protection_obligations/events`; existing personal positions/trades gain canonical instrument/plan/model provenance. These are tested narrow additions. Full Security/InstrumentVersion migration, all-adapter reservation/fill/fee/settlement convergence, automatic certified native coverage and extra brokers/assets remain target architecture, not implemented boxes in this diagram.
+Previously added actual entities: `approved_execution_plans/events`, `execution_contract_evidence`, `live_execution_events`, `protection_obligations/events`; existing personal positions/trades gain canonical instrument/plan/model provenance. These are tested narrow additions. Full Security/InstrumentVersion migration, all-adapter reservation/fill/fee/settlement convergence, automatic certified native coverage and extra brokers/assets remain target architecture, not implemented boxes in this diagram.
+
+## Current local entities added in this continuation
+
+```mermaid
+erDiagram
+  APPROVED_EXECUTION_PLAN ||--o{ MANUAL_PLAN_BINDING : freezes
+  APPROVED_EXECUTION_PLAN ||--o{ APPROVED_EXECUTION_EVENT : executes
+  POSITION ||--|| ENTRY_CONTRACT_RECORD : provenance
+  OWNED_ORDER ||--o{ BROKER_LEDGER_EVENT : actual
+  BROKER_LEDGER_EVENT ||--o{ BROKER_LEDGER_POSTING : balances
+  PLAN_REQUEST ||--o| SUBSCRIPTION_RECEIPT : funds
+  EXECUTION_INCIDENT ||--o{ INCIDENT_ACKNOWLEDGEMENT : records
+  CANONICAL_INSTRUMENT ||--o{ RESEARCH_FACT : dated
+  SCHEMA_VERSION ||--|| MIGRATION_RECEIPT : validates
+```
+
+`manual_plan_bindings`, broker ledger events/postings, subscription receipts, incident acknowledgements, PIT facts and migration receipts are immutable where they express history. Final net/margin and additional-asset execution remain unavailable rather than invented. The paper approval path and live durable journal share contract/risk gates, but are not yet one complete all-adapter plan/settlement orchestration.
+
+## Implemented paper journal scope — October 7
+
+The current NSE delivery paper worker uses `paper_order_intents`, `paper_order_state`, immutable `paper_order_events` and per-side `paper_depth_usage`. Pending commitments are derived under the same serialized book/risk transaction; they affect available cash, slots, sleeve notional and stop risk, not recorded equity or P&L. House, manual and approved personal entries use this journal, with subscriber approval tied to the original allowlisted house fill. A later fresh sourced ask confirms a whole-order paper entry; a later bid confirms an owned exit. No partial-fill or queue model is claimed. Runtime protection runs before entry catalogue checks. Other rows/diagrams above remain the complete target, not a claim that all asset or broker contracts are implemented.
+
+## Native coverage and observations — schema v6
+
+Logical owned identities do not claim a broker certificate or cross-database SQL foreign key.
+
+```mermaid
+flowchart LR
+  P[Verified owner broker profile] --> C[Outbound authenticated socket / leased generation]
+  C --> E[Immutable normalized observations]
+  E --> B[Exact owned completed child binding]
+  B --> F[Actual order / trade / inventory reconciliation]
+  F --> O[Remaining owned inventory]
+  O --> N[Protection obligation / coverage quantity]
+  N --> A[Immutable authorized reduction intent]
+  A --> S[Scheduled native modification]
+  S --> R[Later exact quantity evidence]
+  R --> N
+  F --> L[Balanced actual-fill ledger]
+  T[Sourced final fee totals / covered quantities] --> L
+  L --> X[Closed-unit P&L or explicit unavailable]
+```
+
+Unknown reduction/cancellation outcomes retain the sell right. Notifications cannot arm a stop or supply a fill. A raced oversized child has a durable cancel claim and needs actual terminal evidence before another exit.

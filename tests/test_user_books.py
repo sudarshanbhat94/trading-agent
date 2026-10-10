@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from unittest.mock import patch
 
 from app import books, v2_live
@@ -49,7 +50,7 @@ def _fixture_exit(*args, **kwargs):
     return books.mirror_exit(*args, **kwargs)
 
 
-class IsolationTest(unittest.TestCase):
+class IsolationTest(ContractStorageCase):
     """THE point of the exercise."""
 
     def setUp(self) -> None:
@@ -87,7 +88,7 @@ class IsolationTest(unittest.TestCase):
         self.assertEqual(len(books.positions(self.con, 1)), 0)
 
 
-class SizingTest(unittest.TestCase):
+class SizingTest(ContractStorageCase):
     def setUp(self) -> None:
         self.con = _db()
 
@@ -133,7 +134,7 @@ class SizingTest(unittest.TestCase):
         self.assertEqual(_fixture_buy(self.con, 1, "IN", "manual", "ITC", 300.0), 0)
 
 
-class CostsMatchTheHouseTest(unittest.TestCase):
+class CostsMatchTheHouseTest(ContractStorageCase):
     def test_pnl_is_net_of_the_same_costs(self) -> None:
         """A user book reporting gross while the engine reports net would make
         the two incomparable, which defeats running them side by side."""
@@ -150,7 +151,7 @@ class CostsMatchTheHouseTest(unittest.TestCase):
         self.assertLess(net, 0)
 
 
-class MirrorTest(unittest.TestCase):
+class MirrorTest(ContractStorageCase):
     """The engine's decision, applied to each subscriber's own cash."""
 
     class _DB:
@@ -240,7 +241,7 @@ class MirrorTest(unittest.TestCase):
         self.assertEqual(row, ("mean_reversion", "NEUTRAL"))
 
 
-class StatsTest(unittest.TestCase):
+class StatsTest(ContractStorageCase):
     def test_an_untouched_book_reports_its_full_budget(self) -> None:
         con = _db()
         s = books.stats(con, 9, "IN", {})
@@ -262,7 +263,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class EquitySeriesTest(unittest.TestCase):
+class EquitySeriesTest(ContractStorageCase):
     """A personal book with no curve does not feel like yours."""
 
     def setUp(self) -> None:
@@ -288,7 +289,7 @@ class EquitySeriesTest(unittest.TestCase):
                             books.equity_series(self.con, 2)[0][1])
 
 
-class NoAppMainImportTest(unittest.TestCase):
+class NoAppMainImportTest(ContractStorageCase):
     """The engine thread must not import app.main.
 
     `from .main import db` pulls the whole FastAPI app in on first call. If that
@@ -324,7 +325,7 @@ class NoAppMainImportTest(unittest.TestCase):
         self.assertIn("Database(", self._code(books._auth_db))
 
 
-class EveryPageIsScopedTest(unittest.TestCase):
+class EveryPageIsScopedTest(ContractStorageCase):
     """No endpoint may still hand the engine's book to a subscriber by default.
 
     Home was split first, then positions and trades, then orders and stats.
@@ -363,7 +364,7 @@ class EveryPageIsScopedTest(unittest.TestCase):
         self.assertIn('mine["series"]', src)
 
 
-class ConnectionHygieneTest(unittest.TestCase):
+class ConnectionHygieneTest(ContractStorageCase):
     """SQLite allows ONE writer, and the engine is writing the same file.
 
     Three self-inflicted hazards shipped in a day of fast work:
@@ -422,7 +423,7 @@ class ConnectionHygieneTest(unittest.TestCase):
             b.open_symbols = real
 
 
-class EndOfDaySnapshotTest(unittest.TestCase):
+class EndOfDaySnapshotTest(ContractStorageCase):
     """A daily curve must be built from daily CLOSES.
 
     The snapshot lived inside poll_market, which only runs while the market is

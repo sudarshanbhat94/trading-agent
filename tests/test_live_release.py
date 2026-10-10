@@ -4,13 +4,14 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import datetime,timedelta,timezone
 from unittest.mock import patch
 
 from app import live_release,release_gate,broker,order_journal,v2_live
 
 
-class LiveReleaseAuthorizationTest(unittest.TestCase):
+class LiveReleaseAuthorizationTest(ContractStorageCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.path=Path(self.tmp.name)/'approval.json';self.commit='a'*40
@@ -25,6 +26,7 @@ class LiveReleaseAuthorizationTest(unittest.TestCase):
             certified_scopes=['upstox:NSE:NSE_EQ:D:manual:2'],execution_authorization=dict(source_commit=self.commit,
                 approved_by='fixture',reference='ISOLATED TEST ONLY',issued_at=(self.now-timedelta(hours=1)).isoformat(),
                 expires_at=(self.now+timedelta(hours=1)).isoformat(),scopes=[dict(account_id=2,broker='upstox',venue='NSE',segment='NSE_EQ',product='D',model='manual')]))
+        self.evidence['paper_session_evidence']={d:dict(source_commit=self.commit,evidence_reference='SYNTHETIC ONLY',reviewed_by='fixture',events={'owned_position_observations':1}) for d in dates}
         self.env=patch.dict(os.environ,OPENSTOCKS_LIVE_RELEASE_EVIDENCE=str(self.path),OPENSTOCKS_BUILD_COMMIT=self.commit)
         self.env.start();self.addCleanup(self.env.stop);self.write()
 

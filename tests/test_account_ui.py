@@ -8,6 +8,26 @@ from app import account_ui,v2_web
 
 @unittest.skipUnless(shutil.which('node'),'node required for JavaScript renderer checks')
 class AccountUIContractTest(unittest.TestCase):
+    def test_pending_order_is_not_a_fill_and_escapes_owned_evidence(self):
+        order=dict(order_id='ord_fixture',symbol='<img src=x>',status='pending',side='BUY',sleeve='manual',regime='ON',
+                   qty=0,requested_qty=20,stop=99,target=110,reason='Awaiting later liquidity')
+        html=self.render('paperOrderCards',[order])
+        self.assertIn('20 requested',html);self.assertIn('Awaiting later liquidity',html);self.assertIn('Cancel order',html)
+        self.assertNotIn('filled at',html);self.assertNotIn('<img',html);self.assertIn('&lt;img',html)
+        order['side']='SELL'
+        html=self.render('paperOrderCards',[order])
+        self.assertIn('exposure remain',html);self.assertNotIn('Cancel order',html)
+        self.assertIn('token===PAPER_ORDERS_LOAD',account_ui.JS)
+
+    def test_readiness_shows_actual_blockers_and_escapes_hostile_evidence(self):
+        html=self.render('tradingReadinessHtml',dict(symbols=['<img src=x>'],checked_at='fixture',
+            paper=dict(status='blocked',production_sleeves=['index_directional'],observation_sleeves=['quality_momentum']),
+            live=dict(status='not_certified'),checks=[dict(code='contracts',status='blocked',reason='Reviewed daily evidence missing')],
+            instruments=[dict(symbol='<img src=x>',reason='Unreviewed instrument')]))
+        self.assertIn('Reviewed daily evidence missing',html);self.assertIn('not_certified',html)
+        self.assertIn('does not establish profitability',html);self.assertIn('&lt;img',html);self.assertNotIn('<img',html)
+        self.assertIn('Check entry readiness',html)
+
     def render(self,function,payload):
         helpers=r'''var loadStats=function(){},loadIdeas=function(){},renderBroker=function(){},window={};
 function esc(x){return x==null?'':String(x).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
@@ -48,3 +68,12 @@ function deskMoney(v){return v==null?'—':'₹'+v;}
         self.assertIn("r.j.status==='rejected'",account_ui.JS)
         self.assertIn('Outcome unavailable. Retry uses the same request identity.',account_ui.JS)
         self.assertIn("aria-labelledby','approvedPaperHeading'",account_ui.JS)
+
+    def test_payment_receipts_escape_reference_and_show_empty_manual_state(self):
+        empty=self.render('billingReceiptsHtml',dict(receipts=[]))
+        self.assertIn('No confirmed payments yet',empty)
+        html=self.render('billingReceiptsHtml',dict(receipts=[dict(plan='Elite',amount_minor=10000,payment_reference='<img src=x>',confirmed_at='fixture date',ends_at='fixture expiry')]))
+        self.assertIn('₹100.00',html);self.assertIn('&lt;img',html);self.assertNotIn('<img',html)
+        self.assertIn('not tax invoices',html)
+        self.assertIn('ME.id!==owner',account_ui.JS)
+        self.assertIn('Retry receipts',account_ui.JS)

@@ -44,30 +44,74 @@ def _build():
         try:
             providers[m] = build_market_data_provider(replace(settings, market_region=m, market_data_provider=prov))
             rows[m] = db.get_universe(enabled_only=True, market_region=m)
-            symmap[m] = {str(r.get("symbol") or "").upper(): r for r in rows[m]}
+            # Selection membership must not determine exit/valuation coverage.
+            # Disabled names stay quote-only; the full lane still uses rows[m].
+            symmap[m] = _quote_map(db.get_universe(enabled_only=False, market_region=m))
         except Exception as exc:
             print(f"[{m}] provider build failed: {exc}")
     return db, providers, rows, symmap
 
 
-def _held():
+_last_exposure_warning = None
+
+
+def _quote_map(rows):
+    """Do not silently choose between conflicting venue/alias identities."""
+    result, ambiguous = {}, set()
+    for row in rows:
+        symbol = str(row.get('symbol') or '').strip().upper()
+        if not symbol:
+            continue
+        old = result.get(symbol)
+        identity = lambda r: (str(r.get('exchange') or '').upper(),
+                              r.get('upstox_instrument_key'), r.get('isin'))
+        if old is not None and identity(old) != identity(row):
+            ambiguous.add(symbol)
+        else:
+            result[symbol] = row
+    return {s: r for s, r in result.items() if s not in ambiguous}
+
+
+def _exposure_warning(value):
+    global _last_exposure_warning
+    if value != _last_exposure_warning:
+        if value:
+            # Counts/table names only, never owner identities or credentials.
+            print('exposure quote coverage incomplete: ' + value, flush=True)
+        elif _last_exposure_warning:
+            print('exposure quote coverage recovered', flush=True)
+        _last_exposure_warning = value
+
+
+def _held(path=None):
     """Symbols we currently hold, per market — the 'hot' set polled every tick so
     open-position prices and P&L move in near real time."""
     out = {m: set() for m in MARKETS}
     c = None
     try:
-        c = sqlite3.connect(f"file:{V2_DB}?mode=ro", uri=True, timeout=5)
-        for m, sym in c.execute("SELECT market,symbol FROM v2_positions UNION "
-                               "SELECT market,symbol FROM user_positions UNION "
-                               "SELECT market,symbol FROM v2_live_orders WHERE status IN "
-                               "('pending','submitted','partial','unknown','sent') UNION "
-                               "SELECT market,symbol FROM v2_live_orders GROUP BY user_id,market,symbol "
-                               "HAVING SUM(CASE WHEN side='BUY' THEN COALESCE(filled_qty,0) "
-                               "ELSE -COALESCE(filled_qty,0) END)>0 UNION "
-                               "SELECT 'IN',symbol FROM v2_live_protection"):
-            out.setdefault(m, set()).add(str(sym).upper())
+        c = sqlite3.connect(f"file:{path or V2_DB}?mode=ro", uri=True, timeout=5)
+        queries = {
+            'house': 'SELECT market,symbol FROM v2_positions',
+            'personal': 'SELECT market,symbol FROM user_positions',
+            'paper-pending': "SELECT 'IN',json_extract(i.payload,'$.plan.symbol') FROM paper_order_intents i "
+                             "JOIN paper_order_state s ON s.order_id=i.id WHERE s.status='pending'",
+            'broker': "SELECT market,symbol FROM v2_live_orders WHERE status IN "
+                      "('pending','submitted','partial','unknown','sent') UNION "
+                      "SELECT market,symbol FROM v2_live_orders GROUP BY user_id,market,symbol,instrument_key "
+                      "HAVING SUM(CASE WHEN side='BUY' THEN COALESCE(filled_qty,0) "
+                      "ELSE -COALESCE(filled_qty,0) END)>0",
+            'protection': "SELECT 'IN',symbol FROM v2_live_protection",
+        }
+        missing = []
+        for scope, query in queries.items():
+            try:
+                for m, sym in c.execute(query):
+                    out.setdefault(m, set()).add(str(sym).upper())
+            except sqlite3.Error:
+                missing.append(scope)
+        _exposure_warning('unavailable inventory scopes: ' + ','.join(missing) if missing else None)
     except (sqlite3.Error, OSError):
-        print("exposure quote inventory unavailable; hot-feed coverage is unknown", flush=True)
+        _exposure_warning('inventory database unavailable')
     finally:
         if c is not None:
             c.close()
@@ -94,6 +138,19 @@ def _tracked():
 def _hot_rows(symmap,held,tracked):
     return {m:[symmap[m][s] for s in sorted(set(held.get(m,())) | set(WATCH_HOT.get(m,())) | (set(tracked) if m=='IN' else set()))
                if s in symmap.get(m,{})] for m in MARKETS}
+
+
+def _refresh_quote_map(db, previous):
+    """Refresh quote-only identities without adding names to entry selection."""
+    result = dict(previous)
+    for market in MARKETS:
+        try:
+            result[market] = _quote_map(db.get_universe(enabled_only=False, market_region=market))
+        except Exception:
+            # Retain the previous watch; stale quotes still fail entry/exit
+            # freshness checks. Do not let this read kill the fast worker.
+            print('quote-only universe refresh unavailable for ' + market, flush=True)
+    return result
 
 
 _cooldown: dict = {}   # market -> unix time to resume after a rate-limit (429)
@@ -132,6 +189,14 @@ def _poll(db, providers, rows_for, label, benchmarks=False):
             # never discard or delay delivery of already fetched equity quotes.
             if quotes:
                 db.upsert_quotes(quotes)
+            execution = getattr(providers[m], 'execution_quotes', {})
+            if execution:
+                from app import executable_quotes
+                try:
+                    with db.connect() as con:
+                        for snapshot in execution.values(): executable_quotes.write(con, snapshot)
+                except sqlite3.Error:
+                    print('executable depth capture unavailable; valuation quotes delivered', flush=True)
             if indices:
                 from app.screening import tracking
                 try:
@@ -399,11 +464,24 @@ def main():
     def _hot_worker():
         db, providers, _rows, symmap = _build()
         print(f"hot worker up @ {a.interval}s", flush=True)
+        last_map_refresh = time.monotonic()
+        missing_before = None
         while True:
             t0 = time.time()
+            if time.monotonic() - last_map_refresh >= 60:
+                symmap = _refresh_quote_map(db, symmap)
+                last_map_refresh = time.monotonic()
             held = _held()
             # Held symbols, base liquidity names and issued research plans.
             hot = _hot_rows(symmap,held,_tracked())
+            missing = tuple(sorted((m, s) for m in MARKETS for s in held.get(m, ())
+                                   if s not in symmap.get(m, {})))
+            if missing != missing_before:
+                if missing:
+                    print(f'held quote identities unresolved: {len(missing)}; exit coverage requires review', flush=True)
+                elif missing_before:
+                    print('held quote identities recovered', flush=True)
+                missing_before = missing
             if any(hot.values()):
                 _poll(db, providers, hot, "", benchmarks=True)
             time.sleep(max(0.2, a.interval - (time.time() - t0)))

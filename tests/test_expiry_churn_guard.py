@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import date
 
 from app import v2_live
@@ -41,7 +42,7 @@ def _chain(expiry, symbol="NIFTY2680424650CE"):
                          price=0.80, lot_size=75.0, vol=1000.0, expiry=expiry)}
 
 
-class EntryRefusesExpiredContractsTest(unittest.TestCase):
+class EntryRefusesExpiredContractsTest(ContractStorageCase):
     TODAY = date(2026, 8, 7)
 
     def test_the_exact_contract_that_ran_83_times(self) -> None:
@@ -93,7 +94,7 @@ class EntryRefusesExpiredContractsTest(unittest.TestCase):
         self.assertIsNotNone(picked)
 
 
-class ChurnCircuitBreakerTest(unittest.TestCase):
+class ChurnCircuitBreakerTest(ContractStorageCase):
     """The guard that is not about expiry at all."""
 
     def setUp(self):

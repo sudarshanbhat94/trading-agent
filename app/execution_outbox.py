@@ -8,6 +8,8 @@ from .worker_fencing import require_current
 
 
 def ensure_schema(con):
+    from .incident_inbox import ensure_schema as ensure_inbox
+    ensure_inbox(con)
     con.execute("CREATE TABLE IF NOT EXISTS execution_outbox("
                 "id INTEGER PRIMARY KEY,semantic_key TEXT NOT NULL UNIQUE,topic TEXT NOT NULL,"
                 "payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER DEFAULT 0,"
@@ -83,6 +85,10 @@ def _deliver(con, topic, payload):
         book = con.execute("SELECT started_at FROM v2_book WHERE market=?", (payload["market"],)).fetchone()
         if not position or not book or book[0] != payload["house_epoch"]:
             return
+        from .sleeves.config import PRODUCTION_SLEEVES
+        if payload['strategy'] not in PRODUCTION_SLEEVES:
+            incident(con,0,'RETIRED_ENTRY_PATH',payload['src_id'],'Retired sleeve cannot create new subscriber entries')
+            con.commit();return
         from .sleeves.feeds import fresh_quotes
         from .sleeves.risk import SLIPPAGE
         marks = fresh_quotes(v2_live._live(payload["market"], [payload["symbol"]]), datetime.now(timezone.utc))
@@ -100,10 +106,14 @@ def _deliver(con, topic, payload):
                 epoch = books.current_epoch(con, uid, payload["market"])
                 if epoch != books.LEGACY_EPOCH and epoch > payload["created_at"]:
                     continue  # Do not reintroduce a pre-reset entry.
-                books.buy(con, uid, payload["market"], payload["strategy"], payload["symbol"],
-                          price, payload["max_shares"], payload["stop"], payload["target"],
-                          payload["src_id"], payload["sleeve"], payload["regime"],
-                          exit_policy=payload["exit_policy"], request_key="house:" + str(payload["src_id"]))
+                from . import approved_execution,entry_contracts
+                symbols={payload['symbol']}|{p['symbol'] for p in books.positions(con,uid,payload['market'])}
+                with entry_contracts.open_catalogue() as (catalogue,at):
+                    result=approved_execution.submit_house_mirror(con,catalogue,uid,payload,v2_live._live(payload['market'],symbols),
+                        regime=payload['regime'],now=at)
+                if not result['ok']:
+                    with atomic(con):
+                        incident(con,uid,'PAPER_MIRROR_REFUSED',payload['src_id'],result.get('reason','Account paper order refused'))
             except Exception:
                 errors.append(uid)
         # Journal submission has its own durable origin-derived semantic key.

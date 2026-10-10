@@ -33,11 +33,13 @@ def ensure_schema(con):
     con.execute("CREATE TABLE IF NOT EXISTS live_book_epoch("
                 "user_id INTEGER,market TEXT,capital REAL NOT NULL,started_at TEXT NOT NULL,"
                 "PRIMARY KEY(user_id,market))")
-    from . import broker_reconciliation, execution_outbox, protection, execution_events
+    from . import broker_reconciliation, execution_outbox, protection, execution_events, broker_ledger,entry_contracts
     broker_reconciliation.ensure_schema(con)
     execution_outbox.ensure_schema(con)
     protection.ensure_schema(con)
     execution_events.ensure_schema(con)
+    broker_ledger.ensure_schema(con)
+    entry_contracts.ensure_schema(con)
     con.commit()
 
 
@@ -127,6 +129,8 @@ def finish_entry_before_exit(con, uid, symbol):
     from . import broker
     from .worker_fencing import require_current
     from .account_safety import atomic
+    from .recovery_guard import assert_database_execution_allowed
+    assert_database_execution_allowed(con)
     if con.in_transaction:
         raise RuntimeError('Entry cancellation requires a committed reservation')
     rows = list(con.execute(
@@ -180,6 +184,8 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
     if side=='BUY':
         allowed,why=live_scope_authorized(uid,product=product,model=strategy)
         if not allowed:return 'rejected: '+why
+        from .live_release import native_policy
+        if not native_policy(uid,product):return 'rejected: separately reviewed native coverage policy required'
     # Serialize the check/reservation across API requests and the engine.
     con.commit()
     con.execute("BEGIN IMMEDIATE")
@@ -199,9 +205,11 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             con.rollback()
             return "pending: broker reconciliation required"
         held = con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty "
-                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND symbol=?",
-                           (uid, symbol)).fetchone()[0]
-        if (side == "BUY" and held > 0) or (side == "SELL" and qty > held):
+                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND instrument_key=? AND product=?",
+                           (uid,key,product)).fetchone()[0]
+        symbol_held=con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END),0) "
+                                "FROM v2_live_orders WHERE user_id=? AND symbol=?",(uid,symbol)).fetchone()[0]
+        if (side == "BUY" and symbol_held > 0) or (side == "SELL" and qty > held):
             con.rollback()
             return "rejected: position changed before submission"
         if side == "BUY":
@@ -248,6 +256,11 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
                     len(positions) >= broker.MAX_OPEN_POSITIONS:
                 con.rollback()
                 return "rejected: aggregate live capital cap"
+            from . import entry_contracts
+            try:contract=entry_contracts.check(market,symbol,qty,reference,stop,target,broker='upstox',product=product,key=key)
+            except ValueError as exc:
+                con.rollback()
+                return 'rejected: '+str(exc)
             if stop is not None:
                 con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
                             "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
@@ -260,7 +273,9 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
             (datetime.now(timezone.utc).isoformat(), uid, market, symbol, key, side, qty,
              reference, qty * reference, product, reason, tag, origin_position_id, semantic_key,request_fingerprint))
         from .execution_events import record
-        record(con,uid,con.execute('SELECT last_insert_rowid()').fetchone()[0],'intent-reserved')
+        rid=con.execute('SELECT last_insert_rowid()').fetchone()[0]
+        if side=='BUY':entry_contracts.record(con,'broker',uid,rid,contract)
+        record(con,uid,rid,'intent-reserved')
         con.commit()
     except Exception:
         con.rollback()
@@ -285,14 +300,20 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
 
 
 def protect(con, uid, symbol, stop, target):
-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
-                "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
-                "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
-    con.commit()
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
+                    "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
+                    "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
 
 
 def request_exit(con, uid, symbol, reason):
-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
-                "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
-                (uid, symbol, reason))
-    con.commit()
+    from .account_safety import atomic
+    from .worker_fencing import require_current
+    with atomic(con):
+        require_current(con)
+        con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
+                    "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
+                    (uid, symbol, reason))

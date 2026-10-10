@@ -101,15 +101,21 @@ class BoundaryTest(unittest.TestCase):
                 for name, sleeve in engine.sleeves.items():
                     sleeve.propose = Mock(return_value=SleeveDecision(name,regime,True))
                 engine.sleeves["index_directional"].propose.return_value.candidates = [
-                    Candidate("NIFTYBEES", "index_directional", .9, 100, 75,
+                    Candidate("TEST_INDEX_FUND", "index_directional", .9, 100, 75,
                               allocation_pct=.35)]
                 now = datetime.now(timezone.utc)
+                from tests.contract_source_fixtures import catalogue
+                from app import entry_contracts
+                from contextlib import closing
+                source=stack.enter_context(closing(catalogue('TEST_INDEX_FUND','ETF',now)))
+                stack.enter_context(entry_contracts.using(source,now))
+                stack.enter_context(patch("app.sleeves.index_directional.SYMBOL","TEST_INDEX_FUND"))
                 stack.enter_context(patch.object(v2_live,"_SLEEVE_ENGINE",engine))
                 stack.enter_context(patch.object(v2_live,"market_open",return_value=True))
                 stack.enter_context(patch.object(v2_live,"_rw",side_effect=lambda:sqlite3.connect(path)))
                 stack.enter_context(patch.object(v2_live,"_ro",side_effect=lambda _:sqlite3.connect(":memory:")))
-                stack.enter_context(patch.object(v2_live,"_live",return_value={"NIFTYBEES":dict(price=100,ts=now.isoformat())}))
-                stack.enter_context(patch.object(v2_live,"_hist",return_value=({"NIFTYBEES":None},None)))
+                stack.enter_context(patch.object(v2_live,"_live",return_value={"TEST_INDEX_FUND":dict(price=100,ts=now.isoformat())}))
+                stack.enter_context(patch.object(v2_live,"_hist",return_value=({"TEST_INDEX_FUND":None},None)))
                 stack.enter_context(patch.object(v2_live.eng,"complete_trading_dates",return_value=[now.astimezone(v2_live.IST).date()-timedelta(days=1)]))
                 stack.enter_context(patch("app.sleeves.reference.refresh_membership"))
                 stack.enter_context(patch("app.sleeves.reference.refresh_factor_membership"))
@@ -122,17 +128,31 @@ class BoundaryTest(unittest.TestCase):
                 v2_live.sleeve_pass("IN")
                 con = sqlite3.connect(path)
                 rows = con.execute("SELECT symbol,sleeve,regime,shares,entry_price,risk_amt FROM v2_positions").fetchall()
+                self.assertEqual(rows,[])  # Allocation/submission is not a fill.
                 if regime == "ON":
+                    from app import paper_exchange, executable_quotes
+                    self.assertEqual(len(paper_exchange.pending(con,0)),1)
+                    self.assertEqual(con.execute('SELECT COUNT(*) FROM execution_outbox').fetchone()[0],0)
+                    at=now+timedelta(seconds=1)
+                    snapshot=executable_quotes.normalize_upstox(dict(instrument_token='NSE_EQ|TEST_INDEX_FUND',symbol='TEST_INDEX_FUND',timestamp=at.isoformat(),
+                        lower_circuit_limit=50,upper_circuit_limit=200,depth=dict(buy=[dict(price=99.95,quantity=10000)],sell=[dict(price=100,quantity=10000)])),
+                        'NSE_EQ|TEST_INDEX_FUND','TEST_INDEX_FUND',observed_at=at.isoformat())
+                    outcomes=paper_exchange.service_house(con,source,{'TEST_INDEX_FUND':dict(price=100,ts=at.isoformat(),execution=snapshot)},regime=regime,now=at)
+                    self.assertEqual(len(outcomes),1)
+                    self.assertEqual(outcomes[0]['status'],'filled')
+                    rows = con.execute("SELECT symbol,sleeve,regime,shares,entry_price,risk_amt FROM v2_positions").fetchall()
                     self.assertEqual(len(rows),1)
-                    self.assertEqual(rows[0][:3],("NIFTYBEES","index_directional","ON"))
+                    self.assertEqual(rows[0][:3],("TEST_INDEX_FUND","index_directional","ON"))
                     self.assertLessEqual(float(rows[0][5]),875)
                     self.assertLessEqual(rows[0][3]*rows[0][4],9000)
                     live_mirror.assert_not_called()
                     event = con.execute("SELECT topic,payload FROM execution_outbox").fetchone()
                     self.assertEqual(event[0], "house_entry")
-                    self.assertEqual(json.loads(event[1])["symbol"], "NIFTYBEES")
+                    self.assertEqual(json.loads(event[1])["symbol"], "TEST_INDEX_FUND")
                 else:
                     self.assertEqual(rows,[])
+                    from app import paper_exchange
+                    self.assertEqual(paper_exchange.pending(con,0),[])
                     live_mirror.assert_not_called()
                 self.assertEqual(con.execute("SELECT budget FROM v2_book WHERE market='IN'").fetchone()[0],10000)
                 broker_send.assert_not_called()
@@ -166,8 +186,9 @@ class BoundaryTest(unittest.TestCase):
                             {s:{"price":100} for s in ("GOOD","FUT","BAD")}, book,
                             require_live_quotes=True, require_reference_data=True,
                             eligible_symbols={"GOOD","STALE"}, routable_instruments=("EQ",))
-        self.assertEqual([c.symbol for c in result.decisions[0].candidates],["GOOD"])
-        self.assertEqual(len(result.decisions[0].rejected),3)
+        index_decision = next(d for d in result.decisions if d.sleeve == 'index_directional')
+        self.assertEqual([c.symbol for c in index_decision.candidates],["GOOD"])
+        self.assertEqual(len(index_decision.rejected),3)
         self.assertEqual([a.candidate.symbol for a in result.allocations],["GOOD"])
         with patch.object(v2_live,"market_open",return_value=True), \
              patch("app.ideas.track"), patch("app.ideas.publish",return_value=0) as publish:

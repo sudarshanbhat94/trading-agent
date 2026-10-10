@@ -1,10 +1,17 @@
 import unittest
 from unittest.mock import patch
 from app import broker,order_journal
-from app.execution_ports import UpstoxPort,InstrumentError
+from app.execution_ports import UpstoxPort,InstrumentError,capability_report
 
 
 class ExecutionCapabilityTest(unittest.TestCase):
+    def test_capabilities_do_not_advertise_unimplemented_paper_intraday_lifecycle(self):
+        result=capability_report()
+        for route in result['routes']:
+            self.assertFalse(route['live_certified'])
+            if route['broker']=='paper':self.assertEqual(route['implementation'],route['product']=='D')
+        self.assertIn('paper intraday order lifecycle',result['unsupported'])
+
     def test_unsupported_segments_never_reach_broker_or_account_reads(self):
         with patch.object(broker,'state',side_effect=AssertionError('account read')),patch.object(broker,'place_order',side_effect=AssertionError('order')):
             for key in ('NSE_FO|OPT','NSE_INDEX|Nifty 50','BSE_EQ|STOCK','MCX_FO|FUT','NYSE|STOCK','NSE_EQ|'):

@@ -129,7 +129,7 @@ def test_missing_delivery_and_adverse_news_remain_flags_even_on_strong_stock():
     con = memory()
     store.save(con, "TEST", "news", "NSE", {"events":[{"classification":"risk_review"}]}, NOW.isoformat(), NOW)
     store.save(con, "TEST", "participation", "NSE", {"session":"2026-09-29","delivery_pct":95,"delivery_avg20_pct":40}, NOW.isoformat(), NOW)
-    result = build({"TEST":prices(100,150),"NIFTYBEES":prices()}, {"TEST"}, {}, con, NOW, pd.Timestamp("2026-09-30"))
+    result = build({"TEST":prices(100,150),"NIFTY":prices()}, {"TEST"}, {}, con, NOW, pd.Timestamp("2026-09-30"))
     row=result["equities"][0]
     assert "adverse filing headline; manual review required" in row["flags"]
     assert row["participation"] is None
@@ -171,7 +171,9 @@ def test_capture_job_cannot_write_into_a_paper_book(tmp_path):
 
 def test_screen_route_and_ideas_share_research_payload(monkeypatch):
     from app import v2_web
-    monkeypatch.setattr("app.screening.store.report",lambda path:{"equities":[{"symbol":"TEST","actionable":False}]})
+    monkeypatch.setattr("app.screening.store.report",lambda path,now=None:{"status":"ok","data_contract_version":"screening-data-v3","equities":[{"symbol":"TEST","actionable":False}]})
+    # This fixture checks the public research payload, not account sizing.
+    monkeypatch.setattr(v2_web,"_stock_plans",lambda *args,**kwargs:None)
     assert json.loads(v2_web.api_screen("IN", {"id":2}).body)["equities"][0]["actionable"] is False
     assert v2_web._evidence_screen("US")["equities"] == []
 

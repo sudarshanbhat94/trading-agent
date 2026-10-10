@@ -941,7 +941,7 @@ def _remember_sleeve_view(market, result, asof, today_s):
             sleeve=dec.sleeve, active=bool(dec.active), note=dec.note,
             candidates=len(dec.candidates), rejected=rejected,
             diagnostics=dict(dec.diagnostics or {})))
-    primary = next((d for d in decisions if d["sleeve"] == "index_directional"),
+    primary = next((d for d in decisions if d["sleeve"] == "quality_momentum"),
                    decisions[0] if decisions else None)
     count = len(result.allocations)
     if count:
@@ -963,13 +963,16 @@ def _remember_sleeve_view(market, result, asof, today_s):
     else:
         reason = "no production candidate cleared every gate"
         state = "STAND ASIDE"
+    from .sleeves.regime import MODEL_VERSION as market_model_version
     _sleeve_views[market] = dict(
         state=state, reason=reason, regime=result.regime.state,
         regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
+        regime_source=result.regime.source, market_context=result.regime.diagnostics,
+        market_model_version=market_model_version,
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
         risk_rejections=[dict(symbol=s, reason=r) for s, r in result.risk_rejections[:5]],
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
-        cadence="first NSE session of each month", decisions=decisions,
+        cadence="stocks and actual indices: each production screening cycle", decisions=decisions,
         diagnostics=(primary.get("diagnostics", {}) if primary else {}))
     # Survive service restarts and closed-market deployments. This is display
     # state only; failure to persist it must never affect the trading pass.
@@ -992,10 +995,20 @@ def sleeve_view(market="IN"):
                 _sleeve_views.update(saved)
         except (FileNotFoundError, OSError, ValueError, TypeError):
             pass
-    return dict(_sleeve_views.get(market) or {})
+    current = dict(_sleeve_views.get(market) or {})
+    from .sleeves.regime import MODEL_VERSION
+    if current and current.get('market_model_version') != MODEL_VERSION:
+        return dict(state='WAITING FOR DATA',regime=None,
+                    reason='Waiting for the first completed stock/index cycle under the current market model')
+    return current
 
 
 def ensure_schema(v2):
+    from .schema_migrations import apply,TRADING_CONTRACT,validate_trading
+    apply(v2,'trading-schema-v6',dict(TRADING_CONTRACT,version=6,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache',native_coverage='owned-claim-once-reduction',portfolio_observations='authenticated-owner-stream'),_ensure_schema,validate_trading)
+
+
+def _ensure_schema(v2):
     from .personal_alerts import ensure_schema as ensure_personal_alerts
     ensure_personal_alerts(v2)
     v2.executescript(SCHEMA)
@@ -1309,14 +1322,19 @@ def _news_state(mcon, symbol):
 
 def _live(market, symbols=None):
     con = _ro(MAIN_DB)
-    if symbols:
+    if symbols is not None:
         syms = list(symbols)
+        if not syms:
+            con.close();return {}
         rows = con.execute(
             "SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
             % ",".join("?" * len(syms)), (LIVE_SOURCE[market], *syms)).fetchall()
     else:
         rows = con.execute("SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=?",
                            (LIVE_SOURCE[market],)).fetchall()
+    from . import executable_quotes
+    try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
+    except (sqlite3.Error,ValueError,TypeError):execution = {}
     con.close()
     out = {}
     for sym, p, o, h, l, c, v, ts in rows:
@@ -1325,7 +1343,9 @@ def _live(market, symbols=None):
         except (TypeError, ValueError):
             continue
         if price > 0:
-            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts)
+            out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts,
+                            source=LIVE_SOURCE[market])
+            if sym in execution: out[sym]['execution'] = execution[sym]
     return out
 
 
@@ -1787,6 +1807,14 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
     from . import execution_outbox, worker_fencing
     with atomic(v2):
         worker_fencing.require_current(v2)
+        from . import entry_contracts
+        from .live_trade import product_for
+        try:
+            if isinstance(shares,bool) or int(shares)!=shares:raise ValueError('Whole entry quantity required')
+            contract=entry_contracts.check(market,symbol,int(shares),entry_price,stop,target,product=product_for(strategy),regime=regime)
+        except ValueError as exc:
+            _LOG.error('REFUSED canonical entry %s/%s: %s',market,symbol,str(exc))
+            return False
         epoch = (v2.execute("SELECT started_at FROM v2_book WHERE market=?", (market,)).fetchone() or [None])[0]
         stable = f"{market}:{epoch}:{strategy}:{symbol}:{entry_date}"
         from .sleeves.config import PRODUCTION_SLEEVES
@@ -1806,6 +1834,7 @@ def record_entry(v2, market, strategy, symbol, entry_date, entry_price, shares,
               if stop else None), policy.encode(), fee))
         if strategy in PRODUCTION_SLEEVES:
             v2.execute("INSERT INTO house_entry_intents VALUES(?,?)", (stable,cursor.lastrowid))
+        entry_contracts.record(v2,'house',0,cursor.lastrowid,contract)
         execution_outbox.enqueue(v2, f"house:{cursor.lastrowid}:ENTRY", "house_entry",
                                  dict(src_id=cursor.lastrowid,house_epoch=epoch,market=market,
                                       created_at=datetime.now(timezone.utc).isoformat(),
@@ -1841,6 +1870,10 @@ def _live_mirror_entry(v2, market, strategy, symbol, price, src_id=None, stop=No
     broker. Each order goes to that user's account, sized to their own margin —
     there is no shared sleeve any more."""
     from . import broker, live_trade
+    # Paper trial fills must not even verify a broker token or enter broker
+    # fan-out. Live promotion is a separate, explicitly authorised route.
+    if strategy not in live_trade.MIRRORED_LANES:
+        return
     # verify() before fanning out: a revoked token must fail the gate here, not
     # produce a burst of 401s that look like rejected orders
     users = []
@@ -4013,6 +4046,11 @@ def exit_monitor(market):
                 pass
         peak, eff, ex, reason = evaluate_exit(p, lq, sess.get(sym), today, today_s, market)
         if ex is not None:
+            from . import paper_exchange
+            if market=='IN' and paper_exchange.managed_position(v2,0,p['id']):
+                order=paper_exchange.queue_exit(v2,0,p['id'],reason)
+                _LOG.info('paper exit requested %s: %s; owned position retained until bid fill',sym,order['status'])
+                continue
             # ONE writer, which computes the costs itself — see record_exit.
             # Its return feeds the log below, so the number recorded and the
             # number logged cannot drift apart.
@@ -4447,6 +4485,9 @@ def sleeve_pass(market):
                          open_risk=sum(risk for _, risk in stop_risks),
                          strategic_open_risk=sum(risk for strat, risk in stop_risks
                                                  if strat == "index_directional"))
+        if market == 'IN':
+            from .paper_exchange import reserved_state
+            book = reserved_state(v2, 0, epoch_ts, book)
 
         last_rebalance = v2.execute("SELECT MAX(entry_date) FROM ("
             "SELECT entry_date FROM v2_positions WHERE market=? AND strategy='quality_momentum' "
@@ -4468,13 +4509,14 @@ def sleeve_pass(market):
         feed_db = _ro(MAIN_DB)
         try:
             from .sleeves.feeds import delivery_reader
-            from .sleeves.reference import (snapshot, refresh_membership,
-                                            refresh_factor_membership, factor_members)
+            from .sleeves.reference import snapshot, refresh_membership
             if market == "IN":
                 refresh_membership()
-                refresh_factor_membership()
             eligible, quality_scores = snapshot(datetime.now(timezone.utc))
-            factors = factor_members(datetime.now(timezone.utc)) if market == "IN" else None
+            from .screening import automation
+            observed_at = datetime.now(timezone.utc)
+            from .index_history import load as load_index_history
+            tails = dict(tails, **load_index_history(observed_at))
             result = _SLEEVE_ENGINE.run(
                 tails, mdf, asof, live, book,
                 trade_date=today,
@@ -4485,7 +4527,9 @@ def sleeve_pass(market):
                                           if last_rebalance else None),
                 require_live_quotes=True, routable_instruments=("EQ",),
                 eligible_symbols=eligible, quality_scores=quality_scores,
-                factor_symbols=factors,
+                equity_screen=automation.current_screen(observed_at) if market=='IN' else None,
+                paper_epoch=epoch_ts if market=='IN' else None,
+                observed_at=observed_at,
                 require_reference_data=(market == "IN"),
                 bootstrap_entry=not index_seen)
         finally:
@@ -4509,6 +4553,10 @@ def sleeve_pass(market):
                     "AND sleeve='index_directional'", (market,)).fetchall():
                 price = float((live.get(sym) or {}).get("price") or 0)
                 if price > 0:
+                    from . import paper_exchange
+                    if market=='IN' and paper_exchange.managed_position(v2,0,pid):
+                        paper_exchange.queue_exit(v2,0,pid,'regime_off')
+                        continue
                     record_exit(v2, market, pid, today_s, price, float(shares), "regime_off")
                     v2.execute("DELETE FROM v2_positions WHERE id=?", (pid,))
                     held.discard(sym)
@@ -4523,6 +4571,7 @@ def sleeve_pass(market):
             return
 
         fills = 0
+        queued_count = 0
         filled_allocs = []
         for alloc in result.allocations:
             c = alloc.candidate
@@ -4534,14 +4583,27 @@ def sleeve_pass(market):
                 _LOG.info("sleeves: %s/%s is %s — not routed by the equity book",
                           c.sleeve, c.symbol, c.instrument)
                 continue
-            if record_entry(v2, market, c.sleeve, c.symbol, today_s, c.entry,
-                            float(alloc.shares), c.stop, c.target, c.trail_pct,
-                            c.score, json.dumps(c.why), sleeve=c.sleeve,
-                            regime=result.regime.state,
-                            risk_amount=alloc.risk_amount, max_hold_days=c.max_hold_days):
-                fills += 1
-                held.add(c.symbol)
-                filled_allocs.append(alloc)
+            from .entry_contracts import normalise_long_levels
+            from dataclasses import replace
+            try:
+                tick_stop,tick_target=normalise_long_levels(c.symbol,c.entry,c.stop,c.target)
+            except ValueError as exc:
+                _LOG.info('sleeves: canonical execution levels refuse %s: %s',c.symbol,exc)
+                continue
+            if (tick_stop,tick_target)!=(c.stop,c.target):
+                c=replace(c,stop=tick_stop,target=tick_target,why=dict(c.why,execution_rounding=dict(original_stop=c.stop,
+                    original_target=c.target,stop=tick_stop,target=tick_target,rule='long triggers rounded up to sourced tick')))
+                alloc=replace(alloc,candidate=c)
+            from . import paper_exchange, entry_contracts
+            try:
+                with entry_contracts.open_catalogue() as (catalogue, now):
+                    queued = paper_exchange.enqueue_house(v2, catalogue, alloc, live,
+                                                           regime=result.regime.state, now=now)
+                queued_count += 1
+                _LOG.info('paper proposal %s/%s: %s, %d requested; no fill yet', c.sleeve, c.symbol,
+                          queued['status'], queued['requested_qty'])
+            except ValueError as exc:
+                _LOG.info('paper proposal refused %s/%s: %s', c.sleeve, c.symbol, exc)
         v2.commit()
         try:
             _publish_sleeve_ideas(v2, market, result, today_s, live, filled_allocs)
@@ -4550,7 +4612,7 @@ def sleeve_pass(market):
         active = [d.sleeve for d in result.decisions if d.active]
         _status[market] = (f"sleeves {datetime.now(IST).strftime('%H:%M IST')} · "
                            f"regime {result.regime.state} ({result.regime.breadth:.0%} "
-                           f"breadth) · {len(active)} active · +{fills} new")
+                           f"breadth) · {len(active)} active · {queued_count} queued; fills require a later snapshot")
     finally:
         v2.close()
 
@@ -4630,6 +4692,50 @@ def _sleeve_vix():
             {"VIX":dict(price=row[0],ts=row[1])}, datetime.now(timezone.utc), 300) else None
     except Exception:
         return None
+
+
+def service_personal_paper(personal, market):
+    """Owned protection runs before, and independently of, new-entry data."""
+    from . import books, paper_exchange, entry_contracts
+    symbols=[r[0] for r in personal.execute('SELECT DISTINCT symbol FROM user_positions WHERE market=?',(market,))]
+    books.monitor_positions(personal,market,_live(market,symbols),regime_view=sleeve_view(market))
+    if market!='IN':return
+    from .screening import automation
+    try:
+        tracked = automation.symbols()
+        tracked_quotes = {}
+        if tracked:
+            tracked_quotes = _live(market, tracked)
+            automation.observe(tracked_quotes, datetime.now(timezone.utc))
+        # Also refresh filled house origins before subscriber delivery retries.
+        # Such a subscriber has no pending order yet, so this must precede the
+        # early return below. Actual allocation still occurs per owned account.
+        automation.refresh_pending(personal, tracked_quotes, sleeve_view(market) or {}, datetime.now(timezone.utc))
+    except (ValueError, sqlite3.Error, OSError):
+        _LOG.exception('Stock paper trial observations unavailable; exit management continues')
+    buys=paper_exchange.pending(personal)
+    pending_symbols=[json.loads(r[5])['plan']['symbol'] for r in buys+paper_exchange.exit_pending(personal)]
+    if not pending_symbols:return
+    house=[r[0] for r in personal.execute("SELECT symbol FROM v2_positions WHERE market='IN'")]
+    quotes=_live(market,set(pending_symbols+symbols+house))
+    # Protection is already evaluated. Refresh session evidence separately:
+    # failed entry rules never erase a valid current protective session cache.
+    try:
+        with entry_contracts.open_catalogue() as (catalogue,now):
+            paper_exchange.sync_sessions(personal,catalogue,now=now)
+    except (ValueError,sqlite3.Error,OSError):
+        _LOG.warning('Paper exit session refresh unavailable; retaining sourced cache',exc_info=True)
+    paper_exchange.service_exits(personal,quotes)
+    if not buys:return  # Exits require no entry catalogue or subscription.
+    try:
+        with entry_contracts.open_catalogue() as (catalogue,now):
+            from . import v2_web
+            saved=sleeve_view(market) or {}
+            regime=None if v2_web._decision_is_stale(market,saved.get('asof')) else saved.get('regime')
+            paper_exchange.service_house(personal,catalogue,quotes,regime=regime,now=now)
+            paper_exchange.service(personal,catalogue,quotes,regime=regime,now=now)
+    except (ValueError,sqlite3.Error):
+        _LOG.exception('Pending paper entry checks unavailable; owned exit service already ran')
 
 
 def loop(interval):
@@ -4731,10 +4837,7 @@ def loop(interval):
                         from . import books
                         personal = _rw()
                         try:
-                            symbols = [r[0] for r in personal.execute(
-                                "SELECT DISTINCT symbol FROM user_positions WHERE market=?", (m,))]
-                            books.monitor_positions(personal, m, _live(m, symbols),
-                                                    regime_view=sleeve_view(m))
+                            service_personal_paper(personal,m)
                         finally:
                             personal.close()
                     except Exception:

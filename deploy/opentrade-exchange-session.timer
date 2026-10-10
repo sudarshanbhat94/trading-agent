@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh OpenStocks exchange status every minute
+
+[Timer]
+OnBootSec=10s
+OnUnitActiveSec=60s
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

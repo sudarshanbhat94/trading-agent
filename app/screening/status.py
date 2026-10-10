@@ -1,0 +1,112 @@
+"""Read-only stock coverage, separate from the engine's execution permission.
+
+Passing evidence gates is not an approved idea, a risk-sized order or a fill.
+The market benchmark must never be presented as the stock-screen universe.
+"""
+from collections import Counter
+from datetime import datetime, timezone
+import math
+
+from .selection import reject_reason, number
+from .financials import valid_income_history
+
+
+def equity_screen_status(screen, now=None):
+    now = now or datetime.now(timezone.utc)
+    result = dict(status="unavailable", universe_count=None, screened_count=None,
+                  evidence_passes=None, generated_at=None, price_asof=None,
+                  rejections=[], note="The individual-stock evidence screen is unavailable.")
+    if not isinstance(screen, dict) or screen.get("status") != "ok":
+        return result
+    rows = screen.get("equities")
+    if not isinstance(rows, list) or any(not isinstance(r, dict)
+            or not isinstance(r.get("symbol"), str) or not r["symbol"].strip() for r in rows):
+        return result
+    symbols = {r["symbol"] for r in rows}
+    result.update(universe_count=screen.get("universe_count"), screened_count=len(symbols),
+                  generated_at=screen.get("generated_at"), price_asof=screen.get("price_asof"))
+    if screen.get("stale") or screen.get("price_stale"):
+        result.update(status="stale", note="Last stock screen is stale; its counts are historical.")
+        return result
+    rejected, seen, passed = Counter(), set(), 0
+    duplicated = {s for s, n in Counter(r["symbol"] for r in rows).items() if n > 1}
+    for row in rows:
+        symbol = row["symbol"]
+        if symbol in seen:
+            continue
+        seen.add(symbol)
+        try:
+            if symbol in duplicated:
+                reason = "Duplicate stock evidence requires review"
+            elif any(not isinstance(row.get(key), dict) for key in ("fundamentals", "metrics", "participation")):
+                reason = "Incomplete stock evidence requires review"
+            else:
+                reason = reject_reason(row, screen, now)
+        except (KeyError, TypeError, ValueError):
+            reason = "Incomplete stock evidence requires review"
+        if reason:
+            rejected[reason] += 1
+        else:
+            passed += 1
+    result.update(status="current", evidence_passes=passed,
+                  rejections=[dict(reason=reason, count=count) for reason, count in rejected.most_common(3)],
+                  note="Evidence passes precede entry-level, cost, account-risk and execution approval checks.")
+    return result
+
+
+def research_watch(screen, now=None, limit=10):
+    """Dated research visibility, never a substitute for a qualified plan.
+
+    Expose failures as well as scores. Duplicate identities and non-finite
+    scores cannot receive a rank; stale screens retain the historical label.
+    """
+    now = now or datetime.now(timezone.utc)
+    status = equity_screen_status(screen, now)
+    if status['status'] == 'unavailable':
+        return dict(status='unavailable', rows=[], coverage=None)
+    rows = screen['equities']
+    counts = Counter(r['symbol'] for r in rows)
+    ranked, coverage = [], Counter()
+    for row in rows:
+        if counts[row['symbol']] != 1:
+            continue
+        metrics = row.get('metrics') or {}
+        fundamental = row.get('fundamentals') or {}
+        participation = row.get('participation') or {}
+        if not all(isinstance(obj, dict) for obj in (metrics, fundamental, participation)):
+            continue
+        coverage['stocks'] += 1
+        coverage['price'] += isinstance(metrics.get('price'), (int, float)) and math.isfinite(metrics['price']) and metrics['price'] > 0
+        coverage['earnings'] += valid_income_history(fundamental, screen.get('price_asof') or '')
+        coverage['participation'] += participation.get('session') == screen.get('price_asof')
+        coverage['news'] += bool((row.get('news') or {}).get('checked_at'))
+        score = row.get('score')
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+            continue
+        try:
+            reason = reject_reason(row, screen, now)
+        except (KeyError, TypeError, ValueError):
+            reason = 'Incomplete stock evidence requires review'
+        ranked.append(dict(symbol=row['symbol'], sector=row.get('sector') or 'Unclassified',
+            score=score, price=number(metrics.get('price')), relative_volume=number(metrics.get('relative_volume')),
+            rs_20=number(metrics.get('rs_vs_nifty20_pct')), reason=reason or 'Evidence passed; entry plan and execution checks still required',
+            evidence_pass=not bool(reason), price_asof=screen.get('price_asof')))
+    ranked.sort(key=lambda r: (-r['score'], r['symbol']))
+    return dict(status=status['status'], rows=ranked[:limit], coverage=dict(coverage),
+                generated_at=screen.get('generated_at'), price_asof=screen.get('price_asof'),
+                executable=False, note='Research watch only. Scores are not buy approvals or predicted returns.')
+
+
+def paper_execution_scope():
+    """Describe the actual allowlist and feature flags; never enable a sleeve."""
+    from ..sleeves.config import PRODUCTION_SLEEVES, SLEEVES
+    from ..sleeves.index_directional import INDEX_SYMBOLS
+    enabled = [name for name in PRODUCTION_SLEEVES if getattr(SLEEVES, name).enabled]
+    stocks = [name for name in enabled if name in ("mean_reversion", "quality_momentum", "early_momentum")]
+    from .automation import MODEL_VERSION
+    return dict(production_sleeves=enabled, automated_stock_sleeves=stocks,
+                stock_entries_enabled=bool(stocks),
+                stock_model_version=MODEL_VERSION if 'quality_momentum' in stocks else None,
+                stock_validation='unvalidated paper trial' if stocks else None,
+                automated_index_instruments=[], screened_indices=list(INDEX_SYMBOLS),
+                index_execution='eligible derivative contract required')

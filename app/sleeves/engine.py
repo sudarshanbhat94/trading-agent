@@ -8,8 +8,8 @@ One pass:
     4. hand the ordered list to the unified risk manager
     5. log regime, per-sleeve activity, and every accept/reject with a reason
 
-Production paper promotes only the NIFTYBEES sleeve. The quality-stock
-screen remains visible for research but cannot allocate capital.
+Production paper runs the selective stock trial and the separate index sleeve.
+Old strategy implementations remain outside the paper entry allowlist.
 """
 from __future__ import annotations
 
@@ -25,14 +25,14 @@ from .early_momentum import EarlyMomentumSleeve
 from .index_directional import IndexDirectionalSleeve
 from .mean_reversion import MeanReversionSleeve
 from .options_overlay import OptionsOverlaySleeve
-from .quality_momentum import QualityMomentumSleeve
+from ..screening.automation import SelectivePaperSleeve, MODEL_VERSION as SELECTIVE_MODEL_VERSION
 from .regime import RegimeGate, RegimeView
 from .risk import Allocation, BookState, RiskManager
 
 _LOG = logging.getLogger("openstocks.sleeves.engine")
 
 #: first claim on capital goes leftmost
-PRIORITY = ["index_directional", "mean_reversion", "quality_momentum",
+PRIORITY = ["quality_momentum", "index_directional", "mean_reversion",
             "early_momentum", "options_overlay"]
 
 # Explicit paper allowlist. Observed sleeves may explain the tape, but only
@@ -70,6 +70,10 @@ class SleeveContext:
     # the already-completed trend signal is ON.  This grants one immediate
     # evaluation; after the book has traded, normal monthly cadence resumes.
     bootstrap_entry: bool = False
+    equity_screen: dict | None = None
+    paper_epoch: str | None = None
+    observed_at: object | None = None
+    book: BookState | None = None
 
 
 @dataclass
@@ -92,16 +96,16 @@ class SleeveEngine:
         self.risk = RiskManager(settings)
         self.sleeves = {
             "mean_reversion": MeanReversionSleeve(),
-            "quality_momentum": QualityMomentumSleeve(),
+            "quality_momentum": SelectivePaperSleeve(),
             "early_momentum": EarlyMomentumSleeve(),
             "index_directional": IndexDirectionalSleeve(),
             "options_overlay": OptionsOverlaySleeve(),
         }
 
     def run(self, tails, market_df, asof, live, book: BookState, **feeds) -> PassResult:
-        regime = self.gate.view(tails, market_df, asof)
+        regime = self.gate.view(tails, market_df, asof, feeds.get('eligible_symbols'))
         ctx = SleeveContext(tails=tails, market_df=market_df, asof=asof, live=live,
-                            regime=regime, settings=self.settings, **feeds)
+                            regime=regime, settings=self.settings, book=book, **feeds)
         result = PassResult(regime=regime)
 
         halted, why = self.risk.halted(book)
@@ -123,22 +127,24 @@ class SleeveEngine:
             if ctx.require_reference_data and name in ("mean_reversion", "early_momentum") and ctx.eligible_symbols is None:
                 result.decisions.append(SleeveDecision(name, regime.state, False, note="Nifty membership snapshot unavailable"))
                 continue
-            if ctx.require_reference_data and name == "quality_momentum" and not ctx.factor_symbols:
+            if name == "quality_momentum" and not ctx.eligible_symbols:
                 result.decisions.append(SleeveDecision(name, regime.state, False,
-                                                       note="verified NSE quality constituents unavailable"))
+                                                       note="verified liquid NSE constituents unavailable"))
                 continue
             try:
                 # Filter before ranking so ineligible names cannot crowd out
                 # eligible candidates. The regime above uses the full panel.
                 sleeve_ctx = ctx
                 if name in ("mean_reversion", "quality_momentum", "early_momentum"):
-                    allowed = ctx.factor_symbols if name == "quality_momentum" else ctx.eligible_symbols
+                    allowed = ctx.eligible_symbols
                     sleeve_ctx = replace(ctx, tails={sym: frame for sym, frame in tails.items()
                         if (allowed is None or sym in allowed)
                         and (name in OBSERVATION_SLEEVES or not ctx.require_live_quotes or sym in live)})
                 dec = sleeve.propose(sleeve_ctx)
             except Exception:
                 _LOG.exception("sleeve %s raised; skipping it this pass", name)
+                result.decisions.append(SleeveDecision(name, regime.state, False,
+                    note='Sleeve evidence processing failed; no entries authorised'))
                 continue
             if name in OBSERVATION_SLEEVES:
                 # An executable risk-sized replay left just one holdout
@@ -161,8 +167,10 @@ class SleeveEngine:
                 elif ctx.require_live_quotes and cand.instrument == "EQ" and cand.symbol not in live:
                     dec.reject(cand.symbol, "fresh entry quote unavailable")
                 elif (cand.instrument == "EQ" and cand.sleeve == "quality_momentum"
-                      and ctx.factor_symbols is not None and cand.symbol not in ctx.factor_symbols):
-                    dec.reject(cand.symbol, "outside verified NSE quality index")
+                      and cand.symbol not in (ctx.eligible_symbols or set())):
+                    dec.reject(cand.symbol, "outside verified liquid NSE universe")
+                elif cand.sleeve == 'quality_momentum' and (cand.why.get('selective_paper') or {}).get('model_version') != SELECTIVE_MODEL_VERSION:
+                    dec.reject(cand.symbol, 'Legacy stock signal has no selective paper trial identity')
                 elif (cand.instrument == "EQ" and cand.sleeve in ("mean_reversion", "early_momentum")
                       and ctx.eligible_symbols is not None and cand.symbol not in ctx.eligible_symbols):
                     dec.reject(cand.symbol, "outside verified liquid NSE universe")

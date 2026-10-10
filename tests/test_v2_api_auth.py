@@ -43,7 +43,7 @@ def _client(tmp):
     from app import main as m
     from app import v2_web
     v2_web.V2_DB = v2
-    return TestClient(m.app), m
+    return TestClient(m.app,headers={"Origin":"http://testserver"}), m
 
 
 class AnonymousAccessTest(unittest.TestCase):

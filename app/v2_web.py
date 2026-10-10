@@ -5,6 +5,7 @@ Self-contained FastAPI router mounted at /v2/. Reads the paper book
 responsive page + JSON APIs. Zero coupling to the legacy dashboard.
 """
 from __future__ import annotations
+from contextlib import closing
 
 import logging
 import os
@@ -146,7 +147,7 @@ def _live_map(market, symbols=None):
     quote table just to value a handful of held positions."""
     try:
         con = _ro(MAIN_DB)
-        if symbols:
+        if symbols is not None:
             syms = [s for s in symbols]
             if not syms:
                 con.close()
@@ -157,6 +158,9 @@ def _live_map(market, symbols=None):
         else:
             rows = con.execute("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=?",
                                (LIVE_SOURCE[market],)).fetchall()
+        from . import executable_quotes
+        try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
+        except (sqlite3.Error,ValueError,TypeError):execution = {}
         con.close()
     except Exception:
         return {}
@@ -169,6 +173,7 @@ def _live_map(market, symbols=None):
         if price > 0:
             out[sym] = dict(price=price, open=_n(o, price), high=_n(h, price),
                             low=_n(l, price), prev=_n(c, price), ts=ts)
+            if sym in execution: out[sym]['execution'] = execution[sym]
     return out
 
 
@@ -219,6 +224,8 @@ def _regime_bg(market):
             d = []
         if d:
             from .sleeves.regime import RegimeGate
+            from .index_history import load as load_index_history
+            syms.update(load_index_history())
             state = RegimeGate().view(syms, mdf, d[-1]).state
         else:
             state = None
@@ -574,7 +581,16 @@ def api_overview(user: dict = Depends(require_session)):
                 rw.close()
     except Exception:
         _LOG.exception("user book stats failed")
+    from .screening.status import equity_screen_status, paper_execution_scope, research_watch
+    from .product_status import paper_status, execution_data_status
+    evidence = _evidence_screen("IN")
+    stock_screen = equity_screen_status(evidence)
+    with closing(_ro(V2_DB)) as status_con:
+        pipeline = paper_status(status_con, int(user.get('id') or 0))
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
+                             research_watch=research_watch(evidence), paper_pipeline=pipeline,
+                             execution_data=execution_data_status(),
+                             stock_screen=stock_screen, execution_scope=paper_execution_scope(),
                              equity_options_offset=round(contamination, 2),
                              regime={"IN": _regime("IN"), "US": _regime("US")},
                              regime_state={"IN": _regime_state("IN"), "US": _regime_state("US")},
@@ -1208,15 +1224,28 @@ def api_admin_request_decide(rid: int, payload: dict, user=Depends(require_admin
     one call so an admin cannot mark a request handled and forget to upgrade
     the account."""
     settings, db = _auth_bits()
-    approve = bool(payload.get("approve"))
-    row = db.decide_plan_request(rid, approve, str(user.get("username") or ""),
-                                 str(payload.get("payment_ref") or "")[:80])
+    approve = payload.get("approve")
+    if type(approve) is not bool:raise HTTPException(400,'Approval must be true or false')
+    try:
+        row = db.decide_plan_request(rid, approve, str(user.get("username") or ""),
+                                     payload.get("payment_ref") or "")
+    except ValueError as exc:raise HTTPException(409,str(exc))
     if not row:
         return JSONResponse(dict(error="no such request"), status_code=404)
     _LOG.info("ADMIN %s %s request %s (user %s -> %s)", user.get("username"),
               "approved" if approve else "rejected", rid, row["user_id"],
               row["requested_plan"])
     return JSONResponse(dict(ok=True, status=row["status"]))
+
+
+@router.get('/api/billing-receipts')
+def api_billing_receipts(user=Depends(require_session)):
+    from . import billing_ledger
+    settings,db=_auth_bits()
+    try:
+        with db.connect() as con:result=billing_ledger.report(con,int(user['id']))
+        return JSONResponse(result,headers={'Cache-Control':'private, no-store'})
+    except sqlite3.Error:raise HTTPException(503,'Owned billing receipts unavailable')
 
 
 @router.get("/api/me")
@@ -1869,18 +1898,10 @@ def _market_shut(market):
 
 @router.post("/api/buy")
 def api_buy(payload: dict, user: dict = Depends(require_session)):
-    """Manual buy into the CALLER'S OWN book.
+    """Freeze a human paper request, then use the approved execution pipeline.
 
-    THIS WROTE TO THE HOUSE BOOK, and that was a real-money defect rather than
-    an accounting one. record_entry fires the live-broker mirror, and the mirror
-    asserts the OWNER's user id when it checks permission — so any Pro or Elite
-    subscriber pressing Buy placed a REAL order in the operator's Upstox
-    account, with the operator's money. It also consumed the engine's six
-    position slots and wrote into v2_positions, the record every measured claim
-    in this codebase is computed from.
-
-    Now: the caller's own paper book, and the broker only when the caller IS the
-    sleeve's owner.
+    Research publications cannot fall back to manual approval. Live execution
+    remains a separately reviewed route and never substitutes a paper fill.
     """
     mode = payload.get("mode", "paper")
     if payload.get("plan_id") is not None or payload.get("publication_id") is not None:
@@ -1895,6 +1916,35 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
     shut = _market_shut(market)
     if shut is not None:
         return shut
+    if mode == "paper":
+        from . import approved_execution,entry_contracts,books
+        from uuid import uuid4
+        if market != "IN":
+            return JSONResponse({"error":"UNSUPPORTED_CAPABILITY: reviewed NSE cash paper route only"},status_code=409)
+        request_key=payload.get("request_key")
+        if request_key is None:request_key="manual-"+uuid4().hex
+        requested=payload.get("qty")
+        if requested is not None and (type(requested) is not int or requested<1):
+            return JSONResponse({"error":"Quantity must be a positive whole number"},status_code=400)
+        if not isinstance(request_key,str) or not 8<=len(request_key)<=128:
+            return JSONResponse({"error":"Invalid request identity"},status_code=400)
+        for value in (payload.get("stop"),payload.get("target")):
+            if value is not None and (isinstance(value,bool) or not isinstance(value,(int,float))):
+                return JSONResponse({"error":"Finite numeric stop/target required"},status_code=400)
+        con=_rw()
+        try:
+            with entry_contracts.open_catalogue() as (catalogue,now):
+                result=approved_execution.submit_manual_paper(con,catalogue,int(user['id']),sym,request_key,
+                    _live_map('IN',set([sym]+[p['symbol'] for p in books.positions(con,int(user['id']),'IN')])),quantity=requested,stop=payload.get('stop'),target=payload.get('target'),
+                    regime=_regime_state('IN'),now=now)
+            result.update(symbol=sym,broker_status=None,request_key=request_key)
+            if not result['ok']:result['error']=result['reason']
+            return JSONResponse(result,status_code=202 if result.get('status')=='pending' else 200 if result['ok'] else 409)
+        except ValueError as exc:
+            return JSONResponse({"error":str(exc),"code":"ACCOUNT_RISK_REFUSAL"},status_code=409)
+        except sqlite3.Error:
+            return JSONResponse({"error":"Approved execution evidence unavailable"},status_code=503)
+        finally:con.close()
     from .sleeves.feeds import fresh_quotes
     quotes = fresh_quotes(_live_map(market, [sym]), datetime.now(timezone.utc))
     px = float((quotes.get(sym) or {}).get("price") or 0)
@@ -1926,25 +1976,8 @@ def api_buy(payload: dict, user: dict = Depends(require_session)):
                                    requested_qty=requested, request_key=request_key)
             finally:
                 main.close()
-        if not request_key and sym in books.open_symbols(v2, uid, market):
-            return JSONResponse({"error": "already holding " + sym}, status_code=400)
-        try:
-            qty = books.buy(v2, uid, market, "manual", sym, px, requested, stop, target,
-                            request_key=request_key,exact_quantity=True)
-        except ValueError:
-            return JSONResponse({"error":"Request identity already belongs to a different order"},status_code=409)
-        if qty < 1:
-            return JSONResponse(
-                {"error": books.refusal(v2, uid, market), "code": "ACCOUNT_RISK_REFUSAL"},
-                status_code=409)
-        broker_note = None
-        receipt = books.entry_receipt(v2,uid,market,request_key) if request_key else None
-        px = receipt["entry"] if receipt else px
-        v2.commit()
     finally:
         v2.close()
-    return JSONResponse({"ok": True, "symbol": sym, "qty": qty, "entry": round(px, 2),
-                         "broker_status": broker_note, "paper_recorded": True, "mode": "paper"})
 
 
 @router.post("/api/reset")
@@ -2029,6 +2062,11 @@ def api_sell(payload: dict, user: dict = Depends(require_session)):
                 main.close()
         if not held:
             return JSONResponse({"error":"No paper holding for this symbol"}, status_code=409)
+        from . import paper_exchange
+        if market=='IN' and paper_exchange.managed_position(v2,uid,held[0]['id']):
+            result=paper_exchange.queue_exit(v2,uid,held[0]['id'],'manual')
+            result['symbol']=sym
+            return JSONResponse(result,status_code=202)
         out = books.sell(v2, uid, market, sym, round(px, 2), "manual")
         pnl, ret = out or (0, 0)
         broker_note = None
@@ -2311,11 +2349,7 @@ def api_search(q: str = ""):
     q = q.strip().upper()
     if len(q) < 2:
         return JSONResponse([])
-    # INDICES FIRST. They are not rows in `universe` — an index is not a listed
-    # equity — so searching "nifty" returned only the ETFs that track it
-    # (NIFTYBEES, NIFTY1, NIFTYETF) and never NIFTY itself. There was no way to
-    # reach the index page from anywhere in the UI, which is why it looked like
-    # the page did not exist.
+    # Index levels have their own analysis route; they are not cash equities.
     out = []
     try:
         from . import v2_live as _vl
@@ -2330,7 +2364,10 @@ def api_search(q: str = ""):
         "SELECT symbol,name,exchange FROM universe WHERE enabled=1 AND (symbol LIKE ? OR upper(name) LIKE ?) "
         "ORDER BY CASE WHEN symbol LIKE ? THEN 0 ELSE 1 END, length(symbol) LIMIT 8",
         (q + "%", "%" + q + "%", q + "%")).fetchall()
+    from .instrument_policy import retired_symbols
+    retired = retired_symbols(con)
     con.close()
+    rows = [r for r in rows if r[0] not in retired]
     out.extend(dict(symbol=r[0], name=(r[1] or "")[:40], kind="equity",
                     market="IN" if str(r[2]).upper() in ("NSE", "BSE") else "US")
                for r in rows)
@@ -2515,9 +2552,9 @@ def _decision_with_live_readiness(market, decision):
 def _evidence_screen(market):
     if market != "IN":
         return dict(status="unavailable", equities=[], indices=[], note="NSE evidence screen only")
-    from .screening.store import report
+    from .screening.store import current_report
     path = os.environ.get("SCREENING_DB", os.path.join(os.path.dirname(MAIN_DB), "screening.db"))
-    return report(path)
+    return current_report(path)
 
 
 @router.get("/api/screen")
@@ -2591,25 +2628,68 @@ def api_idea_publication(publication_id: int, user: dict = Depends(require_sessi
     return JSONResponse(result,headers={"Cache-Control":"private, no-store"})
 
 
+@router.get('/api/trading-readiness')
+def api_trading_readiness(symbols: str = 'RELIANCE,ITC', user: dict = Depends(require_session)):
+    from . import books, entry_contracts, entry_readiness, v2_live
+    selected = list(dict.fromkeys(s.strip().upper() for s in symbols.split(',') if s.strip()))
+    if not selected or len(selected) > 20 or any(len(s) > 40 for s in selected):
+        raise HTTPException(400, 'Select between one and twenty NSE cash symbols')
+    book = _ro(V2_DB)
+    try:
+        held = books.open_symbols(book, int(user['id']), 'IN')
+        quotes = _live_map('IN', list(dict.fromkeys([*selected, *held])))
+        saved = v2_live.sleeve_view('IN') or {}
+        current = not _decision_is_stale('IN', saved.get('asof'))
+        heartbeat = book.execute("SELECT MAX(substr(date,6)) FROM v2_equity WHERE market='IN' AND date LIKE 'LIVE_%'").fetchone()[0]
+        if heartbeat and not heartbeat.endswith('Z') and '+' not in heartbeat[10:]:
+            heartbeat += '+00:00'
+        def response(catalogue, now):
+            return JSONResponse(entry_readiness.report(book, catalogue, int(user['id']), quotes, symbols=selected,
+                regime=saved.get('regime'), regime_current=current, engine_observed_at=heartbeat, now=now),
+                headers={'Cache-Control': 'private, no-store'})
+        try:
+            with entry_contracts.open_catalogue() as (catalogue, now):
+                return response(catalogue, now)
+        except entry_contracts.InstrumentError:
+            return response(None, datetime.now(timezone.utc))
+    except sqlite3.Error:
+        raise HTTPException(503, 'Trading readiness accounting schema unavailable')
+    finally:
+        book.close()
+
+
 @router.get("/api/execution-health")
 def api_execution_health(user: dict = Depends(require_session)):
     from .execution_ports import capability_report
-    from . import execution_events
+    from . import execution_events,broker_ledger
     con = _ro(V2_DB)
     try:
         row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(int(user["id"]),)).fetchone()
-        incidents = con.execute("SELECT code,detail,opened_at FROM execution_incidents WHERE user_id=? "
-                                "AND resolved_at IS NULL ORDER BY opened_at DESC LIMIT 20",(int(user["id"]),)).fetchall()
+        from .incident_inbox import report as incident_report
+        incidents=incident_report(con,int(user['id']))
         from . import protection
         return JSONResponse(dict(owner_user_id=int(user['id']),capabilities=capability_report(),protection=protection.report(con,int(user['id'])),
                                  journal_observations=execution_events.report(con,int(user['id'])),
+                                 actual_accounting=broker_ledger.report(con,int(user['id'])),
                                  reconciliation=dict(checked_at=row[0],status=row[1],evidence=json.loads(row[2])) if row else dict(status="unavailable"),
-                                 incidents=[dict(code=r[0],detail=r[1],opened_at=r[2]) for r in incidents]),
+                                 incidents=incidents),
                             headers={"Cache-Control":"private, no-store"})
     except (sqlite3.Error,ValueError,TypeError):
         raise HTTPException(503,"Execution safety schema unavailable")
     finally:
         con.close()
+
+
+@router.post('/api/execution-incidents/{incident_id}/acknowledge')
+async def api_acknowledge_incident(incident_id: int,request: Request,user: dict=Depends(require_session)):
+    from .incident_inbox import acknowledge
+    try:body=await request.json()
+    except ValueError:raise HTTPException(400,'JSON incident acknowledgement required')
+    if not isinstance(body,dict) or set(body)!={'fingerprint'}:raise HTTPException(400,'Current incident fingerprint required')
+    con=_rw()
+    try:return JSONResponse(acknowledge(con,int(user['id']),incident_id,body['fingerprint']),headers={'Cache-Control':'private, no-store'})
+    except ValueError as exc:raise HTTPException(409,str(exc))
+    finally:con.close()
 
 
 @router.get("/api/idea-publications/{publication_id}/assessments")
@@ -2653,24 +2733,56 @@ def api_approved_plans(user:dict=Depends(require_session)):
 
 @router.post('/api/approved-orders')
 def api_approved_order(payload:dict,user:dict=Depends(require_session)):
-    from . import approved_execution
+    from . import approved_execution,entry_contracts,books
     if set(payload)-{'plan_id','request_key'}:
         raise HTTPException(400,'Use the immutable plan identity; levels and quantity cannot be overridden')
     if not isinstance(payload.get('plan_id'),str) or not payload['plan_id'].startswith('plan_') or \
             not isinstance(payload.get('request_key'),str) or not 8<=len(payload['request_key'])<=128:
         raise HTTPException(400,'Valid approved plan and stable request identities required')
-    con=_rw();catalogue=_ro(MAIN_DB)
+    con=_rw()
     try:
         plan=con.execute('SELECT payload FROM approved_execution_plans WHERE id=? AND user_id=?',
                          (payload.get('plan_id'),int(user['id']))).fetchone()
         if not plan:raise HTTPException(404,'Approved plan not found')
         symbol=json.loads(plan[0])['symbol']
-        result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
-                                          _live_map('IN',[symbol]),regime=_regime_state('IN'))
-        return JSONResponse(result,status_code=200 if result['ok'] else 409)
+        with entry_contracts.open_catalogue() as (catalogue,now):
+            result=approved_execution.submit(con,catalogue,int(user['id']),payload.get('plan_id'),payload.get('request_key'),
+                                              _live_map('IN',set([symbol]+[p['symbol'] for p in books.positions(con,int(user['id']),'IN')])),regime=_regime_state('IN'),now=now)
+        return JSONResponse(result,status_code=202 if result.get('status')=='pending' else 200 if result['ok'] else 409)
     except ValueError as exc:raise HTTPException(409,str(exc))
     except sqlite3.Error:raise HTTPException(503,'Approved execution evidence unavailable')
-    finally:catalogue.close();con.close()
+    finally:con.close()
+
+
+@router.get('/api/paper-orders')
+def api_paper_orders(user:dict=Depends(require_session)):
+    from . import paper_exchange,books
+    con=_ro(V2_DB)
+    try:
+        uid=int(user['id']);epoch=books.current_epoch(con,uid,'IN')
+        rows=con.execute('SELECT i.id,i.payload,i.submitted_at FROM paper_order_intents i '
+                         'WHERE i.user_id=? AND i.epoch=? ORDER BY i.submitted_at DESC LIMIT 100',(uid,epoch)).fetchall()
+        orders=[]
+        for order_id,text,at in rows:
+            payload=json.loads(text);result=paper_exchange.status(con,uid,order_id)
+            orders.append(dict(result,side=payload['plan'].get('side','BUY'),symbol=payload['plan']['symbol'],sleeve=payload['plan']['sleeve'],
+                               regime=payload['regime_at_submit'],submitted_at=at,
+                               stop=payload['plan']['stop'],target=payload['plan']['target']))
+        return JSONResponse(dict(orders=orders,epoch=epoch,scope='owned-paper',partial_fills_supported=False),
+                            headers={'Cache-Control':'private, no-store'})
+    except sqlite3.Error:raise HTTPException(503,'Paper order journal unavailable')
+    except (ValueError,KeyError,TypeError):raise HTTPException(503,'Paper order evidence requires reconciliation')
+    finally:con.close()
+
+
+@router.post('/api/paper-orders/{order_id}/cancel')
+def api_cancel_paper_order(order_id:str,user:dict=Depends(require_session)):
+    from . import paper_exchange
+    con=_rw()
+    try:return JSONResponse(paper_exchange.cancel(con,int(user['id']),order_id))
+    except ValueError as exc:raise HTTPException(404,str(exc))
+    except sqlite3.Error:raise HTTPException(503,'Paper order journal unavailable')
+    finally:con.close()
 
 
 @router.get("/api/paper-performance")
@@ -2695,18 +2807,17 @@ def api_paper_performance(market: str = "IN", day: str = "", user: dict = Depend
 def api_instrument(symbol: str = "", venue: str = "", segment: str = "", instrument_id: str = "",
                    user: dict = Depends(require_session)):
     from .instrument_catalog import resolve, InstrumentError
+    from .entry_contracts import open_catalogue
     from dataclasses import asdict
-    con = _ro(MAIN_DB)
     try:
         if not instrument_id and not (symbol and venue and segment):
             raise HTTPException(400,"Provide instrument_id or symbol, venue and segment")
-        spec,key = resolve(con,instrument_id=instrument_id or None,symbol=symbol.upper() or None,
-                           venue=venue.upper() or None,segment=segment.upper() or None)
+        with open_catalogue() as (con,now):
+            spec,key = resolve(con,instrument_id=instrument_id or None,symbol=symbol.upper() or None,
+                               venue=venue.upper() or None,segment=segment.upper() or None,now=now)
         return JSONResponse(dict(instrument_id=spec.id,contract=asdict(spec),broker_key=key,execution_certified=False))
     except (InstrumentError,sqlite3.Error):
         raise HTTPException(409,"Instrument catalogue missing, stale or ambiguous")
-    finally:
-        con.close()
 
 
 @router.get("/api/ideas")
@@ -2727,6 +2838,11 @@ def api_ideas(market: str = "IN", days: int = 30,
     v2 = _ro(V2_DB)
     try:
         rows = _ideas.visible(v2, market, plan, days=days)
+        from .instrument_policy import retired_symbols
+        master = _ro(MAIN_DB)
+        try: retired = retired_symbols(master)
+        finally: master.close()
+        rows = [r for r in rows if r['symbol'] not in retired]
         today_s = datetime.now(IST).date().isoformat()
         _source_marks = ",".join("?" * len(_ideas.SLEEVE_SOURCES))
         published_today = v2.execute(
@@ -3164,11 +3280,20 @@ async def api_stream(user: dict = Depends(require_session)):
 def _my_positions(uid, market="IN"):
     """The caller's own open positions, priced live."""
     from . import books
+    from .sleeves.feeds import fresh_quotes
     live = _live_map(market)
+    now = datetime.now(IST)
+    fresh = fresh_quotes(live, now)
     rw = _ro(V2_DB)                     # read path: must not open a writer
     try:
         out = []
         for p in books.positions(rw, uid, market):
+            quote = live.get(p['symbol']) or {}
+            try:
+                opened = datetime.fromisoformat(p.get('opened_at') or '')
+                today = opened.astimezone(IST).date() == now.date() if opened.utcoffset() is not None else False
+            except ValueError:
+                today = str(p['entry_date'])[:10] == now.date().isoformat()
             px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
             val = px * p["shares"]
             out.append(dict(id=p["id"], symbol=p["symbol"], market=market, ccy="₹",
@@ -3186,7 +3311,9 @@ def _my_positions(uid, market="IN"):
                             if p["entry_price"] else 0.0,
                             pnl_amt=round((px - p["entry_price"]) * p["shares"], 2),
                             stop=p["stop"], target=p["target"], trail=False,
-                            headroom=None, since=p["entry_date"], today=False))
+                            headroom=None, since=p["entry_date"], today=today,
+                            quote_at=quote.get('ts'),
+                            quote_status='fresh' if p['symbol'] in fresh else 'last_quote' if quote else 'entry_only'))
         return out
     finally:
         rw.close()
@@ -3203,12 +3330,13 @@ def _my_trades(uid, limit=60, market="IN", con=None):
     from . import books
     rw = con or _ro(V2_DB)              # read path when it opens its own
     try:
+        from . import books
         cols = ("market", "strategy", "symbol", "entry_date", "entry_price", "exit_date",
                 "exit_price", "shares", "pnl", "return_pct", "reason", "opened_at",
-                "closed_at","instrument_id","plan_id","model_version")
+                "closed_at","instrument_id","plan_id","model_version","sleeve","regime")
         rows = rw.execute(f"SELECT {','.join(cols)} FROM user_trades"
-                          " WHERE user_id=? AND market=? ORDER BY id DESC LIMIT ?",
-                          (int(uid), market, int(limit))).fetchall()
+                          " WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=? ORDER BY id DESC LIMIT ?",
+                          (int(uid), market, books.LEGACY_EPOCH, books.current_epoch(rw,uid,market), int(limit))).fetchall()
         return [dict(zip(cols, r)) for r in rows]
     finally:
         if con is None:
@@ -3244,8 +3372,9 @@ def _my_orders(uid, limit=120, market="IN"):
     try:
         out = []
         for p in books.positions(rw, uid, market):
-            out.append(dict(side="BUY", status="open", symbol=p["symbol"], market=market,
+            out.append(dict(side="BUY", status="filled", symbol=p["symbol"], market=market,
                             ccy="₹", strategy=p["strategy"], qty=round(p["shares"], 2),
+                            sleeve=p.get('sleeve') or p['strategy'], regime=p.get('regime'),
                             price=round(p["entry_price"], 2),
                             value=round(p["entry_price"] * p["shares"]),
                             when=_ist(p["opened_at"] or p["entry_date"]),
@@ -3255,6 +3384,7 @@ def _my_orders(uid, limit=120, market="IN"):
                                    ("SELL", r["closed_at"] or r["exit_date"], r["exit_price"])):
                 out.append(dict(side=side, status="filled", symbol=r["symbol"],
                                 market=market, ccy="₹", strategy=r["strategy"],
+                                sleeve=r.get('sleeve') or r['strategy'], regime=r.get('regime'),
                                 qty=round(r["shares"], 2), price=round(px, 2),
                                 value=round(px * r["shares"]),
                                 when=_ist(when), ts=str(when)[:10], today=False,
@@ -3332,6 +3462,12 @@ def api_exit(pid: int, user: dict = Depends(require_session)):
         rw.close()
         return JSONResponse(dict(error="position not found"), status_code=404)
     market, strat, sym, edate, entry, shares, conv, oat = row
+    from . import paper_exchange
+    if market=='IN' and paper_exchange.managed_position(rw,0,pid):
+        try:
+            result=paper_exchange.queue_exit(rw,0,pid,'manual');result['symbol']=sym
+            return JSONResponse(result,status_code=202)
+        finally:rw.close()
     px = _live_map(market).get(sym, {}).get("price", entry)
     # Same single writer — see record_exit.
     from .v2_live import record_exit
@@ -3380,10 +3516,25 @@ def api_watch():
 
 
 @router.get("/api/portfolio")
-def api_portfolio(market: str = "IN"):
+def api_portfolio(market: str = "IN", scope: str = "mine", user: dict = Depends(require_session)):
     """Allocation, concentration, drawdown and per-lane realised-P&L curves."""
     v2 = _ro(V2_DB)
     try:
+        if not _wants_ai(scope,user):
+            from . import books
+            uid=int(user['id']);live=_live_map(market);epoch=books.current_epoch(v2,uid,market)
+            budget=books.budget_of(v2,uid,market)
+            positions=[(p['symbol'],p.get('sleeve') or p['strategy'],p['shares'],p['entry_price'],
+                        (live.get(p['symbol']) or {}).get('price')) for p in books.positions(v2,uid,market)]
+            curve=[(epoch,budget)]+books.equity_series(v2,uid,market)
+            trades=list(v2.execute("SELECT COALESCE(sleeve,strategy),exit_date,pnl FROM user_trades "
+                "WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",(uid,market,books.LEGACY_EPOCH,epoch)))
+            cash=books.cash(v2,uid,market)
+            payload=pf.build(positions,curve,trades,budget,cash=cash)
+            curve.append((datetime.now(IST).isoformat(),payload['equity']))
+            payload.update(drawdown=pf.drawdown(curve),market=market,ccy='₹' if market=='IN' else '$',scope='mine',epoch=epoch)
+            v2.close()
+            return JSONResponse(payload)
         row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
         budget = row[0] if row else 0.0
         live = _live_map(market)
@@ -5249,6 +5400,7 @@ function renderMineTile(m,ccy){
   pct:(m.budget?Math.round((m.overall_pnl||0)/m.budget*10000)/100:0),
   series:(m.series||[]),baseline:m.budget,
   note:'The AI\u2019s trades, sized to YOUR cash. Resetting this clears only your book.'
+   +(m.pending_orders?' · '+esc(m.pending_orders)+' pending · ₹'+INR.format(m.reserved_cash)+' reserved · ₹'+INR.format(m.available_cash)+' available':'')
    +((m.series||[]).length>1?' \u00b7 one point per day since '+(m.series_start||''):''),
   stats:{budget:m.budget,overall:m.overall_pnl,cash:m.cash,deployed:m.deployed,
          realised:m.realised,trades:m.trades,win:m.win}})
@@ -5358,7 +5510,8 @@ function renderStockPlans(p){
   +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
   +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
   +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
-  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' conditional plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' qualifying plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<p class=mut>At most '+esc(p.max_ideas==null?3:p.max_ideas)+' ideas, one per sector. No daily quota; some sessions have none.</p>'
   +'<div class=ig-plan-grid id=ideaCards '+(IDEA_UI.view=='tracking'?'hidden':'')+'>'+ideaCards(p)+'</div><div id=ideaTrackingPanel '+(IDEA_UI.view=='tracking'?'':'hidden')+'>'+renderIdeaTracking(p.tracking)+'</div>'
   +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
 }
@@ -5374,9 +5527,18 @@ function ideaFiltered(p){
 }
 function ideaCards(p){
  var rows=ideaFiltered(p);
- if(!rows.length)return '<div class=ideas-empty><b>'+(IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
-  +esc(p.book_error||(IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector. Incomplete evidence and account limits can reduce the shortlist.'))+'</p>'
-  +'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button></div>';
+ if(!rows.length){
+  var noSetups=!(p.ideas||[]).length;
+  var health=p.discovery_health||{},incomplete=health.status=='incomplete',stale=health.status=='stale';
+  var reasons=health.rejection_counts||Array.from(new Set((p.rejected||[]).map(function(r){return r.reason;}))).map(function(r){return {reason:r};});
+  var title=stale?'Evidence refresh needed':incomplete?'Screening data incomplete':'No qualifying setups';
+  var message=stale?'The latest evidence is unavailable or stale. Fresh research is required before publishing new plans.':incomplete?'Earnings history is verified for '+health.earnings_history_ready+' of '+health.screened+' screened stocks; '+health.earnings_history_missing+' remain unavailable. No fully checked stock qualifies yet. Scheduled refresh retries missing data.':'All '+(health.screened==null?'screened':health.screened)+' stocks were checked. None currently passes all evidence, participation, reward and account checks.';
+  return '<div class=ideas-empty><b>'+(noSetups?title:IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
+   +esc(p.book_error||(noSetups?message:IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector.'))+'</p>'
+   +(noSetups&&health.screened!=null?'<p class=mut>Research discovery runs independently of the execution regime. OFF pauses new orders; it does not hide qualifying research plans. Last screen: '+esc(ideaTime(health.generated_at))+'.</p>':'')
+   +(noSetups&&reasons.length?'<details><summary>Why ideas are waiting</summary><p class=mut>Stocks can fail several checks; counts overlap.</p><ul>'+reasons.slice(0,8).map(function(r){return '<li>'+esc(r.reason)+(r.count==null?'':' · '+esc(r.count)+' stocks')+'</li>';}).join('')+'</ul></details>':'')
+   +(!noSetups?'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button>':'')+'</div>';
+ }
  return rows.map(function(r){
   var saved=(p.watchlisted||[]).includes(r.symbol),status=ideaStatus(r),m=r.evidence.metrics||{};
   function level(label,value,cls){return '<div><span>'+label+'</span><b class="'+(cls||'')+'">'+ideaMoney(value)+'</b></div>';}
@@ -5387,6 +5549,7 @@ function ideaCards(p){
    +'<div class=idea-entry><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
    +'<div class=idea-levels>'+level('Stop-loss',r.stop,'dn')+level('Target 1',r.t1,'up')+level('Target 2',r.t2,'up')+level('Target 3',r.t3,'up')+'</div>'
    +'<div class=idea-allocation><div><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b><span>'+ideaMoney(r.notional)+' allocation</span></div><div><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b><span>Estimated stop loss</span></div><div><b>4–8 weeks</b><span>Planning horizon</span></div></div>'
+   +'<p class=mut>Final-target net scenario '+ideaMoney(r.estimated_net_at_targets[2])+' · '+esc(r.net_r_at_targets[2])+'R after costs; not a forecast.</p>'
    +'<div class=idea-observation>'+ideaTrackingBadge(r.tracking)+'</div>'
    +'<div class=idea-thesis><span>WHY THIS STOCK</span><p>'+esc(r.why)+'</p></div>'
    +'<div class=idea-card-actions><button class=idea-secondary type=button data-symbol="'+esc(r.symbol)+'" onclick="ideaOpenPlan(this.dataset.symbol,false)">View plan</button>'
@@ -5401,7 +5564,7 @@ function ideaRepaint(){
  var session=document.getElementById('ideaMarketSession');if(session)session.textContent=p.tracking&&p.tracking.status!='ok'?'Quote tracking unavailable':p.market_open?'Market open · fresh quotes required':'Market closed · last close shown';
  var filters=document.getElementById('ideaFilters');if(filters)filters.hidden=IDEA_UI.view=='tracking';
  var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
- var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' conditional plans · prices through '+p.price_asof;
+ var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' qualifying plans · prices through '+p.price_asof;
  document.querySelectorAll('[data-idea-view]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.ideaView==IDEA_UI.view);});
 }
 function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();if(v=='tracking')ideaRefreshTracking();}
@@ -5438,7 +5601,9 @@ function ideaOpenPlan(sym,review){
   +'. Net reward / estimated stop loss: '+r.net_r_at_targets.map(function(v){return v+'R';}).join(' / ')+'. Assumes a full exit at each scenario, after fees and 0.2% slippage each way. Gaps can increase the loss.</p></div>'
   +'<div class=idea-dialog-section><h3>'+(review?'Buy eligibility':'Entry &amp; invalidation')+'</h3>'
   +(review?checks.map(function(c){return '<div class=idea-check><span class="'+(c[1]?'up':'mut')+'">'+(c[1]?'✓':'○')+'</span><div><b>'+c[0]+'</b><p>'+esc(c[2])+'</p></div></div>';}).join(''):'<p>'+esc(r.buy_condition)+'.</p><p>'+esc(r.invalidation)+'.</p><p>'+esc(r.horizon)+'.</p>')+'</div>'
-  +'<details class=idea-dialog-section><summary>Research &amp; source details</summary><p>'+esc(r.why)+'. Research score '+r.score+'/100; not a win probability.</p><p>ROE '+esc(f.roe_pct)+'% · delivery '+esc(v.delivery_pct)+'% · earnings period '+esc(f.period_end||'unavailable')+'. '+esc(f.reliability||'')+'</p><p>Official filings checked '+esc(n.checked_at||'unavailable')+'. News and earnings evidence are in the full evidence panel below the shortlist.</p></details>'
+  +'<details class=idea-dialog-section><summary>Research &amp; source details</summary><p>'+esc(r.why)+'. Research score '+r.score+'/100; not a win probability.</p>'
+  +(r.selection_policy?'<p>Selection '+esc(r.selection_policy.version)+': ROE ≥'+esc(r.selection_policy.min_roe_pct)+'%, debt/equity ≤'+esc(r.selection_policy.max_debt_equity)+', cash conversion ≥'+esc(r.selection_policy.min_cash_conversion)+', consistently profitable years ≥'+esc(r.selection_policy.min_earnings_years)+', volume ≥'+esc(r.selection_policy.min_relative_volume)+'x and delivery above average. Final-target net reward must cover estimated stop loss. This policy still needs independent validation.</p>':'')
+  +'<p>ROE '+esc(f.roe_pct)+'% · delivery '+esc(v.delivery_pct)+'% · earnings period '+esc(f.period_end||'unavailable')+'. '+esc(f.reliability||'')+'</p><p>Official filings checked '+esc(n.checked_at||'unavailable')+'. News and earnings evidence are in the full evidence panel below the shortlist.</p></details>'
   +'<div class=idea-dialog-footer>'+(review?'<button class=idea-primary type=button disabled>Buy unavailable · research plan</button><p>This review submits no order. The manual Buy flow has separate exit rules and cannot execute this plan.</p>':'<button class=idea-primary type=button data-symbol="'+esc(sym)+'" onclick="ideaOpenPlan(this.dataset.symbol,true)">Review buy eligibility →</button>')+'</div>';
  document.getElementById('ideaDialogBody').innerHTML=html;
  var dialog=document.getElementById('ideaPlanDialog');if(!dialog.open)dialog.showModal();
@@ -5448,7 +5613,7 @@ function ideaTrackingStatus(s){return ({WAITING:'Waiting for entry',ZONE_TOUCHED
 function ideaTrackingBadge(r){return r?'<span>'+ideaTrackingStatus(r.status)+'</span><small>Tracking since '+ideaTime(r.issued_at)+' · '+r.samples+' quotes'+(r.gaps?' · '+r.gaps+' gaps':'')+'</small>':'<span>Tracking not available</span><small>Reload to check publication capture.</small>';}
 function ideaConfirmationHtml(r){
  var a=r.confirmation;
- if(!a)return '<p>Confirmed-entry model: '+(r.plan&&r.plan.model_version=='conditional-pullback-v2'?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
+ if(!a)return '<p>Confirmed-entry model: '+(r.plan&&['conditional-pullback-v2','conditional-pullback-v3','conditional-pullback-v4'].includes(r.plan.model_version)?'waiting for the next evidence check':'legacy first-touch scenario; no retrospective confirmation')+'.</p>';
  return '<div class=idea-confirmation><b>Confirmed-entry research · '+esc(a.model_version)+'</b><p>'+esc(a.reason)+' · checked '+ideaTime(a.checked_at)+(a.fresh?'':' · historical assessment')+'. Execution remains unpromoted.</p>'
  +'<ul>'+(a.checks||[]).map(function(c){return '<li>'+ (c.passed?'✓ ':'○ ')+esc(c.reason)+'</li>';}).join('')+'</ul></div>';
 }
@@ -5544,7 +5709,7 @@ function renderEvidenceScreen(e){
  }).join('');
  var indices=(e.indices||[]).map(function(r){var m=r.metrics||{},o=r.options||{},last=r.last_option_snapshot||{},mk=r.market||{},v=mk.india_vix||{};
   return '<div class=ig-watch-row style="display:block"><b>'+esc(r.symbol)+'</b><div class=ig-watch-note>'
-   +'Price proxy '+esc(r.price_proxy)+' ₹'+(m.price==null?'unavailable':INR.format(m.price))
+   +'Actual index level '+esc(r.benchmark||r.symbol)+' '+(m.price==null?'unavailable':INR.format(m.price))
    +' · 20-session return '+num(m.return20_pct)+'% · PCR '+num(o.pcr_oi)
    +' · max pain '+num(o.max_pain)+' · India VIX '+num(v.value)+' ('+esc(v.session||'unavailable')+')'
    +' · liquid-stock breadth above 50-session mean '+num(mk.breadth_above50_pct)+'%'
@@ -5572,14 +5737,14 @@ function renderIdeas(d){
  // Sizing is stated ONCE, at the top, because a quantity with no capital behind
  // it is not actionable — and every reader must know these are sized for the
  // same reference account, not for theirs.
- var st=d.stats||{},dx=dec.diagnostics||{},preview=d.stock_plans;
- document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Your stock shortlist</h1><p>Entry levels, exit scenarios and risk, sized for your paper book.</p></div>'
+ var st=d.stats||{},dx=dec.market_context||{},preview=d.stock_plans;
+ document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Selective stock ideas</h1><p>Only qualifying setups, with entry levels, exit scenarios and risk sized for your paper book.</p></div>'
   +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':dec.regime=='OFF'?'Entries paused':'Regime '+(dec.regime||'unavailable'))+'</small></div></div>' :!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
   +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
-  +'<div><div class=ig-sn>'+(dx.completed_close==null?'—':ccy+f.format(dx.completed_close))+'</div><div class=ig-sl2>NIFTYBEES close</div></div>'
-  +'<div><div class=ig-sn>'+(dx.sma200==null?'—':ccy+f.format(dx.sma200))+'</div><div class=ig-sl2>200-session gate</div></div>'
+  +'<div><div class=ig-sn>'+(dx.completed_close==null?'—':ccy+f.format(dx.completed_close))+'</div><div class=ig-sl2>Nifty 50 completed close</div></div>'
+  +'<div><div class=ig-sn>'+(dx.trend_mean==null?'—':f.format(dx.trend_mean))+'</div><div class=ig-sl2>50-session market trend</div></div>'
   +'</div>':
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+(st.win_pct==null?'—':st.win_pct+'%')+'</div>'
@@ -5597,11 +5762,7 @@ function renderIdeas(d){
     +'can watch it build, not as evidence.</div>':'');
  fdSet('ideasHead','fd-card',
   '<details class=ig-how><summary>How this is calculated</summary>'
-  +(allManaged?'<div class=fd-text style="margin-top:0">Funded NIFTYBEES entries use the '
-   +ccy+f.format(d.capital)+' shared paper book and the completed 200-session trend. '
-   +'There is no fixed profit target. The NSE Quality 50 stock screen is research only: '
-   +'it cannot open paper trades or publish buy ideas after its negative retrospective holdout. '
-   +'Real-broker mirroring is disabled for these ideas.</div>'
+  +(allManaged?'<div class=fd-text style="margin-top:0">Selective individual-stock ideas use dated quality, liquidity and participation evidence, published entry/stop/target levels, rebound confirmation and account risk checks. Actual Nifty 50 trend and stock breadth determine the market regime. Index levels provide context; derivative execution requires its own eligible contract. Paper results remain unvalidated.</div>'
    :'<div class=fd-text style="margin-top:0">Historical ideas retain their published stop and target levels.</div>')
   +'</details>');
  var head='';
@@ -5617,12 +5778,12 @@ function renderIdeas(d){
    +esc(dec.decision_stale?(dec.last_regime||'—'):(dec.regime||'—'))
    +(dec.breadth!=null?' · breadth '+esc(dec.breadth)+'%':'')
    +(dec.asof?' · data through '+esc(dec.asof):'')
-   +(dx.distance_pct!=null?'<br>NIFTYBEES is '+Math.abs(dx.distance_pct)+'% '
-     +(dx.distance_pct>=0?'above':'below')+' its 200-session gate.':'')
+   +(dx.distance_pct!=null?'<br>Nifty 50 is '+Math.abs(dx.distance_pct)+'% '
+     +(dx.distance_pct>=0?'above':'below')+' its 50-session market trend.':'')
    +(stockDec.note?'<br>Quality stocks: '+esc(stockDec.note):'')
    +(dec.decision_stale?'<br>No new entries until a fresh completed-session paper cycle.':'')
    +(dec.execution_halted?'<br>Paper execution halted: '+esc(dec.halt_reason):'')
-   +'<br>Market checked during every NSE session; Nifty entries reviewed monthly.</div></div>';
+   +'<br>Stocks and actual index context reviewed during each production screening cycle.</div></div>';
  var stockDx=stockDec.diagnostics||{},watch=stockDx.watch||[],rejected=stockDec.rejected||[];
  var screening=stockDec.sleeve?'<div class=ig-watch><div class=ig-watch-head><b>'
    +(dec.decision_stale?'Last NSE Quality 50 screen':'NSE Quality 50 stock screen')+'</b><span>'
@@ -5782,7 +5943,7 @@ function renderPos(){var ps=POS.filter(p=>inMkt(p.market)).filter(p=>SUBPOS=='po
  var rows=ps.map(posRow).join('');
  document.getElementById('poslist').innerHTML=rows?('<div class=k-list>'+rows+'</div>'):('<div class=mut style="font-size:12px;padding:14px 16px">'+(SUBPOS=='pos'?'nothing bought today':'no overnight holdings')+'</div>');}
 function loadPos(){api('/v2/api/positions?scope='+BOOK).then(r=>{POS=r.j;renderPos();});loadAttrib();loadPortfolio();}
-function loadAttrib(){api('/v2/api/attribution').then(r=>{var d=r.j||{};
+function loadAttrib(){api('/v2/api/attribution?scope='+BOOK).then(r=>{var d=r.j||{};
  var rows=(d.strategies||[]).filter(s=>inMkt(s.market));
  document.getElementById('attrib').innerHTML=rows.map(s=>{var st=stratTag(s.strategy);var tot=s.realized+s.unrealized;
   return '<div class=card><div class=row><span class="badge '+st[1]+'">'+s.market+' '+st[0]+'</span><span class="'+col(tot)+'" style="font-size:13px;font-weight:600">'+(tot<0?'-':'+')+s.ccy+(s.ccy=='₹'?INR:USD).format(Math.abs(Math.round(tot)))+'</span></div>'
@@ -5805,7 +5966,7 @@ function loadOrders(){api('/v2/api/orders?limit=500&scope='+BOOK).then(r=>{var o
  var buys=os.filter(o=>o.side=='BUY'),sells=os.filter(o=>o.side=='SELL');
  document.getElementById('ordtot').textContent=(buys.length+sells.length)?(buys.length+' bought · '+sells.length+' sold'):'';
  var col=function(lbl,arr,cls){return '<div class="ordcol '+cls+'"><div class=ordlbl>'+lbl+' · '+arr.length+'</div>'+(arr.length?('<div class=card style="padding:2px 15px">'+arr.map(ordRow).join('')+'</div>'):'<div class=card style="padding:15px 16px"><span class=mut style="font-size:12px">nothing in this range</span></div>')+'</div>';};
- document.getElementById('ordlist').innerHTML='<div class=ordgrid>'+col('Bought',buys,'oc-buy')+col('Sold',sells,'oc-sell')+'</div>';});}
+ document.getElementById('ordlist').innerHTML='<div id=paperPendingOrders aria-live=polite></div><div class=ordgrid>'+col('Bought',buys,'oc-buy')+col('Sold',sells,'oc-sell')+'</div>';loadPaperOrders();});}
 function setOrdSide(s){var l=document.getElementById('ordlist');if(l){l.classList.remove('os-buy','os-sell');l.classList.add('os-'+s)}document.querySelectorAll('#ordside b').forEach(function(b,i){b.classList.toggle('on',(i===0)===(s==='buy'))})}
 function exitPos(id,sym){if(!confirm('Exit '+sym+' at live price?'))return;api('/v2/api/positions/'+id+'/exit',{method:'POST'}).then(r=>{if(r.ok){loadPos();loadHome()}else{alert(r.j.error||'Failed')}})}
 function doAnalyze(){var s=document.getElementById('qsym').value.trim().toUpperCase();if(!s)return;var m=document.getElementById('qmkt').value;document.getElementById('ares').innerHTML='<div class=skel>analysing '+s+'…</div>';renderStock(s,m,'ares')}
@@ -6539,7 +6700,7 @@ function pfHtml(d){
   h+='<span>'+s+(p.value!=null?p.value.toLocaleString():'0')+' <span class=mut>'+(p.pct_of_equity!=null?p.pct_of_equity:0)+'%</span> <span style="color:'+uc+'">'+(p.unrealised_pct>0?'+':'')+(p.unrealised_pct!=null?p.unrealised_pct:0)+'%</span></span></div>';
   h+='<div style="height:5px;border-radius:3px;background:var(--line);margin-top:4px"><div style="height:5px;border-radius:3px;width:'+w+'%;background:var(--ac)"></div></div></div>';}
  return h+'</div>';}
-function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefined'?MKT:'IN')).then(r=>{
+function loadPortfolio(){api('/v2/api/portfolio?market='+(typeof MKT!=='undefined'?MKT:'IN')+'&scope='+BOOK).then(r=>{
  var el=document.getElementById('pfrisk');if(!el)return;
  el.innerHTML=pfHtml(r.j);
  var n=document.getElementById('pfnote');
@@ -6621,11 +6782,11 @@ function doReset(){if(!confirm('Start a new ₹10,000 epoch for your personal pa
  api('/v2/api/reset',{method:'POST'}).then(function(r){if(r.ok){if(m)m.textContent='✅ book reset to ₹'+INR.format(r.j.budget||10000);toast('✅ paper book reset — clean slate');refresh();}else{if(m)m.textContent='⚠ '+(r.j.error||'failed');}});}
 function doBuy(sym,mkt){if(!confirm('Paper buy '+sym+' at the live price?'))return;
  api('/v2/api/buy',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper',request_key:crypto.randomUUID()})}).then(function(r){
-  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.status==='pending'?'Paper order submitted · awaiting liquidity':r.j.broker_status?('Broker: '+r.j.broker_status):('Paper bought '+r.j.symbol+' ×'+r.j.qty));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'buy failed'));});}
 function doSell(sym,mkt){if(!confirm('Sell your '+sym+' position at the live price?'))return;
  api('/v2/api/sell',{method:'POST',body:JSON.stringify({symbol:sym,market:mkt,mode:'paper'})}).then(function(r){
-  if(r.ok){toast(r.j.broker_status?('Broker: '+r.j.broker_status):('Paper sold '+r.j.symbol+' ('+r.j.pnl_pct+'%)'));renderStock(sym,mkt,'detail');refresh();}
+  if(r.ok){toast(r.j.status==='pending'?'Exit submitted · position retained until bid fill':r.j.broker_status?('Broker: '+r.j.broker_status):('Paper sold '+r.j.symbol+' ('+r.j.pnl_pct+'%)'));renderStock(sym,mkt,'detail');refresh();}
   else toast('⚠ '+(r.j.error||'sell failed'));});}
 function wlRow(w){
   var up=w.chg>0,dn=w.chg<0,cl=up?'up':(dn?'dn':'mut'),a=up?'▲ ':(dn?'▼ ':'');
@@ -6728,3 +6889,5 @@ from .desk_ui import enhance as _enhance_desk
 SPA_HTML = _enhance_desk(SPA_HTML)
 from .account_ui import enhance as _enhance_accounts
 SPA_HTML = _enhance_accounts(SPA_HTML)
+from .workspace_ui import enhance as _enhance_workspace
+SPA_HTML = _enhance_workspace(SPA_HTML)

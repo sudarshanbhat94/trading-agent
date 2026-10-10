@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh stock execution evidence before and during NSE sessions
+
+[Timer]
+OnBootSec=20s
+OnCalendar=Mon..Fri *-*-* 08..15:00/15:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

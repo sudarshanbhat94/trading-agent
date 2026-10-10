@@ -12,10 +12,14 @@ from pathlib import Path
 
 from . import tracking as t
 from .store import timestamp
+from .selection import MODEL_VERSION as SELECTIVE_MODEL, POLICY as SELECTION_POLICY, reject_reason
 
 VERSION = 'confirmed-pullback-review-v1'
 POLICY = dict(version=VERSION, volume_multiple=1.5, close_location=0.6,
               next_session_only=True, production_approved=False)
+# Selection v3 is tracked prospectively under the same entry checks. The
+# registered v2 portfolio experiment still selects v2 publications ONLY.
+SUPPORTED_MODELS = ('conditional-pullback-v2', 'conditional-pullback-v3', 'conditional-pullback-v4')
 
 
 def next_session(day):
@@ -34,9 +38,10 @@ def assess(plan, state, bars, quote, context, now, previous=None):
     checks=[];previous=previous or {};confirmed_at=None;digest=None
     def check(code, passed, reason):
         checks.append(dict(code=code,passed=bool(passed),reason=reason))
-    supported=(plan.get('model_version')=='conditional-pullback-v2'
-               and plan.get('confirmation_policy')==POLICY)
-    check('model',supported,'Forward research v2 policy required; legacy scenarios are preserved')
+    supported=(plan.get('model_version') in SUPPORTED_MODELS
+               and plan.get('confirmation_policy')==POLICY
+               and (plan.get('model_version') not in ('conditional-pullback-v3', SELECTIVE_MODEL) or plan.get('selection_policy')==SELECTION_POLICY))
+    check('model',supported,'Supported forward research policy required; legacy scenarios are preserved')
     touch=state.get('entry_at')
     alive=state.get('status') not in t.TERMINAL
     check('zone_touch',bool(touch) and alive,'A post-publication observed entry touch and a valid plan are required')
@@ -91,9 +96,13 @@ def assess(plan, state, bars, quote, context, now, previous=None):
     except (KeyError,TypeError,ValueError):news_fresh=False
     check('evidence',news_fresh and context.get('evidence_ok'),
           'Fresh official news/earnings checks and no current evidence flags required')
+    if plan.get('model_version')==SELECTIVE_MODEL:
+        check('selection',context.get('selection_ok'),
+              context.get('selection_reason') or 'Current selective Ideas evidence gates must still pass')
     check('risk',context.get('risk_ok'),context.get('risk_reason') or 'Existing account and portfolio risk limits must pass')
     eligible=all(c['passed'] for c in checks)
     baseline_codes={'model','zone_touch','fresh_quote','entry_zone','targets','regime','evidence','risk'}
+    if plan.get('model_version')==SELECTIVE_MODEL:baseline_codes.add('selection')
     baseline_eligible=all(c['passed'] for c in checks if c['code'] in baseline_codes)
     return dict(model_version=VERSION,checked_at=now.isoformat(),confirmation_at=confirmed_at,
                 bar_digest=digest,checks=checks,eligible=eligible,baseline_eligible=baseline_eligible,production_approved=False,
@@ -128,10 +137,11 @@ def refresh(main, path, paper, screen, regime, now=None):
     now=now or datetime.now(timezone.utc)
     con=t.connect(path)
     try:
+        marks=','.join('?' for _ in SUPPORTED_MODELS)
         rows=con.execute('SELECT p.id,p.user_id,p.payload,s.payload,a.payload '
             'FROM publications p JOIN states s ON s.publication_id=p.id '
-            'LEFT JOIN assessments a ON a.publication_id=p.id WHERE json_extract(p.payload,\'$.model_version\')=?',
-            ('conditional-pullback-v2',)).fetchall()
+            f'LEFT JOIN assessments a ON a.publication_id=p.id WHERE json_extract(p.payload,\'$.model_version\') IN ({marks})',
+            SUPPORTED_MODELS).fetchall()
         if not rows:return 0
         market=sqlite3.connect(f'file:{Path(main).resolve()}?mode=ro',uri=True,timeout=5)
         account=sqlite3.connect(f'file:{Path(paper).resolve()}?mode=ro',uri=True,timeout=5)
@@ -163,6 +173,9 @@ def refresh(main, path, paper, screen, regime, now=None):
                 current=evidence.get(symbol,{})
                 context.update(evidence_ok=bool(current) and not current.get('flags') and not screen.get('stale') and not screen.get('price_stale'),
                     news_checked_at=(current.get('news') or {}).get('checked_at'))
+                if plan.get('model_version')==SELECTIVE_MODEL:
+                    reason=reject_reason(current,screen,now)
+                    context.update(selection_ok=not reason,selection_reason=reason)
                 if uid not in books:books[uid]=account_state(account,uid,quotes,now)
                 book,error=books[uid];q=quotes.get(symbol,{})
                 if not error and q:

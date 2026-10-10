@@ -6,6 +6,7 @@ independently of whatever the market is doing on any given day.
 from __future__ import annotations
 
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,7 +46,7 @@ def _book(**kw):
     return BookState(**base)
 
 
-class CapitalIsTenThousandTest(unittest.TestCase):
+class CapitalIsTenThousandTest(ContractStorageCase):
     """Operator instruction: exactly Rs 10,000, everything inside it."""
 
     def test_capital(self) -> None:
@@ -69,7 +70,7 @@ class CapitalIsTenThousandTest(unittest.TestCase):
         self.assertGreaterEqual(slot, SLEEVES.min_ticket)
 
 
-class RegimeIsTheMasterGateTest(unittest.TestCase):
+class RegimeIsTheMasterGateTest(ContractStorageCase):
     def _mdf(self, rising: bool):
         idx = pd.bdate_range("2025-01-01", periods=120)
         step = 0.001 if rising else -0.001
@@ -104,64 +105,48 @@ class RegimeIsTheMasterGateTest(unittest.TestCase):
                 self.assertNotIn("OFF", sleeve.allowed_regimes,
                                  "no sleeve may open longs in an OFF regime")
 
-    def test_nifty_200_day_slope_compares_like_with_like(self) -> None:
+    def test_actual_nifty_trend_compares_completed_sessions(self) -> None:
         nifty = _panel(n_days=260, drift=.001, vol=0, seed=9)
         mdf = self._mdf(rising=True).reindex(nifty.index).ffill().bfill()
-        broad = {"NIFTYBEES": nifty}
+        broad = {"NIFTY": nifty}
         broad.update({f"S{i}": _panel(n_days=260, drift=.001, vol=0, seed=i)
                       for i in range(20)})
         view = RegimeGate().view(broad, mdf, nifty.index[-1])
         self.assertEqual(view.state, "ON")
 
 
-class EvidenceBackedIndexSleeveTest(unittest.TestCase):
-    def test_nifty_etf_is_the_only_routable_index_candidate(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=7)
-        regime = SimpleNamespace(state="ON")
-        ctx = SimpleNamespace(regime=regime, tails={"NIFTYBEES":bars},
-                              asof=bars.index[-1], trade_date=bars.index[-1] + pd.offsets.MonthBegin(),
-                              live={"NIFTYBEES":{"price":float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
-        self.assertEqual(decision.candidates[0].instrument, "EQ")
-        self.assertEqual(decision.candidates[0].allocation_pct, .50)
+class EvidenceBackedIndexSleeveTest(ContractStorageCase):
+    def context(self,state="ON",tails=None):
+        bars=_panel(n_days=260,drift=.001,vol=0,seed=7)
+        return SimpleNamespace(regime=SimpleNamespace(state=state),
+            tails=tails if tails is not None else {"NIFTY":bars,"BANKNIFTY":bars},
+            asof=bars.index[-1],live={"NIFTY":{"price":23500}})
 
-    def test_fresh_book_can_enter_midmonth_once(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=17)
-        asof = bars.index[-2]
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON", strong=True),
-                              tails={"NIFTYBEES": bars}, asof=asof,
-                              trade_date=bars.index[-1], bootstrap_entry=True,
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual([c.symbol for c in decision.candidates], ["NIFTYBEES"])
-        self.assertTrue(decision.diagnostics["bootstrap_entry"])
+    def test_actual_indices_are_analysis_never_fake_cash_candidates(self):
+        decision=IndexDirectionalSleeve().propose(self.context())
+        self.assertTrue(decision.active)
+        self.assertEqual(decision.candidates,[])
+        self.assertEqual([r['symbol'] for r in decision.diagnostics['indices']],['NIFTY','BANKNIFTY'])
+        self.assertTrue(all(r['status']=='analysis active' for r in decision.diagnostics['indices']))
+        self.assertIn('contract required',decision.diagnostics['execution'])
 
-    def test_nonfresh_book_still_waits_for_monthly_review(self) -> None:
-        bars = _panel(n_days=260, drift=.001, vol=0, seed=18)
-        asof = bars.index[-2]
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="ON"),
-                              tails={"NIFTYBEES": bars}, asof=asof,
-                              trade_date=bars.index[-1], bootstrap_entry=False,
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual(decision.candidates, [])
-        self.assertIn("monthly", decision.note)
+    def test_off_regime_keeps_index_analysis_without_opening_longs(self):
+        decision=IndexDirectionalSleeve().propose(self.context('OFF'))
+        self.assertTrue(decision.active)
+        self.assertEqual(decision.candidates,[])
+        self.assertFalse(IndexDirectionalSleeve().may_run('OFF'))
 
-    def test_off_regime_still_explains_the_live_index_gate(self) -> None:
-        bars = _panel(n_days=260, drift=-.0002, vol=0, seed=8)
-        ctx = SimpleNamespace(regime=SimpleNamespace(state="OFF"),
-                              tails={"NIFTYBEES": bars}, asof=bars.index[-1],
-                              trade_date=bars.index[-1] + pd.offsets.Day(),
-                              live={"NIFTYBEES": {"price": float(bars.close.iloc[-1])}})
-        decision = IndexDirectionalSleeve().propose(ctx)
-        self.assertEqual(decision.candidates, [])
-        self.assertEqual(decision.note, "regime OFF blocks Nifty exposure")
-        self.assertIn("sma200", decision.diagnostics)
-        self.assertIn("distance_pct", decision.diagnostics)
+    def test_missing_index_history_is_explicit(self):
+        decision=IndexDirectionalSleeve().propose(self.context(tails={}))
+        self.assertFalse(decision.active)
+        self.assertTrue(all(r['status']=='history unavailable' for r in decision.diagnostics['indices']))
+
+    def test_no_production_cash_index_route(self):
+        from app.sleeves.index_directional import SYMBOL
+        self.assertIsNone(SYMBOL)
 
 
-class RiskManagerTest(unittest.TestCase):
+class RiskManagerTest(ContractStorageCase):
     def setUp(self) -> None:
         self.rm = RiskManager()
 
@@ -183,12 +168,12 @@ class RiskManagerTest(unittest.TestCase):
                     self.assertLessEqual(a.risk_amount, cap + price)
 
     def test_index_and_stock_share_one_hard_stop_budget(self) -> None:
-        index = Candidate("NIFTYBEES", "index_directional", .8, 260, 195,
+        index = Candidate("TEST_INDEX_FUND", "index_directional", .8, 260, 195,
                           allocation_pct=.50)
         stock = Candidate("QUALITY", "quality_momentum", .8, 500, 485)
         funded = self.rm.allocate([index, stock], _book())
         self.assertEqual([a.candidate.symbol for a in funded],
-                         ["NIFTYBEES", "QUALITY"])
+                         ["TEST_INDEX_FUND", "QUALITY"])
         self.assertLessEqual(sum(a.risk_amount for a in funded),
                              SLEEVES.capital * SLEEVES.max_drawdown)
         self.assertLessEqual(funded[0].risk_amount,
@@ -267,7 +252,7 @@ class RiskManagerTest(unittest.TestCase):
         self.assertEqual(self.rm.allocate([self._cand()], b), [])
 
 
-class CandidateSanityTest(unittest.TestCase):
+class CandidateSanityTest(ContractStorageCase):
     def test_stop_above_entry_is_refused(self) -> None:
         ok, why = Candidate("X", "mean_reversion", 0.9, 100.0, 105.0).is_sane()
         self.assertFalse(ok)
@@ -283,7 +268,7 @@ class CandidateSanityTest(unittest.TestCase):
         self.assertIn("25%", why)
 
 
-class UniverseTest(unittest.TestCase):
+class UniverseTest(ContractStorageCase):
     def test_it_keeps_liquid_mid_priced_names(self) -> None:
         g = _panel(start=300.0)
         g["volume"] = 1e6                      # ~Rs 30 cr turnover
@@ -306,7 +291,7 @@ class UniverseTest(unittest.TestCase):
                         "one share must not exceed a whole slot")
 
 
-class OptionsOverlayIsDefinedRiskTest(unittest.TestCase):
+class OptionsOverlayIsDefinedRiskTest(ContractStorageCase):
     def test_a_naked_short_is_structurally_refused(self) -> None:
         s = Spread(kind="bull_put", underlying="NIFTY", short_strike=24000,
                    long_strike=None, credit=50, width=0, lot_size=75, expiry="")
@@ -339,11 +324,11 @@ class OptionsOverlayIsDefinedRiskTest(unittest.TestCase):
         self.assertGreaterEqual(lots, 1)
 
 
-class EngineWiringTest(unittest.TestCase):
+class EngineWiringTest(ContractStorageCase):
     def test_all_five_sleeves_exist_and_are_prioritised(self) -> None:
         eng = SleeveEngine()
         self.assertEqual(sorted(eng.sleeves), sorted(PRIORITY))
-        self.assertEqual(PRIORITY[0], "index_directional", "retrospectively positive candidate gets first claim")
+        self.assertEqual(PRIORITY[0], "quality_momentum", "qualified individual stocks get first claim")
         self.assertEqual(PRIORITY[-1], "options_overlay", "overlay is allocated last")
 
     def test_every_sleeve_has_a_feature_flag(self) -> None:
@@ -353,12 +338,14 @@ class EngineWiringTest(unittest.TestCase):
                 self.assertIsNotNone(cfg)
                 self.assertIsInstance(cfg.enabled, bool)
 
-    def test_only_index_can_open_paper_trades(self) -> None:
-        self.assertEqual(ACTIVE_SLEEVES, ("index_directional", "quality_momentum"))
-        self.assertEqual(PRODUCTION_SLEEVES, ("index_directional",))
-        self.assertEqual(OBSERVATION_SLEEVES, ("quality_momentum",))
+    def test_only_selective_stock_trial_and_index_can_open_paper_trades(self) -> None:
+        from app.screening.automation import SelectivePaperSleeve
+        self.assertEqual(ACTIVE_SLEEVES, ("quality_momentum", "index_directional"))
+        self.assertEqual(PRODUCTION_SLEEVES, ACTIVE_SLEEVES)
+        self.assertEqual(OBSERVATION_SLEEVES, ())
+        self.assertIsInstance(SleeveEngine().sleeves['quality_momentum'], SelectivePaperSleeve)
 
-    def test_positive_stock_screen_never_reaches_allocator(self) -> None:
+    def test_old_factor_screen_without_dated_trial_evidence_never_reaches_allocator(self) -> None:
         bars = _panel(n_days=300, start=300, drift=.001, vol=.002, seed=77)
         bars.volume = 2_000_000.0
         asof = bars.index[-1]
@@ -371,17 +358,9 @@ class EngineWiringTest(unittest.TestCase):
                              factor_symbols={"TEST"}, require_reference_data=True,
                              require_live_quotes=True, routable_instruments=("EQ",))
         stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
-        self.assertEqual([r["symbol"] for r in stock.diagnostics["watch"]], ["TEST"])
-        self.assertGreater(stock.diagnostics["watch"][0]["min_ticket_stop_risk"], 0)
-        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_risk_cap"], 150)
-        self.assertLess(stock.diagnostics["watch"][0]["planned_stop"],
-                        stock.diagnostics["watch"][0]["price"])
-        self.assertEqual(stock.diagnostics["watch"][0]["fresh_book_notional_cap"], 3000)
-        self.assertTrue(stock.diagnostics["screen_gate_open"])
-        self.assertIn("fresh_book_risk_fit", stock.diagnostics)
         self.assertEqual(stock.candidates, [])
         self.assertFalse(stock.active)
-        self.assertIn("research only", stock.note)
+        self.assertIn("constituents unavailable", stock.note)
         self.assertEqual(result.allocations, [])
 
     def test_unaffordable_signal_is_reported_not_called_actionable(self) -> None:
@@ -414,8 +393,7 @@ class EngineWiringTest(unittest.TestCase):
                              factor_symbols={"TEST"}, require_reference_data=True,
                              require_live_quotes=True, routable_instruments=("EQ",))
         stock = next(d for d in result.decisions if d.sleeve == "quality_momentum")
-        self.assertEqual(stock.diagnostics["watch"][0]["symbol"], "TEST")
-        self.assertEqual(stock.diagnostics["watch"][0]["price_source"], "completed close")
+        self.assertIn("constituents unavailable", stock.note)
         self.assertEqual(stock.candidates, [])
         self.assertEqual(result.allocations, [])
 
@@ -464,7 +442,7 @@ class EngineWiringTest(unittest.TestCase):
         self.assertIn("drawdown", res.halt_reason)
 
 
-class LegacyLanesAreDeadTest(unittest.TestCase):
+class LegacyLanesAreDeadTest(ContractStorageCase):
     def test_no_legacy_lane_can_trade(self) -> None:
         from app import v2_live
         live = set(v2_live.PLAN) - v2_live.DISABLED_LANES
@@ -479,7 +457,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class WiringTest(unittest.TestCase):
+class WiringTest(ContractStorageCase):
     """The loop must have exactly one entry path."""
 
     def _loop_src(self):
@@ -512,8 +490,12 @@ class WiringTest(unittest.TestCase):
         import inspect
         from app import v2_live
         src = inspect.getsource(v2_live.sleeve_pass)
-        self.assertIn("sleeve=c.sleeve", src)
+        self.assertIn("paper_exchange.enqueue_house(", src)
         self.assertIn("regime=result.regime.state", src)
+        from app import paper_exchange
+        writer = inspect.getsource(paper_exchange.service_house)
+        self.assertIn("sleeve=plan['sleeve']", writer)
+        self.assertIn('regime=regime', writer)
 
     def test_sleeve_pass_routes_equity_only(self) -> None:
         import inspect
@@ -527,7 +509,7 @@ class WiringTest(unittest.TestCase):
         self.assertNotIn("close_position", inspect.getsource(v2_live.sleeve_pass))
 
 
-class PerformanceSplitTest(unittest.TestCase):
+class PerformanceSplitTest(ContractStorageCase):
     def _con(self):
         import sqlite3
         con = sqlite3.connect(":memory:")
@@ -584,7 +566,7 @@ class PerformanceSplitTest(unittest.TestCase):
         self.assertIn("BY REGIME", text)
 
 
-class DailyReportTest(unittest.TestCase):
+class DailyReportTest(ContractStorageCase):
     def _con(self):
         return PerformanceSplitTest._con(PerformanceSplitTest())
 
@@ -650,7 +632,7 @@ class DailyReportTest(unittest.TestCase):
         self.assertIn("risk_amt", inspect.getsource(v2_live.record_exit))
 
 
-class WebsiteConsistencyTest(unittest.TestCase):
+class WebsiteConsistencyTest(ContractStorageCase):
     """The website must show the same book the server holds."""
 
     def test_overview_scopes_realised_to_the_epoch(self) -> None:
@@ -739,7 +721,7 @@ class WebsiteConsistencyTest(unittest.TestCase):
         self.assertEqual(books.MAX_POSITIONS, v2_live.MAXPOS["IN"])
 
 
-class RetiredOptionsBookTest(unittest.TestCase):
+class RetiredOptionsBookTest(ContractStorageCase):
     """A closed book must not render as a live one."""
 
     def test_the_api_reports_no_live_capital_when_retired(self) -> None:
@@ -785,7 +767,7 @@ def inspect_src():
     return inspect.getsource(v2_web)
 
 
-class IdeasComeFromSleevesTest(unittest.TestCase):
+class IdeasComeFromSleevesTest(ContractStorageCase):
     def test_zero_candidate_pass_is_visible_to_the_ideas_page(self) -> None:
         from app import v2_live
         from app.sleeves.engine import PassResult

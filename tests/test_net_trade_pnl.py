@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import datetime, timezone
 
 from app import v2_live
 
 
-class NetTradePnlTest(unittest.TestCase):
+class NetTradePnlTest(ContractStorageCase):
     def test_current_upstox_nse_equity_charge_schedule(self) -> None:
         from app import costs
         turnover = 1_000.0  # Rs 500 buy and Rs 500 sell
@@ -96,7 +97,7 @@ class NetTradePnlTest(unittest.TestCase):
         self.assertAlmostEqual(net, 100.0)
 
 
-class SingleDefinitionTest(unittest.TestCase):
+class SingleDefinitionTest(ContractStorageCase):
     """All three exit paths go through ONE writer, so the cost math cannot
     drift. Previously they shared the helper but each built its own INSERT —
     which is how rows written before the helper landed still carry gross P&L,
@@ -151,7 +152,7 @@ class SingleDefinitionTest(unittest.TestCase):
 
 
 
-class BookSeparationTest(unittest.TestCase):
+class BookSeparationTest(ContractStorageCase):
     """The options book is funded separately, and the reporting must agree.
 
     INDEX_OPTIONS carries its own budget so a bad options week cannot shrink the
