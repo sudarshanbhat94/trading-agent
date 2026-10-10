@@ -42,7 +42,9 @@ reviews must still be new that day and expire at midnight. The timer refreshes
 before and during sessions. This does not grant broker execution permission.
 An isolated current-source rehearsal on 10 October covered 493 of 501 members,
 with nine restriction/action blocks and eight missing/ambiguous identities.
-Production cutover and the next actual open-session refresh require verification.
+Production cutover, current-source jobs and authenticated desktop/mobile views
+were verified on 10 October. The next actual open-session refresh and a real
+paper fill still require observation.
 Unknown rules continue to refuse orders. OFF still blocks new longs.
 Independent after-cost stock-model profitability and a relevant forward paper
 record remain unproven. This repair must not be described as a profitable or

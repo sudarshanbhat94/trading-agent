@@ -1,17 +1,30 @@
-## Paper workspace candidate — 10 October 2026
+## Current production — paper workspace and execution repairs, 10 October 2026
 
-**TRADING BEHAVIOUR CHANGED; deployment must be verified separately.** Quote
-provenance, fast pending/origin reassessment, independent subscriber risk and
-managed cash-leg paise accounting are repaired. Home/Ideas/Portfolio/Orders use
-the new product workspace; owned allocation/orders/attribution are epoch-scoped,
-and Portfolio defaults to all holdings. A sourced three-minute NSE session job
-is included. Final suite: 2,647 checks (133 skips), 106 additional functions;
-isolated automatic lifecycle/stop/target/ledger and 390px browser checks passed.
-See `docs/paper-workspace.md`. The paper-only NSE stock contract producer passed
-an actual-source isolated rehearsal: 493/501 identities, nine restricted/action
-blocks and eight quarantined identities. Deployment and next-open-session refresh
-need verification. Independent profitability remains unproven; do not call this
-a ready commercial or profitable release. Preserve epochs and the forward protocol.
+**TRADING BEHAVIOUR CHANGED; deployed with standing human authorization.**
+Production code is `6c70059`, with execution/source commits `463e3ff` and `a7a83ba`.
+Quote provenance, fast pending/origin reassessment, independent subscriber risk,
+managed cash-leg paise accounting and epoch-scoped owned portfolio/history are
+repaired. Home/Ideas/Portfolio/Orders use the new workspace. Portfolio defaults
+to all holdings. Sourced NSE session and paper-only cash-contract timers run.
+
+Exact-build CI passed Python 3.12/3.14 and dependencies. Final functional suite:
+2,647 run / 2,514 pass / 133 skip; 106 UI/research functions and the final 11 UI
+checks passed. Synthetic entry/fill/stop/target/restart/ledger checks passed;
+these are not profitability evidence. Encrypted restore verification and original
+book/account row preservation passed. Broker settings, epochs and forward protocol
+are unchanged; no broker order was submitted. Actual browser Home/Ideas/Portfolio/
+Orders passed; mobile requested 390px, Chrome observed 433px without overflow.
+
+Sudarshan capital/cash/equity remain ₹10,000, zero positions/trades/realised P&L.
+Production worker and both source jobs are healthy. 501 constituents, 363 screened,
+493 matched instrument contracts, nine restriction/action blocks, eight quarantined
+identities. Current research coverage: prices 363, earnings 362, delivery 360,
+news checks 363. No plan qualifies; OFF still blocks new long risk. A first actual
+open-session paper fill and independent stock-model profitability are unproven.
+Keep missing evidence blocked; never claim profitable or commercial certification.
+See `docs/paper-workspace.md`; private evidence:
+`var/deployment-6c70059-2026-10-10.json` and `var/workspace-production-6c70059.jpg`.
+The dated notes below describe earlier deployment states.
 
 ## Current production — actual index context and retired cash-fund removal
 
