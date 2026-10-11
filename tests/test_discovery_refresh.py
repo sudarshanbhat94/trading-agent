@@ -53,7 +53,7 @@ class DiscoveryRefreshTest(unittest.TestCase):
         self.assertEqual(json.loads(con.execute("SELECT payload FROM evidence WHERE kind='fundamentals' AND symbol='FAILED'").fetchone()[0]),old)
         attempts={s:json.loads(p)['status'] for s,p in con.execute("SELECT symbol,payload FROM evidence WHERE kind='fundamental_attempt'")}
         self.assertEqual(attempts,dict(GOOD='captured',FAILED='failed'))
-        self.assertEqual(errors,['FAILED fundamentals unavailable: ValueError'])
+        self.assertEqual(errors,['FAILED fundamentals unavailable: malformed source'])
         saved=json.loads(con.execute("SELECT payload FROM evidence WHERE kind='fundamentals' AND symbol='GOOD'").fetchone()[0])
         self.assertEqual(len(saved['earnings_periods']),3)
         self.assertEqual({r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")},{'evidence','screens'})

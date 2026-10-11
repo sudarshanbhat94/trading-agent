@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import unittest
 
 from app import books, product_status, workspace_ui
@@ -14,6 +15,23 @@ from tests import test_approved_execution as fixture_module
 
 
 class WorkspaceDataTest(unittest.TestCase):
+    def test_receipts_are_read_only_and_partial_sources_do_not_claim_complete(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'market.db'
+            with sqlite3.connect(path) as con:
+                con.execute('CREATE TABLE agent_state(key TEXT PRIMARY KEY,value TEXT)')
+                con.executemany('INSERT INTO agent_state VALUES(?,?)',[
+                    ('daily_candle_ingestion',json.dumps(dict(markets=[dict(status='complete')]))),
+                    ('market_identity_refresh',json.dumps(dict(status='partial',issues=[dict(symbol='MISSING',reason='absent')])))])
+                con.commit()
+                before=con.total_changes
+                self.assertEqual(product_status.market_data_status(path)['status'],'partial')
+                self.assertEqual(con.total_changes,before)
+                con.execute("UPDATE agent_state SET value=? WHERE key='market_identity_refresh'",(json.dumps(dict(status='complete',issues=[])),));con.commit()
+                self.assertEqual(product_status.market_data_status(path)['status'],'observed')
+                con.execute("UPDATE agent_state SET value=? WHERE key='daily_candle_ingestion'",(json.dumps(dict(markets=[])),));con.commit()
+                self.assertEqual(product_status.market_data_status(path)['status'],'partial')
+
     def test_portfolio_uses_own_positions_cash_and_epoch_instead_of_house(self):
         from unittest.mock import patch
         from app import v2_web
@@ -94,6 +112,17 @@ class WorkspaceDataTest(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which('node'),'node required')
 class WorkspaceRendererTest(unittest.TestCase):
+    def test_actual_receipts_and_safe_failure_reasons_are_visible(self):
+        data=payload();data['market_data']=dict(candles=dict(checked_at='2026-10-11',markets=[
+            dict(target='2026-10-09',fresh=491,requested=500,unresolved=4,
+                 no_reported_trade=['NOACTIVITY'],quarantined=[dict(symbol='REVIEW')],
+                 missing_symbols=[dict(symbol='MISSING',reason='<img src=x>')])]),
+            identities=dict(issues=[dict(symbol='OLDKEY',reason='independent_exchange_identity_unverified')]))
+        html=self.render(data)
+        for text in ('491 / 500','1 have no reported exchange trading','4 unresolved','1 source identities require review','OLDKEY','&lt;img'):
+            self.assertIn(text,html)
+        self.assertNotIn('<img',html)
+
     def render(self,data):
         source=(Path(__file__).resolve().parents[1]/'app/v2_web.py').read_text()
         esc=next(line for line in source.splitlines() if line.startswith('function esc(x)'))

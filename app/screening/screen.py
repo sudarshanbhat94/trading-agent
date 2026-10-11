@@ -61,7 +61,7 @@ def _features(frame, asof):
                else "no controlled entry setup"))
 
 
-def _quality(f, sector, price, asof=None):
+def _quality(f, sector, price, asof=None, bank_metrics=None):
     if f is None:
         return None, ["financial statements unavailable or stale"]
     flags, points = [], 0
@@ -75,7 +75,8 @@ def _quality(f, sector, price, asof=None):
     if not history_ok:flags.append("consecutive annual earnings history unavailable")
     if years >= 3: points += 5 * (int(f.get("positive_earnings_years") or 0)/years)
     if bank:
-        flags.append("financial-sector asset quality / capital adequacy not verified")
+        flags.append("financial-sector entry policy not validated" if bank_metrics and bank_metrics.get('complete')
+                     else "financial-sector asset quality / capital adequacy not verified")
         # Do not reward low industrial leverage or OCF for a lender.
     else:
         debt, conversion = (_finite(f.get(k)) for k in ("debt_equity", "cash_conversion"))
@@ -95,7 +96,7 @@ def _quality(f, sector, price, asof=None):
     return dict(f, points=round(points, 2)), flags
 
 
-def build(tails, eligible, sectors, con, now, asof):
+def build(tails, eligible, sectors, con, now, asof, identity_issues=()):
     features = {s: _features(g, asof) for s, g in tails.items()}
     benchmark = features.get("NIFTY")
     def matched(feat):
@@ -103,9 +104,12 @@ def build(tails, eligible, sectors, con, now, asof):
                     (benchmark['return20_start'],benchmark['return20_end']))
     universe = []
     excluded = {}
+    quarantine={r['symbol']:r['reason'] for r in identity_issues}
     for symbol in sorted(eligible or []):
         feat = features.get(symbol)
-        if not feat:
+        if symbol in quarantine:
+            excluded[symbol] = 'instrument identity requires review: '+quarantine[symbol]
+        elif not feat:
             excluded[symbol] = "missing / invalid completed-session history"
         elif feat["turnover"] < MIN_TURNOVER or feat["price"] < 50:
             excluded[symbol] = "below research liquidity / price floor"
@@ -124,9 +128,12 @@ def build(tails, eligible, sectors, con, now, asof):
         rs = feat["return20_pct"]-benchmark["return20_pct"] if matched(feat) else None
         sector_rs = peer_returns.get(sector)
         sector_rs = sector_rs-benchmark["return20_pct"] if sector_rs is not None and benchmark else None
-        f, flags = _quality(latest(con, symbol, "fundamentals", now, 14), sector, feat["price"],now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat())
+        bank_metrics=latest(con,symbol,'bank_metrics',now,7)
+        f, flags = _quality(latest(con, symbol, "fundamentals", now, 14), sector, feat["price"],now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat(),bank_metrics)
         news = latest(con, symbol, "news", now, 2/24)
         participation = latest(con, symbol, "participation", now, 7)
+        series=(participation or {}).get('reported_series',[])
+        if series and series!=['EQ']:flags.append('current NSE series '+','.join(sorted(series))+' is unsupported by the equity sleeve')
         earnings = latest(con, symbol, "earnings", now, 2)
         # Published delivery and deals are previous/completed-session evidence.
         if participation and participation.get("session") != str(asof)[:10]:
@@ -160,7 +167,7 @@ def build(tails, eligible, sectors, con, now, asof):
             metrics=dict(feat, rs_vs_nifty20_pct=round(rs, 2) if rs is not None else None,
                          sector_rs20_pct=round(sector_rs, 2) if sector_rs is not None else None,
                          rs_benchmark="NIFTY", rs_benchmark_kind="Actual Nifty 50 index"),
-            fundamentals=f, news=news, earnings=earnings, participation=participation,
+            fundamentals=f, bank_metrics=bank_metrics, news=news, earnings=earnings, participation=participation,
             flags=flags, actionable=False))
     rows.sort(key=lambda r: (bool(r["flags"]), -r["score"], r["symbol"]))
     # Valuation is a comparable-sector diagnostic, not 'cheap = buy'.

@@ -582,7 +582,7 @@ def api_overview(user: dict = Depends(require_session)):
     except Exception:
         _LOG.exception("user book stats failed")
     from .screening.status import equity_screen_status, paper_execution_scope, research_watch
-    from .product_status import paper_status, execution_data_status
+    from .product_status import paper_status, execution_data_status, market_data_status
     evidence = _evidence_screen("IN")
     stock_screen = equity_screen_status(evidence)
     with closing(_ro(V2_DB)) as status_con:
@@ -590,6 +590,7 @@ def api_overview(user: dict = Depends(require_session)):
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
                              research_watch=research_watch(evidence), paper_pipeline=pipeline,
                              execution_data=execution_data_status(),
+                             market_data=market_data_status(MAIN_DB),
                              stock_screen=stock_screen, execution_scope=paper_execution_scope(),
                              equity_options_offset=round(contamination, 2),
                              regime={"IN": _regime("IN"), "US": _regime("US")},

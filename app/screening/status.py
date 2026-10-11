@@ -80,6 +80,7 @@ def research_watch(screen, now=None, limit=10):
         coverage['earnings'] += valid_income_history(fundamental, screen.get('price_asof') or '')
         coverage['participation'] += participation.get('session') == screen.get('price_asof')
         coverage['news'] += bool((row.get('news') or {}).get('checked_at'))
+        coverage['bank_ratios'] += bool((row.get('bank_metrics') or {}).get('complete'))
         score = row.get('score')
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
             continue
@@ -93,6 +94,8 @@ def research_watch(screen, now=None, limit=10):
             evidence_pass=not bool(reason), price_asof=screen.get('price_asof')))
     ranked.sort(key=lambda r: (-r['score'], r['symbol']))
     return dict(status=status['status'], rows=ranked[:limit], coverage=dict(coverage),
+                feed_errors=list(screen.get('feed_errors') or []),
+                exclusion_counts=dict(Counter((screen.get('exclusions') or {}).values())),
                 generated_at=screen.get('generated_at'), price_asof=screen.get('price_asof'),
                 executable=False, note='Research watch only. Scores are not buy approvals or predicted returns.')
 

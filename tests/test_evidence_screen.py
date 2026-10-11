@@ -50,6 +50,16 @@ def test_missing_fundamentals_news_and_benchmark_are_not_good_quality():
     assert row["status"] == "REVIEW REQUIRED"
 
 
+def test_quarantined_identity_cannot_borrow_current_bars_as_research():
+    con=memory()
+    result=build({'TEST':prices()},{'TEST'},{},con,NOW,pd.Timestamp('2026-09-30'),
+                 [dict(symbol='TEST',reason='absent_or_ambiguous_current_master')])
+    assert result['universe_count']==1
+    assert result['liquid_count']==0
+    assert result['equities']==[]
+    assert 'absent_or_ambiguous_current_master' in result['exclusions']['TEST']
+
+
 def test_volume_average_excludes_signal_bar_and_corrupt_price_is_rejected():
     frame = prices()
     frame.loc[frame.index[-1], "volume"] *= 3

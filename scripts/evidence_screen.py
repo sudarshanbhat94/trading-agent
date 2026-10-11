@@ -93,14 +93,18 @@ def capture_statements(http, con, symbols, errors, limit, budget_seconds=480, mi
                 outcome = 'captured'
                 try:
                     data = task.result()
-                    store.save(con,symbol,'fundamentals','Yahoo Finance financial-statement timeseries',data,seen.isoformat(),seen)
+                    store.save(con,symbol,'fundamentals',data.get('source_name','Yahoo Finance financial-statement timeseries'),data,seen.isoformat(),seen)
                     captured += 1
                 except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
                     outcome = 'failed'
-                    errors.append(symbol+' fundamentals unavailable: '+type(exc).__name__)
+                    # Public parser messages are safe, request URLs/headers are
+                    # not. Keep the exact data failure instead of just ValueError.
+                    failure = str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__
+                    errors.append(symbol+' fundamentals unavailable: '+failure)
                     if isinstance(exc,httpx.HTTPStatusError) and exc.response.status_code in (429,503):
                         paused = True
-                store.save(con,symbol,'fundamental_attempt','screen refresh',dict(status=outcome),seen.isoformat(),seen)
+                store.save(con,symbol,'fundamental_attempt','screen refresh',dict(status=outcome,
+                    reason=failure if outcome=='failed' else None),seen.isoformat(),seen)
     return dict(requested=submitted,captured=captured,deferred=len(symbols)-submitted,source_paused=paused)
 
 
@@ -111,7 +115,30 @@ def _rows(con, sql, params=()):
         return []
 
 
-def capture_participation(main, evidence, symbols, asof, now, fresh_delivery=None, fresh_flows=None):
+def capture_bank_metrics(http,con,symbols,sectors,now,errors,limit=8,budget_seconds=120):
+    """Collect lender facts without promoting a different entry policy."""
+    from app.screening.official_financials import fetch_bank_metrics
+    count=0;deadline=monotonic()+budget_seconds
+    for symbol in symbols:
+        if not any(s in sectors.get(symbol,'').lower() for s in ('financial','bank')):continue
+        if store.latest(con,symbol,'bank_metrics',now,7):continue
+        attempt=store.latest(con,symbol,'bank_metric_attempt',now,1)
+        if attempt and (now-store.timestamp(attempt['known_at'])).total_seconds()<3600:continue
+        if count>=limit or monotonic()>=deadline:break
+        count+=1;reason=None
+        try:
+            data=fetch_bank_metrics(http,symbol,datetime.now(timezone.utc))
+            seen=datetime.now(timezone.utc)
+            store.save(con,symbol,'bank_metrics','NSE official bank XBRL',data,seen.isoformat(),seen)
+        except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
+            reason=str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__
+        seen=datetime.now(timezone.utc)
+        store.save(con,symbol,'bank_metric_attempt','NSE official bank XBRL',
+            dict(status='failed' if reason else 'captured',reason=reason),seen.isoformat(),seen)
+    return count
+
+
+def capture_participation(main, evidence, symbols, asof, now, fresh_delivery=None, fresh_flows=None, session_records=None):
     stamp = str(asof)[:10]
     for symbol in symbols:
         rows = _rows(main, "SELECT date,delivery_pct FROM delivery_data WHERE symbol=? "
@@ -124,7 +151,9 @@ def capture_participation(main, evidence, symbols, asof, now, fresh_delivery=Non
         deals = _rows(main, "SELECT date,side,quantity,price FROM bulk_deals "
                       "WHERE symbol=? AND date<=? AND date>=?", (symbol, stamp,
                       (asof-timedelta(days=7)).date().isoformat()))
-        payload = dict(session=stamp if current is not None else None,
+        series=[series for (s,series) in (session_records or {}) if s==symbol]
+        payload = dict(session=stamp if current is not None or series else None,
+            reported_series=series,
             delivery_pct=current if current is not None and 0 <= current <= 100 else None,
             delivery_avg20_pct=sum(valid)/len(valid) if len(valid) == 20 else None,
             bulk_deals=[dict(session=d, side=s, quantity=q, price=p) for d,s,q,p in deals],
@@ -214,6 +243,9 @@ def run(args):
         refresh_membership(args.reference_db)
         now = datetime.now(timezone.utc)
         eligible, _ = snapshot(now, args.reference_db)
+        identity_rows=_rows(main,"SELECT value FROM agent_state WHERE key='market_identity_refresh'")
+        identity_issues=json.loads(identity_rows[0][0]).get('issues',[]) if identity_rows else []
+        quarantined={r['symbol'] for r in identity_issues}
         tails, _ = load_panel(main, "IN", topn=3000, min_bars=127)
         cutoff = now.astimezone(providers.IST).date()
         if now.astimezone(providers.IST).hour < 16: cutoff -= timedelta(days=1)
@@ -227,6 +259,7 @@ def run(args):
         wanted = []
         features = {}
         for s in sorted(eligible or []):
+            if s in quarantined:continue
             f = _features(tails[s], asof) if s in tails else None
             if f and f["turnover"] >= MIN_TURNOVER and f["price"] >= 50:
                 wanted.append(s);features[s]=f
@@ -248,16 +281,17 @@ def run(args):
                 sector = store.latest(con, symbol, "sector", seen, 7)
                 if sector: sectors[symbol] = sector["industry"]
             try:
-                delivery = providers.fetch_delivery(http, asof)
+                session_records=providers.fetch_cash_session(http,asof)
+                delivery={s:r['delivery_pct'] for (s,series),r in session_records.items() if series=='EQ' and r['delivery_pct'] is not None}
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-                delivery = None
+                delivery = None;session_records=None
                 errors.append("NSE delivery unavailable: "+type(exc).__name__)
             try:
                 flows = providers.fetch_flows(http, asof)
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
                 flows = None
                 errors.append("NSE current-session flows unavailable: "+type(exc).__name__)
-            capture_participation(main, con, wanted, asof, now, delivery, flows)
+            capture_participation(main, con, wanted, asof, now, delivery, flows,session_records)
             capture_events(http, con, wanted, now, errors)
             capture_options(http, con, now, errors)
             now = datetime.now(timezone.utc)
@@ -266,8 +300,9 @@ def run(args):
             previous_attempts = {s:r for s,r in previous_attempts.items() if r}
             missing = statement_queue(wanted,cached,features,previous_attempts,now)
             refresh = capture_statements(http,con,missing,errors,args.fundamentals_limit)
+            refresh['bank_requests']=capture_bank_metrics(http,con,wanted,sectors,datetime.now(timezone.utc),errors)
         now = datetime.now(timezone.utc)
-        result = build(tails, eligible, sectors, con, now, asof)
+        result = build(tails, eligible, sectors, con, now, asof,identity_issues)
         result["feed_errors"] = errors
         result['fundamentals_refresh'] = refresh
         result["price_stale"] = (now.astimezone(providers.IST).date()-asof.date()).days > 4

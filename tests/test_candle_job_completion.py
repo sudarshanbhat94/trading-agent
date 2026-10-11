@@ -35,6 +35,7 @@ class CandleJobCompletionTest(unittest.TestCase):
         provider=Mock();provider.get_candles=AsyncMock(side_effect=responses)
         with patch.object(ingest,'build_market_data_provider',return_value=provider), \
              patch.object(ingest,'expected_session',return_value='2026-10-06'), \
+             patch.object(ingest,'_session_records',side_effect=ValueError('test source unavailable')), \
              patch.object(ingest,'_held',return_value=held),patch.object(ingest.time,'sleep'):
             result=ingest.ingest('IN','upstox',self.db,Settings(),pause=0,max_passes=passes)
         return result,provider
@@ -67,6 +68,8 @@ class CandleJobCompletionTest(unittest.TestCase):
         for outcome in ({'status':'partial'},RuntimeError('synthetic error')):
             options=Mock(market='IN',limit=0)
             with patch.object(ingest.argparse.ArgumentParser,'parse_args',return_value=options), \
+                 patch('app.market_identity.refresh',return_value={'status':'complete','issues':[]}), \
+                 patch.object(ingest,'_held',return_value=set()), \
                  patch.object(ingest,'Database',return_value=self.db),patch.object(self.db,'runtime_settings',return_value={}), \
                  patch.object(ingest,'ingest',**({'side_effect':outcome} if isinstance(outcome,Exception) else {'return_value':outcome})):
                 self.assertEqual(ingest.main(),2)
@@ -74,6 +77,30 @@ class CandleJobCompletionTest(unittest.TestCase):
              patch.object(ingest,'Database',return_value=self.db),patch.object(self.db,'runtime_settings',return_value={}), \
              patch.object(ingest,'MARKETS',{'IN':'upstox'}),patch.object(ingest,'ingest') as fetch:
             self.assertEqual(ingest.main(),2);fetch.assert_not_called()
+
+
+    def test_daily_job_requests_only_full_daily_history(self):
+        settings=ingest._market_settings(Settings(),'IN','upstox')
+        self.assertEqual(settings.upstox_candle_interval,'day')
+        self.assertEqual(settings.upstox_candle_lookback_days,420)
+        self.assertFalse(settings.enable_upstox_multi_timeframe_candles)
+
+    def test_incomplete_exposure_inventory_refuses_identity_mutation(self):
+        from scripts.v2_quote_feed import _held
+        with self.assertRaisesRegex(ValueError,'Complete exposure inventory'):
+            _held(self.path,strict=True)
+
+    def test_dated_no_trade_report_never_excuses_unknown_volume_or_held_prices(self):
+        records={(str(i),'EQ'):dict(session='2026-10-06',volume=10) for i in range(1000)}
+        for symbol,volume in [('ZERO',0),('UNKNOWN',None),('BAD',-1),('TRADED',20)]:
+            records[symbol,'EQ']=dict(session='2026-10-06',volume=volume)
+        missing={'ABSENT','ZERO','UNKNOWN','BAD','TRADED','HELD'}
+        self.assertEqual(ingest._no_reported_trade(records,missing,{'HELD'},'2026-10-06'),{'ABSENT','ZERO'})
+        records['ZERO','BE']=dict(session='2026-10-06',volume=1)
+        self.assertNotIn('ZERO',ingest._no_reported_trade(records,missing,set(),'2026-10-06'))
+        wrong_day={k:dict(v,session='2026-10-05') for k,v in records.items()}
+        for broken in ({},wrong_day):
+            with self.assertRaises(ValueError):ingest._no_reported_trade(broken,missing,set(),'2026-10-06')
 
 
 if __name__=='__main__':unittest.main()

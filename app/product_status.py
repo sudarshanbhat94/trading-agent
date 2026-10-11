@@ -1,7 +1,24 @@
 """Owned, read-only paper lifecycle status for the product workspace."""
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
+
+
+def market_data_status(path):
+    """Last ingestion receipts, without opening a write transaction."""
+    result=dict(status='unavailable',candles=None,identities=None)
+    try:
+        with closing(sqlite3.connect('file:'+str(path)+'?mode=ro',uri=True,timeout=3)) as con:
+            values={k:json.loads(v) for k,v in con.execute("SELECT key,value FROM agent_state WHERE key IN ('daily_candle_ingestion','market_identity_refresh')")}
+        result['candles']=values.get('daily_candle_ingestion')
+        identity=values.get('market_identity_refresh')
+        if identity:result['identities']={k:identity.get(k) for k in ('status','observed_at','updated','added','issues')}
+        if result['candles']:
+            markets=result['candles'].get('markets',[])
+            result['status']='observed' if markets and identity and identity.get('status')=='complete' and all(r.get('status')=='complete' for r in markets) else 'partial'
+    except (sqlite3.Error,ValueError,TypeError):pass
+    return result
 
 
 def execution_data_status(now=None):

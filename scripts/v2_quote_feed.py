@@ -83,7 +83,7 @@ def _exposure_warning(value):
         _last_exposure_warning = value
 
 
-def _held(path=None):
+def _held(path=None, *, strict=False):
     """Symbols we currently hold, per market — the 'hot' set polled every tick so
     open-position prices and P&L move in near real time."""
     out = {m: set() for m in MARKETS}
@@ -110,8 +110,11 @@ def _held(path=None):
             except sqlite3.Error:
                 missing.append(scope)
         _exposure_warning('unavailable inventory scopes: ' + ','.join(missing) if missing else None)
+        if missing and strict:
+            raise ValueError('Complete exposure inventory required for identity changes')
     except (sqlite3.Error, OSError):
         _exposure_warning('inventory database unavailable')
+        if strict:raise ValueError('Exposure inventory unavailable') from None
     finally:
         if c is not None:
             c.close()

@@ -43,7 +43,7 @@ def _held(market):
     """Symbols we currently hold — must always be ingested fresh, regardless of
     where they fall in the (alphabetical) universe order."""
     from scripts.v2_quote_feed import _held as exposure
-    return exposure(path=V2_DB).get(market, set())
+    return exposure(path=V2_DB,strict=True).get(market, set())
 
 
 def _daily_only(candles_by_symbol, target=None):
@@ -69,10 +69,11 @@ def _market_settings(settings, market, prov):
     `:day`), and turn off multi-timeframe so we don't also pull heavy intraday."""
     s = replace(settings, market_region=market, market_data_provider=prov)
     if prov == "upstox":
-        # multi-timeframe ON yields the full 420-day :day series (the engine's
-        # source); we discard the 30min/week bars on upsert via _daily_only.
-        s = replace(s, upstox_candle_interval="30minute",
-                    enable_upstox_multi_timeframe_candles=True,
+        # A primary daily interval has its own lookback. Fetching three
+        # timeframes here previously discarded most of the network work.
+        s = replace(s, upstox_candle_interval="day",
+                    upstox_candle_lookback_days=420,
+                    enable_upstox_multi_timeframe_candles=False,
                     upstox_daily_candle_lookback_days=420)
     return s
 
@@ -172,7 +173,30 @@ def _fetch_upsert(provider, db, batch, target=None):
     return {str(s).upper() for s in daily}, n
 
 
-def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_passes=3):
+def _session_records(target):
+    import httpx
+    from app.screening.providers import fetch_cash_session
+    from app.nse_cash_contract_feed import HEADERS
+    with httpx.Client(timeout=20,headers=HEADERS,follow_redirects=False) as http:
+        return fetch_cash_session(http,datetime.fromisoformat(target))
+
+
+def _no_reported_trade(records, missing, held, target):
+    """Only a complete, dated report can explain an absent non-held bar.
+
+    A present row with an unknown/negative volume is not evidence of no trade.
+    Holdings always remain unresolved until an actual current price is received.
+    """
+    if len(records)<1000 or any(r.get('session')!=target for r in records.values()):
+        raise ValueError('Incomplete or incorrectly dated exchange session report')
+    volumes={}
+    for (symbol,_),row in records.items():
+        volumes.setdefault(symbol,[]).append(row.get('volume'))
+    return {symbol for symbol in missing-held if symbol not in volumes
+            or all(v==0 for v in volumes[symbol])}
+
+
+def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_passes=3,quarantine=()):
     """Provider bursts get silently truncated (a 150-symbol batch returns ~70), so:
     small batches + skip already-fresh symbols + RETRY PASSES over the stale tail
     until coverage converges. Held positions are always done first."""
@@ -185,6 +209,9 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
     missing_held = held - set(all_rows)
     present = {str(r.get('symbol','')).upper() for r in rows}
     rows += [all_rows[s] for s in sorted(held - present - missing_held)]
+    universe_requested=len(rows)
+    blocked={r['symbol']:r['reason'] for r in quarantine}
+    rows=[r for r in rows if r['symbol'] not in blocked or r['symbol'] in held]
     if not rows:
         print(f"[{market}] no universe rows", flush=True)
         return dict(market=market,status='unavailable',target=target,requested=0,fresh=0,missing_held=len(missing_held))
@@ -208,6 +235,7 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
     print(f"[{market}] target={target} stored={before} universe={len(rows)} "
           f"already-fresh={len(rows)-len(todo)} to-fetch={len(todo)}", flush=True)
     covered = set()
+    failures = {}
     for pass_no in range(1, max_passes + 1):
         if not todo:
             break
@@ -219,9 +247,21 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
             except Exception as exc:
                 print(f"[{market}] pass{pass_no} batch {b} error: {type(exc).__name__}", flush=True)
                 got, n = set(), 0
+                for row in batch:
+                    failures[row['symbol']] = dict(reason='request_failed',error_type=type(exc).__name__)
             # History returned != current-session coverage. Retry the actual
             # stale tail even if the provider returned years of older bars.
             got = _fresh_symbols(db,market,target,{str(r['symbol']).upper() for r in batch})
+            diagnostics = getattr(provider,'last_candle_diagnostics',{})
+            diagnostics = diagnostics if isinstance(diagnostics,dict) else {}
+            missing_keys = set(diagnostics.get('missing_instrument_keys') or [])
+            for row in batch:
+                symbol = row['symbol']
+                if symbol in got:
+                    failures.pop(symbol,None)
+                else:
+                    failures.setdefault(symbol,dict(reason='instrument_key_unavailable' if symbol in missing_keys
+                        else 'target_session_bar_unavailable', target=target))
             candles_done += n
             covered |= got
             missed.extend(r for r in batch if str(r.get("symbol", "")).upper() not in got)
@@ -243,9 +283,22 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
               f"session); the next run should pick it up.", flush=True)
     requested = {str(r['symbol']).upper() for r in rows}
     actual_fresh = requested & _fresh_symbols(db,market,target)
-    return dict(market=market,status='complete' if actual_fresh==requested and not missing_held else 'partial',
+    no_reported_trade=set();report_status='not_needed'
+    if market=='IN' and requested-actual_fresh-held:
+        try:
+            records=_session_records(target)
+            no_reported_trade=_no_reported_trade(records,requested-actual_fresh,held,target)
+            report_status='official_dated_report'
+        except Exception as exc:report_status='unavailable:'+type(exc).__name__
+    missing=requested-actual_fresh-no_reported_trade
+    return dict(market=market,status='complete' if not missing and not missing_held else 'partial',
                 target=target,requested=len(requested),fresh=len(actual_fresh),missing=len(requested-actual_fresh),
-                missing_held=len(missing_held),candles_written=candles_done)
+                missing_held=len(missing_held),candles_written=candles_done,
+                scope='current verified ingestion identities; source quarantine is separate',universe_requested=universe_requested,
+                quarantined=[dict(symbol=s,reason=blocked[s]) for s in sorted(blocked)],
+                no_reported_trade=sorted(no_reported_trade),unresolved=len(missing),session_report=report_status,
+                missing_symbols=[dict(symbol=s,**failures.get(s,dict(reason='target_session_bar_unavailable',target=target)))
+                                 for s in sorted(missing)])
 
 
 def main():
@@ -264,12 +317,22 @@ def main():
         try:
             if m not in MARKETS:
                 results.append(dict(market=m,status='unsupported')); continue
-            results.append(ingest(m, MARKETS[m], db, settings, limit=a.limit))
+            if m=='IN':
+                from app.market_identity import refresh
+                try:identities=refresh(db,_held(m))
+                except Exception as exc:identities=dict(status='unavailable',error_type=type(exc).__name__,issues=[])
+                print(json.dumps(dict(identity_refresh=identities),sort_keys=True),flush=True)
+            result=ingest(m, MARKETS[m], db, settings, limit=a.limit,quarantine=identities.get('issues',[]) if m=='IN' else ())
+            if m=='IN':
+                result['identity_status']=identities['status']
+                if identities['status']=='unavailable':result['status']='partial'
+            results.append(result)
         except Exception as exc:
             print(f"[{m}] ingest failed: {type(exc).__name__}", flush=True)
             results.append(dict(market=m,status='failed',error_type=type(exc).__name__))
     print("candle ingest done", flush=True)
     print(json.dumps(dict(markets=results),sort_keys=True))
+    db.set_state('daily_candle_ingestion',dict(checked_at=datetime.now(timezone.utc).isoformat(),markets=results))
     # Partial history is retained, but a green job must mean current coverage.
     return 0 if results and all(r['status']=='complete' for r in results) else 2
 

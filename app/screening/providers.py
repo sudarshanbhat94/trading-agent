@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
 from .financials import fiscal_date, finite_amount, consecutive_periods
+import httpx
 
 IST = ZoneInfo("Asia/Kolkata")
 NSE = "https://www.nseindia.com"
@@ -167,10 +168,18 @@ def statements(payload, now):
 def fetch_statements(http, symbol, now):
     ticker = symbol + ".NS"
     url = "https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/" + ticker
-    response = http.get(url, params=dict(type=",".join(TYPES),
-        period1=int((now - timedelta(days=5*366)).timestamp()), period2=int(now.timestamp())))
-    response.raise_for_status()
-    return statements(response.json(), now)
+    try:
+        response = http.get(url, params=dict(type=",".join(TYPES),
+            period1=int((now - timedelta(days=5*366)).timestamp()), period2=int(now.timestamp())))
+        response.raise_for_status()
+        return statements(response.json(), now)
+    except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
+        from .official_financials import fetch_statements as official
+        try:
+            return official(http,symbol,now)
+        except (httpx.HTTPError,ValueError,KeyError,TypeError) as fallback:
+            safe=lambda e: str(e)[:140] if isinstance(e,ValueError) else type(e).__name__
+            raise ValueError('Secondary statements: '+safe(exc)+'; official fallback: '+safe(fallback)) from None
 
 
 def fetch_chain(http, symbol, now):
@@ -199,6 +208,12 @@ def fetch_chain(http, symbol, now):
 
 
 def fetch_delivery(http, session):
+    return {symbol:r['delivery_pct'] for (symbol,series),r in fetch_cash_session(http,session).items()
+            if series=='EQ' and r['delivery_pct'] is not None}
+
+
+def fetch_cash_session(http, session):
+    """Dated exchange records, including unsupported series and explicit blanks."""
     url = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_"+session.strftime("%d%m%Y")+".csv"
     response = http.get(url)
     response.raise_for_status()
@@ -208,14 +223,17 @@ def fetch_delivery(http, session):
     out = {}
     for raw in reader:
         row = {k.strip():str(v or "").strip() for k,v in raw.items() if k}
-        if row.get("SERIES") != "EQ": continue
         if datetime.strptime(row["DATE1"], "%d-%b-%Y").date() != session.date():
             raise ValueError("delivery report returned a different session")
-        try:
-            pct = float(row["DELIV_PER"])
-            if math.isfinite(pct) and 0 <= pct <= 100: out[row["SYMBOL"]] = pct
-        except ValueError:
-            continue
+        try:pct=float(row['DELIV_PER'])
+        except ValueError:pct=None
+        if pct is not None and (not math.isfinite(pct) or not 0<=pct<=100):pct=None
+        try:volume=finite_amount(row.get('TTL_TRD_QNTY'))
+        except ValueError:volume=None
+        key=(row['SYMBOL'],row['SERIES'])
+        data=dict(series=row['SERIES'],delivery_pct=pct,volume=volume,session=session.strftime('%Y-%m-%d'))
+        if key in out and out[key]!=data:raise ValueError('Conflicting session records')
+        out[key]=data
     if not out: raise ValueError("empty delivery report")
     return out
 
@@ -227,7 +245,7 @@ def fetch_sectors(http):
     if not reader.fieldnames or not {"Symbol", "Industry", "Series"} <= set(reader.fieldnames):
         raise ValueError("sector constituent columns changed")
     out = {row["Symbol"].strip().upper():row["Industry"].strip() for row in reader
-           if row.get("Series") == "EQ" and row.get("Symbol") and row.get("Industry")}
+           if row.get("Series") in ("EQ","BE") and row.get("Symbol") and row.get("Industry")}
     if not 400 <= len(out) <= 600: raise ValueError("incomplete sector constituent file")
     return out
 
