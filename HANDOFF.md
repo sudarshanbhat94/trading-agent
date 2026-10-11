@@ -1,3 +1,46 @@
+## Current production — data-source repair, 11 October 2026
+
+**TRADING BEHAVIOUR CHANGED through corrected data inputs; deployed under standing human authorization.**
+Production code is `343d4e0` (initial data repair `60bdd48`). Two exact-build CI
+runs passed Python 3.12/3.14 and dependency checks. The final initial local suite
+ran 2,667 checks / 2,534 pass / 133 skip plus 107 research/UI functions; the alias
+follow-up passed focused checks and exact-build CI. Do not describe skipped checks
+or passing infrastructure tests as profitability or live certification.
+
+A coordinated quiesced encrypted backup passed authenticated restore-digest
+verification; original paper/account rows were unchanged before writers resumed.
+Post-resume checks preserved all immutable financial/account tables, book epochs,
+settings, broker files and forward protocol. Only worker leases and risk-observation
+session/timestamps changed during normal runtime. Sudarshan remains ₹10,000
+capital/cash/equity, zero positions, pending orders, trades and realised P&L;
+peak equity remains ₹10,000. No new broker order was submitted.
+
+Actual production collection repaired 16 changed equity keys, archived 4,620 old
+market rows and added five verified EQ constituents. EQ/D1 aliases resolve through
+independent NSE ISIN/series evidence. Daily collection targets October 9: 2,609
+current bars / 2,619 verified ingestion identities, ten names with no reported
+trading in the dated full NSE report, zero unresolved bars in that scope. There
+are still 48 separate source quarantines across the broader ingestion/reference
+universe; overall data status is explicitly partial, not a green certification.
+The next pre-open retry is 08:10 IST. Production writers/timers resumed.
+
+The refreshed screen retains all 501 constituents: 364 meet price/liquidity/history
+screening prerequisites, 127 fail liquidity/price floors, four require identity
+review and six lack sufficient valid history. Zero buy plans qualify. Of screened
+rows, 316 lack a controlled setup; financial-sector rules/evidence remain blocked,
+three BE-series names have unavailable delivery, and two lack enough sector peers.
+The official Nestlé FY2026 fallback is now captured in production; only two
+comparable annual periods exist, so the three-year strategy requirement still
+rejects it. No strategy threshold, regime gate or broker setting was changed.
+
+Public website returns 200 and serves the new data-health renderer. The shipped
+renderer passed on actual production book/receipt values. Authenticated visual
+verification is blocked by the existing browser's expired session (sign-in shown);
+do not claim browser-visible owned balances were verified in this pass.
+See `docs/market-data-repair.md`. Private evidence:
+`var/deployment-343d4e0-2026-10-11.json` and
+`var/data-repair-production-render.html`. The dated notes below are prior states.
+
 ## Current production — paper workspace and execution repairs, 10 October 2026
 
 **TRADING BEHAVIOUR CHANGED; deployed with standing human authorization.**
