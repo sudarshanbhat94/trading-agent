@@ -43,6 +43,12 @@ class MarketIdentityTest(unittest.TestCase):
         for nse,broker in (([],self.broker),(self.nse,self.broker*2)):
             self.assertEqual(reconcile(self.db,nse,broker,{'STOCK'},set(),NOW)['updated'],[])
 
+    def test_exchange_isin_and_series_resolve_separate_d1_alias(self):
+        broker=self.broker+[dict(self.broker[0],instrument_type='D1',isin='INE222A01019',instrument_key='NSE_EQ|INE222A01019')]
+        result=reconcile(self.db,self.nse,broker,{'STOCK'},set(),NOW)
+        self.assertEqual(result['updated'],['STOCK'])
+        self.assertEqual(result['issues'],[])
+
     def test_missing_eq_member_is_added_but_not_a_special_series(self):
         nse=[dict(self.nse[0],SYMBOL='NEWSTOCK')]
         broker=[dict(self.broker[0],trading_symbol='NEWSTOCK')]

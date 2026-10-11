@@ -42,7 +42,16 @@ def reconcile(db,nse_rows,broker_rows,members,held,now,*,apply=True):
     """Pure source selection precedes a single atomic market-data transaction."""
     if now.tzinfo is None:raise ValueError('Aware identity capture time required')
     nse=unique(nse_rows,lambda r:str(r.get('SYMBOL','')).strip())
-    broker=unique([r for r in broker_rows if r.get('segment')=='NSE_EQ'],lambda r:r.get('trading_symbol'))
+    # A symbol may also have a D1/other-series broker alias. The independent
+    # exchange ISIN and series can identify EQ without guessing between aliases.
+    candidates=[]
+    for r in broker_rows:
+        if r.get('segment')!='NSE_EQ':continue
+        n=nse.get(r.get('trading_symbol'))
+        if n and (r.get('isin')!=str(n.get('ISIN NUMBER','')).strip()
+                  or r.get('instrument_type')!=str(n.get('SERIES','')).strip()):continue
+        candidates.append(r)
+    broker=unique(candidates,lambda r:r.get('trading_symbol'))
     existing={r['symbol']:r for r in db.get_universe(enabled_only=False,market_region='IN')}
     other_symbols={r['symbol'] for r in db.get_universe(enabled_only=False,market_region='US')}
     issues=[];updates=[];added=[];verified=[]
