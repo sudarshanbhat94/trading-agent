@@ -8,7 +8,7 @@ from .. import v2_engine as eng
 _LOG = logging.getLogger('openstocks.sleeves.regime')
 BREADTH_ON = .45
 BREADTH_NEUTRAL = .35
-MODEL_VERSION = 'actual-index-breadth-v1'
+MODEL_VERSION = 'actual-index-context-v2'
 
 @dataclass
 class RegimeView:
@@ -21,7 +21,9 @@ class RegimeView:
     diagnostics: dict = field(default_factory=dict)
 
     @property
-    def allows_equity_longs(self): return self.state in ('ON','NEUTRAL')
+    def allows_equity_longs(self):
+        from ..market_entry_policy import allows_paper_entry
+        return allows_paper_entry(self.state)
     @property
     def full_system(self): return self.state=='ON'
 
@@ -53,7 +55,7 @@ class RegimeGate:
             if len(values)<self.lookback or not values.index.is_unique or not all(math.isfinite(v) and v>0 for v in values):
                 raise ValueError('invalid completed market history')
         except (KeyError,TypeError,ValueError,AttributeError):
-            raw='OFF';strong=False;source='market evidence unavailable'
+            raw='UNAVAILABLE';strong=False;source='market evidence unavailable'
         state=raw
         reason=source+' completed-session trend'
         if raw=='ON' and breadth<BREADTH_ON:

@@ -229,8 +229,9 @@ def service(con, catalogue, quotes, *, regime, now=None):
                     outcomes.append(_terminal(con,row,'cancelled','Origin house position already closed',now));continue
             if now >= executable_quotes.moment(plan['expires_at']):
                 outcomes.append(_terminal(con, row, 'expired', 'Approved entry window expired', now)); continue
-            if regime not in {'ON', 'NEUTRAL'} or plan['sleeve']=='index_directional' and regime!='ON':
-                outcomes.append(_terminal(con, row, 'rejected', 'Current regime blocks new equity longs', now)); continue
+            from .market_entry_policy import allows_paper_entry
+            if not allows_paper_entry(regime, plan['sleeve']):
+                outcomes.append(_terminal(con, row, 'rejected', 'Current market context unavailable or route not permitted', now)); continue
             if plan.get('approval_kind') == 'house-mirror' and plan['sleeve'] == 'quality_momentum':
                 try:
                     from .screening import automation
@@ -334,8 +335,8 @@ def enqueue_house(con, catalogue, allocation, quotes, *, regime, now):
     from .costs import entry_charge
     from decimal import Decimal, ROUND_FLOOR
     candidate = allocation.candidate
-    if regime not in {'ON','NEUTRAL'} or candidate.sleeve not in PRODUCTION_SLEEVES or candidate.instrument != 'EQ' or \
-            candidate.sleeve=='index_directional' and regime!='ON':
+    from .market_entry_policy import allows_paper_entry
+    if not allows_paper_entry(regime, candidate.sleeve) or candidate.sleeve not in PRODUCTION_SLEEVES or candidate.instrument != 'EQ':
         raise ValueError('Unsupported or unpromoted house proposal')
     if not getattr(SLEEVES, candidate.sleeve).enabled:
         raise ValueError('House paper sleeve feature flag is disabled')
@@ -440,8 +441,8 @@ def service_house(con, catalogue, quotes, *, regime, now):
                 outcomes.append(_terminal(con,row,'cancelled','House epoch changed',now));continue
             if now>=executable_quotes.moment(plan['expires_at']):
                 outcomes.append(_terminal(con,row,'expired','House proposal expired',now));continue
-            if regime not in {'ON','NEUTRAL'} or plan['sleeve'] not in PRODUCTION_SLEEVES or \
-                    plan['sleeve']=='index_directional' and regime!='ON' or not getattr(SLEEVES, plan['sleeve']).enabled:
+            from .market_entry_policy import allows_paper_entry
+            if not allows_paper_entry(regime, plan['sleeve']) or plan['sleeve'] not in PRODUCTION_SLEEVES or not getattr(SLEEVES, plan['sleeve']).enabled:
                 outcomes.append(_terminal(con,row,'rejected','Regime or production sleeve gate blocks entry',now));continue
             if plan['sleeve'] == 'quality_momentum':
                 try:

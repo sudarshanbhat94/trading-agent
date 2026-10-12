@@ -62,7 +62,7 @@ def _net(entry, target, qty):
     return sell-buy-round_trip(buy,sell,"D")
 
 
-def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
+def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _stage='entry'):
     now = now or datetime.now(timezone.utc)
     allocator = RiskManager(replace(SLEEVES,capital=book.capital))
     marks = fresh_quotes(quotes or {},now)
@@ -74,9 +74,12 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
         if book_error:
             rejected.append(dict(symbol=row.get("symbol"), reason=book_error))
             continue
-        reason = reject_reason(row, screen, now)
+        reason = reject_reason(row, screen, now, stage=_stage)
         if reason:
             rejected.append(dict(symbol=row.get("symbol"),reason=reason))
+            continue
+        if _stage == 'watch' and not reject_reason(row, screen, now):
+            # It belongs in Entry plans already, not twice in the same desk.
             continue
         m = row.get("metrics") or {}
         try:
@@ -138,6 +141,12 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
             target_method="T1/T2/T3 = 2/3/4 times price risk from the upper entry price; scenarios, not price forecasts",
             actionable=False,execution="Conditional research preview; automatic paper entries use a separate confirmed trial plan",
             evidence=row))
+        if _stage == 'watch':
+            rows[-1].update(model_version='stock-research-watch-v1', state='RESEARCH WATCH',
+                entry_blocker=reject_reason(row, screen, now) or 'Rebound confirmation and later executable quote required',
+                why=f"Verified profitable business, positive stock and sector relative strength; volume {float(m['relative_volume']):.1f}x. Entry checks have not passed.",
+                execution='Research candidate only; cannot submit an order or authorise automation',
+                buy_condition='Wait for all entry participation and setup checks, then a new frozen plan and observed rebound confirmation')
     rows.sort(key=lambda r:(-r["score"],r["symbol"]))
     selected, sectors = [], set()
     maximum = min(max(limit,0),SELECTION_POLICY["max_ideas"])
@@ -158,3 +167,12 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3):
         rejected=rejected,discovery_health=discovery_health(screen,rejected,now),
         generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
         note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Automatic paper entries require confirmed trial plans; independent validation remains required before live use.")
+
+
+def research_candidates(screen, book, quotes=None, now=None, book_error=''):
+    """Show strong businesses awaiting a setup without manufacturing buy plans.
+
+    Shares/levels are conditional scenarios under the same account allocator.
+    These rows are never published into the executable/forward plan journals.
+    """
+    return shortlist(screen, book, quotes, now, book_error, _stage='watch')['ideas']

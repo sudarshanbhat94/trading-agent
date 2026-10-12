@@ -27,11 +27,12 @@ function wsWatch(w){
 function wsPipeline(d){
  var s=d.stock_screen||{},p=d.paper_pipeline||{},o=p.orders||{},regime=(d.regime_state||{}).IN||'UNKNOWN';
  var health=(d.markets||[]).find(function(x){return x.market==='IN';})||{},risk=health.readiness||{};
- var paused=regime==='OFF'||regime==='UNKNOWN'||risk.halted,watch=d.research_watch||{},c=watch.coverage||{},source=d.execution_data||{};
- var why=risk.halted?risk.reason:regime==='OFF'?'Market trend is below the long-entry gate. Screening continues; new long orders wait.':regime==='UNKNOWN'?'A current completed-session regime reading is required.':'Qualified plans still require rebound confirmation, fresh exchange data and account risk approval.';
+ var known=['ON','NEUTRAL','OFF'].includes(regime),paused=!known||risk.halted,watch=d.research_watch||{},c=watch.coverage||{},source=d.execution_data||{};
+ var label=({ON:'Supportive market',NEUTRAL:'Mixed market',OFF:'Defensive market'})[regime]||'Market data unavailable';
+ var why=risk.halted?risk.reason:!known?'Current completed-session market evidence is required.':'Paper stocks are assessed individually. A weak index does not veto every stock. Each entry still needs quality, participation, rebound confirmation, fresh exchange data and account risk approval.';
  return '<section class=ws-card><div class=ws-head><div><div class=ws-kicker>Screen → confirm → order → manage</div><h2>Paper automation</h2></div><span class="ws-pill '+(paused?'warn':'')+'">'+(paused?'Entries waiting':'Selective entries')+'</span></div><div class=ws-stages>'
  +[['Stocks checked',s.screened_count],['Evidence passes',s.status==='current'?s.evidence_passes:null],['Pending buys',p.status==='ok'?(o.pending||0):null],['Completed trades',p.completed]].map(function(x){return '<div class=ws-stage><span>'+x[0]+'</span><b>'+wsCount(x[1])+'</b></div>';}).join('')+'</div>'
- +'<div class="ws-alert '+(paused?'warn':'')+'"><b>'+esc(regime)+' regime</b> · '+esc(why)+'</div>'
+ +'<div class="ws-alert '+(paused?'warn':'')+'"><b>'+esc(label)+'</b> · '+esc(why)+'</div>'
  +'<p class=ws-sub>Paper worker: '+esc(p.worker||'unknown')+' · '+wsCount(p.exits)+' exits awaiting an exchange quote. Stops and targets remain managed when entries are paused.</p>'
  +'<div class="ws-alert '+(source.rules?'':'warn')+'">Execution data: '+esc(source.reason||'Not verified')+'<br>Exchange status: '+esc(source.session||'unavailable')+'.</div>'
  +(p.last_order?'<p class=ws-sub>Latest order: '+esc(p.last_order.symbol)+' · '+esc(p.last_order.status)+' · '+esc(p.last_order.reason)+'</p>':'<p class=ws-sub>No order activity recorded in this paper epoch.</p>')

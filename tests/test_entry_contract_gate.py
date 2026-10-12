@@ -4,9 +4,9 @@ from tests.test_approved_execution import ApprovedPaperPipelineTest
 
 
 class SharedEntryContractGateTest(ApprovedPaperPipelineTest):
-    def test_direct_personal_buy_cannot_bypass_missing_contract_or_off_regime(self):
+    def test_direct_personal_buy_cannot_bypass_missing_contract_or_unavailable_market(self):
         with entry_contracts.using(self.catalogue,self.now):
-            for symbol,regime in (('UNKNOWN','ON'),('TEST','OFF')):
+            for symbol,regime in (('UNKNOWN','ON'),('TEST','UNAVAILABLE')):
                 self.assertEqual(books.buy(self.con,2,'IN','manual',symbol,100,20,99,110,regime=regime),0)
             self.assertEqual(books.positions(self.con,2),[])
             self.assertEqual(books.cash(self.con,2),10000)

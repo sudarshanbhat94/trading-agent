@@ -16,7 +16,7 @@ from . import confirmation, plans, selection, store, tracking
 from ..sleeves.base import Candidate, Sleeve
 from ..sleeves.risk import RiskManager
 
-MODEL_VERSION = 'selective-paper-v2'
+from ..market_entry_policy import STOCK_MODEL_VERSION as MODEL_VERSION, VERSION as ENTRY_POLICY
 # Namespace within the dedicated automation journal, NOT an account user ID.
 JOURNAL_OWNER = 1
 
@@ -57,8 +57,9 @@ def _rows(con, epoch):
     return con.execute('SELECT p.id,p.fingerprint,p.payload,s.payload,a.payload '
         'FROM publications p JOIN states s ON s.publication_id=p.id '
         'LEFT JOIN assessments a ON a.publication_id=p.id '
-        "WHERE p.user_id=? AND json_extract(p.payload,'$.automation_epoch')=? ORDER BY p.id",
-        (JOURNAL_OWNER, epoch)).fetchall()
+        "WHERE p.user_id=? AND json_extract(p.payload,'$.automation_epoch')=? "
+        "AND json_extract(p.payload,'$.automation_model_version')=? ORDER BY p.id",
+        (JOURNAL_OWNER, epoch, MODEL_VERSION)).fetchall()
 
 
 def _completed_bars(frame, asof, now):
@@ -82,7 +83,7 @@ def _signal_checks(assessment):
 def _assess(plan, state, bars, quote, screen, current, regime, asof, now, previous, *,
             regime_fresh, risk_ok=False, risk_reason='Account risk is checked at reservation and fill'):
     reason = selection.reject_reason(current, screen, now)
-    context = dict(regime=regime, regime_fresh=regime_fresh,
+    context = dict(regime=regime, regime_fresh=regime_fresh, paper_entry_policy=ENTRY_POLICY,
         price_asof=str(asof)[:10],
         evidence_ok=bool(current) and not current.get('flags') and not screen.get('stale') and not screen.get('price_stale'),
         news_checked_at=(current.get('news') or {}).get('checked_at'),
@@ -167,7 +168,7 @@ def refresh_pending(paper, quotes, regime_view, now):
 
 class SelectivePaperSleeve(Sleeve):
     name = 'quality_momentum'
-    allowed_regimes = ('ON', 'NEUTRAL')
+    allowed_regimes = ('ON', 'NEUTRAL', 'OFF')
 
     def propose(self, ctx):
         now = ctx.observed_at or datetime.now(timezone.utc)
@@ -234,7 +235,7 @@ class SelectivePaperSleeve(Sleeve):
             dec.note = (f'{len(dec.candidates)} confirmed stock plan(s); account allocation and later exchange fill required'
                         if dec.candidates else 'No confirmed stock entry: waiting for observed pullback and next-session rebound checks')
             if not dec.active:
-                dec.note = f'Regime {ctx.regime.state} blocks new stock longs; existing plans remain observed'
+                dec.note = 'Current market evidence unavailable; existing stock plans remain observed'
             return dec
         finally:
             con.close()

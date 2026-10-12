@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pandas as pd
 
 from app import approved_execution, books, paper_exchange, paper_ledger, v2_live
-from app.screening import automation, confirmation, tracking
+from app.screening import automation, confirmation, tracking, plans
 from app.sleeves.config import SLEEVES
 from app.sleeves.engine import SleeveEngine
 from app.sleeves.regime import RegimeView
@@ -108,6 +108,52 @@ class SelectivePaperAutomationTest(unittest.TestCase):
         self.assertEqual(paper_exchange.pending(self.con), [])
         self.assertEqual(ctx.book.cash, 10000)
 
+    def test_defensive_stock_confirmation_fill_subscriber_and_exit_keep_actual_regime(self):
+        self.regime = RegimeView('OFF', False, .2, 'OFF', 'Synthetic defensive market')
+        ctx, candidate = self.confirmed()
+        with patch.object(automation, 'current_screen', return_value=ctx.equity_screen):
+            allocation = RiskManager().size(candidate, ctx.book)
+            order = paper_exchange.enqueue_house(self.con, self.f.catalogue, allocation, ctx.live,
+                                                  regime='OFF', now=ctx.observed_at)
+            self.assertEqual(order['status'], 'pending')
+            at = ctx.observed_at + timedelta(seconds=1)
+            filled = paper_exchange.service_house(self.con, self.f.catalogue, self.quotes(at), regime='OFF', now=at)[0]
+            self.assertEqual(filled['status'], 'filled')
+            self.assertEqual(self.con.execute('SELECT regime FROM v2_positions').fetchone()[0], 'OFF')
+            payload = json.loads(self.con.execute("SELECT payload FROM execution_outbox WHERE topic='house_entry'").fetchone()[0])
+            at += timedelta(seconds=1)
+            mirrored = approved_execution.submit_house_mirror(self.con, self.f.catalogue, 2, payload,
+                self.quotes(at), regime='OFF', now=at)
+            self.assertEqual(mirrored['status'], 'pending')
+            at += timedelta(seconds=1)
+            owned = paper_exchange.service(self.con, self.f.catalogue, self.quotes(at), regime='OFF', now=at)[0]
+            self.assertEqual(owned['status'], 'filled')
+            self.assertEqual(books.positions(self.con, 2)[0]['regime'], 'OFF')
+            paper_exchange.queue_exit(self.con, 2, owned['position_id'], 'stop', now=at)
+            at += timedelta(seconds=1)
+            paper_exchange.service_exits(self.con, self.quotes(at, 91.95), now=at)
+            ledger = paper_ledger.report(self.con, 2, 'IN', books.current_epoch(self.con, 2), books.cash(self.con, 2))
+            self.assertEqual(ledger['cash_difference_minor'], 0)
+            self.assertEqual(books.positions(self.con, 2), [])
+            self.assertLess(books.cash(self.con, 2), 10000)
+            self.assertEqual(self.con.execute('SELECT regime FROM user_trades WHERE user_id=2').fetchone()[0], 'OFF')
+
+    def test_paper_policy_does_not_change_registered_research_or_legacy_automation(self):
+        from app.screening import confirmation
+        from app.market_entry_policy import VERSION
+        plan = plans.shortlist(self.context().equity_screen, book(), now=FIRST)['ideas'][0]
+        checks = confirmation.assess(plan, {}, [], {},
+            dict(regime='OFF', regime_fresh=True, paper_entry_policy=VERSION), FIRST)['checks']
+        self.assertFalse(next(c['passed'] for c in checks if c['code'] == 'regime'))
+        ctx, candidate = self.confirmed()
+        with closing(sqlite3.connect(self.journal)) as con:
+            row = con.execute('SELECT payload FROM publications').fetchone()[0]
+            legacy = json.loads(row); legacy['automation_model_version'] = 'selective-paper-v2'
+        tracking.publish(self.journal, automation.JOURNAL_OWNER, [legacy], now=FIRST)
+        with closing(sqlite3.connect(self.journal)) as con:
+            self.assertEqual(len(automation._rows(con, FIRST.isoformat())), 1)
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM publications').fetchone()[0], 2)
+
     def test_forward_stock_house_subscriber_protection_exit_and_costed_accounting(self):
         ctx, candidate, allocation, order = self.submit()
         self.assertEqual(order['status'], 'pending')
@@ -138,11 +184,11 @@ class SelectivePaperAutomationTest(unittest.TestCase):
         self.assertEqual(self.con.execute('SELECT model_version,sleeve,regime FROM user_trades WHERE user_id=2').fetchone(),
                          (automation.MODEL_VERSION, 'quality_momentum', 'ON'))
 
-    def test_off_stale_missing_news_bad_quality_weak_volume_and_duplicate_identity_do_not_execute(self):
-        for mode in ('OFF', 'stale', 'news', 'quality', 'volume', 'duplicate', 'outside', 'cash'):
+    def test_unavailable_stale_missing_news_bad_quality_weak_volume_and_duplicate_identity_do_not_execute(self):
+        for mode in ('UNAVAILABLE', 'stale', 'news', 'quality', 'volume', 'duplicate', 'outside', 'cash'):
             with self.subTest(mode=mode):
                 ctx = self.context()
-                if mode=='OFF':ctx.regime = RegimeView('OFF', False, .2, 'OFF', 'Fixture')
+                if mode=='UNAVAILABLE':ctx.regime = RegimeView('UNAVAILABLE', False, .2, 'UNAVAILABLE', 'Fixture')
                 elif mode=='stale':ctx.equity_screen['stale'] = True
                 elif mode=='news':ctx.equity_screen['equities'][0]['flags'] = ['adverse official filing']
                 elif mode=='quality':ctx.equity_screen['equities'][0]['fundamentals']['roe_pct'] = 1
@@ -332,6 +378,7 @@ class SelectivePaperAutomationTest(unittest.TestCase):
         users.assert_not_called();verify.assert_not_called();submit.assert_not_called();read.assert_not_called()
 
     def test_actual_production_pass_reserves_confirmed_stock_only_and_later_service_fills(self):
+        self.regime = RegimeView('OFF', False, .2, 'OFF', 'Synthetic defensive market')
         ctx, candidate = self.confirmed()
         ctx.observed_at += timedelta(seconds=1)
         engine = SleeveEngine()
@@ -360,7 +407,7 @@ class SelectivePaperAutomationTest(unittest.TestCase):
             plan = json.loads(intents[0][5])['plan']
             self.assertEqual((plan['symbol'], plan['sleeve'], plan['model_version']), ('TEST', 'quality_momentum', automation.MODEL_VERSION))
             at = ctx.observed_at+timedelta(seconds=1)
-            filled = paper_exchange.service_house(self.con, self.f.catalogue, self.quotes(at), regime='ON', now=at)[0]
+            filled = paper_exchange.service_house(self.con, self.f.catalogue, self.quotes(at), regime='OFF', now=at)[0]
             self.assertEqual(filled['status'], 'filled')
             self.assertLessEqual(filled['qty']*filled['entry'], 3000)
 

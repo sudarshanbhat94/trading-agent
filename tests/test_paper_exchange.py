@@ -73,11 +73,11 @@ class LaterEventPaperExchangeTest(unittest.TestCase):
         self.assertEqual(json.loads(event)['snapshot']['instrument_key'], 'NSE_EQ|TEST')
 
     def test_regime_expiry_and_epoch_cancel_commitments_without_a_trade(self):
-        for mode in ('OFF', 'expired', 'reset'):
+        for mode in ('UNAVAILABLE', 'expired', 'reset'):
             with self.subTest(mode=mode):
                 order = self.submit()
                 if mode == 'reset': books.reset_book(self.con, 2, 'IN')
-                self.f.fill_pending(regime='OFF' if mode=='OFF' else 'ON',
+                self.f.fill_pending(regime='UNAVAILABLE' if mode=='UNAVAILABLE' else 'ON',
                     now=self.now+timedelta(hours=2) if mode=='expired' else self.now+timedelta(seconds=1))
                 self.assertNotEqual(paper_exchange.status(self.con, 2, order['order_id'])['status'], 'pending')
                 self.assertEqual(books.positions(self.con, 2), []); self.assertEqual(books.cash(self.con, 2), 10000)

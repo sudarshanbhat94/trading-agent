@@ -81,7 +81,7 @@ class RegimeIsTheMasterGateTest(ContractStorageCase):
         mdf = self._mdf(rising=False)
         view = RegimeGate().view({}, mdf, mdf.index[-1])
         self.assertEqual(view.state, "OFF")
-        self.assertFalse(view.allows_equity_longs)
+        self.assertTrue(view.allows_equity_longs)  # Individual paper setup checks still apply.
 
     def test_narrow_breadth_demotes_a_rising_market(self) -> None:
         """An index above its mean on a handful of heavyweights is not a regime
@@ -102,8 +102,10 @@ class RegimeIsTheMasterGateTest(ContractStorageCase):
         for name, sleeve in eng.sleeves.items():
             with self.subTest(sleeve=name):
                 self.assertTrue(sleeve.allowed_regimes)
-                self.assertNotIn("OFF", sleeve.allowed_regimes,
-                                 "no sleeve may open longs in an OFF regime")
+                if name == 'quality_momentum':
+                    self.assertIn('OFF', sleeve.allowed_regimes)
+                else:
+                    self.assertNotIn('OFF', sleeve.allowed_regimes)
 
     def test_actual_nifty_trend_compares_completed_sessions(self) -> None:
         nifty = _panel(n_days=260, drift=.001, vol=0, seed=9)

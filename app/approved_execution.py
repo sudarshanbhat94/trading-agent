@@ -13,6 +13,7 @@ import math
 from .account_safety import atomic
 from . import books,execution_contracts
 from .execution_ports import route_for
+from .market_entry_policy import allows_paper_entry
 
 
 def ensure_schema(con):
@@ -255,7 +256,7 @@ def submit(con,catalogue,user_id,plan_id,request_key,quotes,*,regime,now=None):
             except ValueError as exc:reason=str(exc)
         if plan['epoch']!=books.current_epoch(con,user_id,'IN'):reason='Paper epoch changed; approval is not transferable'
         elif not _moment(plan['evidence_at'])<=now<_moment(plan['expires_at']):reason='Plan evidence is future or expired'
-        elif regime not in {'ON','NEUTRAL'}:reason='Current regime blocks new equity longs'
+        elif not allows_paper_entry(regime, plan['sleeve']):reason='Current market context unavailable or route not permitted'
         elif price is None or not plan['entry_low']<=price<=plan['entry_high']:reason='Fresh price is outside the frozen entry zone'
         if reason is None:
             try:

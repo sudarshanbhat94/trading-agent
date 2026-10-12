@@ -89,8 +89,16 @@ def assess(plan, state, bars, quote, context, now, previous=None):
         economic=all(t.net(plan,plan['entry_high'],plan[k])>0 for k in ('t1','t2','t3'))
     except (KeyError,TypeError,ValueError):economic=False
     check('targets',economic,'All displayed targets must be profitable at the frozen quantity and costs')
-    check('regime',context.get('regime_fresh') and context.get('regime') in ('ON','NEUTRAL'),
-          'A fresh supportive production regime is required')
+    # Only new production paper publications use stock-specific admission.
+    # The registered research protocol and its old publications are unchanged.
+    from ..market_entry_policy import VERSION as ENTRY_POLICY, STOCK_MODEL_VERSION, allows_paper_entry
+    stock_paper = (context.get('paper_entry_policy') == ENTRY_POLICY
+                   and plan.get('automation_model_version') == STOCK_MODEL_VERSION)
+    market_ok = (allows_paper_entry(context.get('regime')) if stock_paper
+                 else context.get('regime') in ('ON','NEUTRAL'))
+    check('regime',context.get('regime_fresh') and market_ok,
+          'Fresh market context required; stock setup is assessed independently' if stock_paper
+          else 'A fresh supportive production regime is required')
     try:
         news_fresh=0<=(now-timestamp(context['news_checked_at'])).total_seconds()<=7200
     except (KeyError,TypeError,ValueError):news_fresh=False

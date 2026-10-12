@@ -42,12 +42,12 @@ class ApprovedOrderAPITest(unittest.TestCase):
         self.assertEqual(report['book']['positions'],0);self.assertEqual(report['current_epoch']['trades'],1)
         self.assertEqual(report['by_regime_epoch']['ON']['trades'],1)
 
-    def test_override_cross_owner_no_session_and_regime_off_refuse(self):
+    def test_override_cross_owner_no_session_and_unavailable_market_refuse(self):
         from app import v2_web
         plan=self.client.get('/v2/api/approved-plans').json()['plans'][0]
         payload=dict(plan_id=plan['id'],request_key='api-request-one')
         self.assertEqual(self.client.post('/v2/api/approved-orders',json=dict(payload,qty=1)).status_code,400)
-        v2_web._regime_state=lambda market:'OFF'
+        v2_web._regime_state=lambda market:'UNAVAILABLE'
         self.assertEqual(self.client.post('/v2/api/approved-orders',json=payload).status_code,409)
         self.app.dependency_overrides[v2_web.require_session]=lambda:dict(id=3,username='other')
         self.assertEqual(self.client.get('/v2/api/approved-plans').json()['plans'],[])

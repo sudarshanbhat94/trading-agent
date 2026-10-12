@@ -1,3 +1,22 @@
+## Stock-specific paper entry — 12 October 2026, verified locally
+
+**TRADING BEHAVIOUR CHANGED; production cutover pending.** `selective-paper-v3`
+removes the blanket index-trend veto for individual paper stocks. The measured
+trend and actual regime tags remain in history. Unknown market data, strict
+stock selection/confirmation, fresh executable quotes, costs and account risk
+still gate entries. Live/index route permissions are not promoted. The original
+registered research protocol, ₹10,000 epoch and legacy publications are intact.
+
+Ideas adds distinct research candidates with conditional levels, explicit entry
+blockers and watchlisting, without buy approval or outcome/fill claims. Current
+dated production evidence reproduced two affordable candidates, VBL and COFORGE,
+and zero strict entry plans. These observations are time-sensitive, not returns.
+Local final suite: 2,678 run / 2,545 pass / 133 skip, plus 108 UI/research functions.
+Synthetic actual production-pass, defensive house/subscriber fills, stop exit,
+cash/inventory reconciliation and old-protocol isolation passed. See
+`docs/stock-specific-paper-entry.md`. Do not claim deployed or profitable until
+the pinned rollout and actual served data have been verified.
+
 ## Current production — data-source repair, 11 October 2026
 
 **TRADING BEHAVIOUR CHANGED through corrected data inputs; deployed under standing human authorization.**

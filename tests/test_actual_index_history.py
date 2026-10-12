@@ -81,7 +81,7 @@ class ActualIndexHistoryTest(unittest.TestCase):
         got=gate.view(tails,rising,idx[-1],{'STOCK'})
         self.assertEqual(got.state,'ON');self.assertEqual(got.diagnostics['lookback_sessions'],50)
         rising.iloc[-1]=float('nan')
-        self.assertEqual(gate.view({'STOCK':stock},rising,idx[-1]).state,'OFF')
+        self.assertEqual(gate.view({'STOCK':stock},rising,idx[-1]).state,'UNAVAILABLE')
 
     def test_old_benchmark_screen_stays_historical_and_cannot_become_a_new_intent(self):
         from app.screening import automation

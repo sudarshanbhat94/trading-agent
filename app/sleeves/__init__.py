@@ -5,7 +5,7 @@ submit Rs 10,000 paper-book proposals. The old Quality 50 model is not installed
 in the production orchestrator. Other sleeves remain research-only.
 
     mean_reversion    primary   — hardened v2 dip-buying, ON/NEUTRAL only
-    quality_momentum  trial     — dated stock quality + confirmed pullback, ON/NEUTRAL
+    quality_momentum  trial     — dated stock quality + confirmed pullback, stock-specific market admission
     early_momentum    tactical  — pre-top-gainer ignition detector
     index_directional index     — actual Nifty and Bank Nifty context; contract-gated execution
     options_overlay   overlay   — defined-risk spreads only

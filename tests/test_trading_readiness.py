@@ -32,8 +32,9 @@ class AccountPreflightTest(unittest.TestCase):
         self.assertEqual(result['live']['status'], 'not_certified')
         self.assertTrue(self.fixture.submit()['ok'])
 
-    def test_off_stale_quotes_worker_and_missing_rules_block_distinct_checks(self):
-        self.assertIn('regime', self.report(regime='OFF')['blockers'])
+    def test_unavailable_stale_quotes_worker_and_missing_rules_block_distinct_checks(self):
+        self.assertNotIn('regime', self.report(regime='OFF')['blockers'])
+        self.assertIn('regime', self.report(regime='UNAVAILABLE')['blockers'])
         self.assertIn('regime', self.report(regime_current=False)['blockers'])
         self.quote['TEST']['ts'] = (self.fixture.now-timedelta(minutes=10)).isoformat()
         result = self.report(engine_observed_at=(self.fixture.now-timedelta(minutes=10)).isoformat())

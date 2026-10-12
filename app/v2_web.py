@@ -262,8 +262,11 @@ def _regime_state(market):
 
 
 def _regime(market):
-    """Back-compat bool view of the graded regime (True = dip-buys allowed)."""
+    """Compatibility entry-context view; stock setups require their own checks."""
     s = _regime_state(market)
+    if market == 'IN':
+        from .market_entry_policy import allows_paper_entry, KNOWN_TRENDS
+        return allows_paper_entry(s) if s in KNOWN_TRENDS else None
     return None if s is None else s != "OFF"
 
 
@@ -2577,6 +2580,7 @@ def _stock_plans(screen, market, user, publish=False):
     try:
         book, error = preview.account_state(con, int(user["id"]), quotes, now)
         result = preview.shortlist(screen, book, quotes, now, error)
+        result['research_candidates'] = preview.research_candidates(screen, book, quotes, now, error)
         try:
             result["watchlisted"] = [r[0] for r in con.execute(
                 "SELECT symbol FROM user_watchlist WHERE user_id=? AND market='IN'",
@@ -5500,10 +5504,11 @@ function ideaBuy(sym,qty){
    loadIdeas();});}
 function renderStockPlans(p){
  if(!p)return '';
- var watched=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
- var sectors=Array.from(new Set((p.ideas||[]).map(function(r){return r.sector;}))).sort();
+ var all=(p.ideas||[]).concat(p.research_candidates||[]),watched=new Set(all.filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).map(function(r){return r.symbol;})).size;
+ var sectors=Array.from(new Set(all.map(function(r){return r.sector;}))).sort();
  return '<section class=ideas-desk><div class=ideas-toolbar><div class=ideas-tabs role=group aria-label="Idea view">'
-  +'<button type=button data-idea-view=discover aria-pressed="'+(IDEA_UI.view=='discover')+'" onclick="ideaSetView(\'discover\')">Discover <span>'+p.count+'</span></button>'
+  +'<button type=button data-idea-view=discover aria-pressed="'+(IDEA_UI.view=='discover')+'" onclick="ideaSetView(\'discover\')">Entry plans <span>'+p.count+'</span></button>'
+  +'<button type=button data-idea-view=research aria-pressed="'+(IDEA_UI.view=='research')+'" onclick="ideaSetView(\'research\')">Research <span>'+(p.research_candidates||[]).length+'</span></button>'
   +'<button type=button data-idea-view=saved aria-pressed="'+(IDEA_UI.view=='saved')+'" onclick="ideaSetView(\'saved\')">Watchlisted <span id=ideaSavedCount>'+watched+'</span></button>'
   +'<button type=button data-idea-view=tracking aria-pressed="'+(IDEA_UI.view=='tracking')+'" onclick="ideaSetView(\'tracking\')">Tracking <span id=ideaTrackedCount>'+(((p.tracking||{}).summary||{}).published||0)+'</span></button></div>'
   +'<button type=button class=idea-text-button onclick="go(\'watch\')">Open my watchlist ↗</button></div>'
@@ -5511,7 +5516,7 @@ function renderStockPlans(p){
   +'<select aria-label="Filter ideas by sector" onchange="ideaSector(this.value)"><option value=all>All sectors</option>'
   +sectors.map(function(s){return '<option '+(IDEA_UI.sector==s?'selected ':'')+'value="'+esc(s)+'">'+esc(s)+'</option>';}).join('')+'</select>'
   +'<select aria-label="Sort stock ideas" onchange="ideaSort(this.value)"><option value=rank '+(IDEA_UI.sort=='rank'?'selected':'')+'>Top ranked</option><option value=risk '+(IDEA_UI.sort=='risk'?'selected':'')+'>Lowest estimated risk</option></select></div>'
-  +'<div class=ideas-context><span id=ideaResultCount>'+ideaFiltered(p).length+' of '+esc(p.count)+' qualifying plans · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
+  +'<div class=ideas-context><span id=ideaResultCount>'+esc(p.count)+' entry plans · '+(p.research_candidates||[]).length+' research candidates · prices through '+esc(p.price_asof)+'</span><span id=ideaMarketSession>'+(p.market_open?'Market open · fresh quotes required':'Market closed · last close shown')+'</span></div>'
   +'<p class=mut>At most '+esc(p.max_ideas==null?3:p.max_ideas)+' ideas, one per sector. No daily quota; some sessions have none.</p>'
   +'<div class=ig-plan-grid id=ideaCards '+(IDEA_UI.view=='tracking'?'hidden':'')+'>'+ideaCards(p)+'</div><div id=ideaTrackingPanel '+(IDEA_UI.view=='tracking'?'':'hidden')+'>'+renderIdeaTracking(p.tracking)+'</div>'
   +'<dialog id=ideaPlanDialog class=idea-dialog aria-labelledby=ideaDialogTitle><div id=ideaDialogBody></div></dialog></section>';
@@ -5522,9 +5527,17 @@ function ideaStatus(r){return ({'STALE PLAN':['Refresh needed','warn'],'INVALIDA
  'LIVE QUOTE UNAVAILABLE':['Waiting for fresh quote','warn'],'IN ZONE · CONFIRMATION NEEDED':['Entry zone · confirm first','up'],'BELOW ENTRY ZONE':['Below entry zone','warn']})[r.state]||['Watch for entry',''];}
 function ideaFiltered(p){
  var term=IDEA_UI.search.trim().toLowerCase();
- return (p.ideas||[]).filter(function(r){return (IDEA_UI.view!='saved'||(p.watchlisted||[]).includes(r.symbol))
+ var source=IDEA_UI.view=='research'?(p.research_candidates||[]):IDEA_UI.view=='saved'?(p.ideas||[]).concat((p.research_candidates||[]).filter(function(r){return !(p.ideas||[]).some(function(i){return i.symbol==r.symbol;});})):(p.ideas||[]);
+ return source.filter(function(r){return (IDEA_UI.view!='saved'||(p.watchlisted||[]).includes(r.symbol))
   &&(IDEA_UI.sector=='all'||r.sector==IDEA_UI.sector)&&(!term||(r.symbol+' '+r.sector).toLowerCase().includes(term));})
   .slice().sort(function(a,b){return IDEA_UI.sort=='risk'?a.estimated_stop_loss-b.estimated_stop_loss:a.rank-b.rank;});
+}
+function ideaResearchCard(r,p){
+ var saved=(p.watchlisted||[]).includes(r.symbol);
+ return '<article class="ig-card ig-plan" aria-label="'+esc(r.symbol)+' research candidate"><div class=idea-card-head><div class=idea-stock-id><button class=idea-symbol type=button data-symbol="'+esc(r.symbol)+'" onclick="stock(this.dataset.symbol,\'IN\')">'+esc(r.symbol)+'</button><div>'+esc(r.sector)+'</div></div><button type=button class="idea-star '+(saved?'saved':'')+'" data-symbol="'+esc(r.symbol)+'" aria-label="'+(saved?'Remove ':'Add ')+esc(r.symbol)+' watchlist" aria-pressed="'+saved+'" '+(IDEA_UI.pending[r.symbol]?'disabled ':'')+'onclick="ideaToggleWatch(this.dataset.symbol)">'+(saved?'★':'☆')+'</button></div>'
+ +'<span class=idea-state>Research · waiting for entry</span><p>'+esc(r.why)+'</p><div class=idea-entry><span>Conditional entry scenario</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div>'
+ +'<div class=idea-levels><div><span>Stop-loss</span><b class=dn>'+ideaMoney(r.stop)+'</b></div>'+['t1','t2','t3'].map(function(k,i){return '<div><span>Target '+(i+1)+'</span><b>'+ideaMoney(r[k])+'</b></div>';}).join('')+'</div>'
+ +'<p class=mut>'+esc(r.qty)+' shares · estimated stop loss '+ideaMoney(r.estimated_stop_loss)+'. Conditional levels only; no buy approval.</p><div class=idea-thesis><span>WAITING FOR</span><p>'+esc(r.entry_blocker)+'</p></div><p class=mut>New entry plan and rebound confirmation must pass before automation. Targets are scenarios, not forecasts.</p><button class=idea-secondary type=button data-symbol="'+esc(r.symbol)+'" onclick="stock(this.dataset.symbol,\'IN\')">View stock & evidence</button></article>';
 }
 function ideaCards(p){
  var rows=ideaFiltered(p);
@@ -5536,11 +5549,13 @@ function ideaCards(p){
   var message=stale?'The latest evidence is unavailable or stale. Fresh research is required before publishing new plans.':incomplete?'Earnings history is verified for '+health.earnings_history_ready+' of '+health.screened+' screened stocks; '+health.earnings_history_missing+' remain unavailable. No fully checked stock qualifies yet. Scheduled refresh retries missing data.':'All '+(health.screened==null?'screened':health.screened)+' stocks were checked. None currently passes all evidence, participation, reward and account checks.';
   return '<div class=ideas-empty><b>'+(noSetups?title:IDEA_UI.view=='saved'?'Your saved shortlist starts here':'No matching ideas')+'</b><p>'
    +esc(p.book_error||(noSetups?message:IDEA_UI.view=='saved'?'Tap the star on a stock to follow its entry plan.':'Try another search or sector.'))+'</p>'
-   +(noSetups&&health.screened!=null?'<p class=mut>Research discovery runs independently of the execution regime. OFF pauses new orders; it does not hide qualifying research plans. Last screen: '+esc(ideaTime(health.generated_at))+'.</p>':'')
+   +(noSetups&&health.screened!=null?'<p class=mut>Stock setups are evaluated independently of index direction. Last screen: '+esc(ideaTime(health.generated_at))+'.</p>':'')
    +(noSetups&&reasons.length?'<details><summary>Why ideas are waiting</summary><p class=mut>Stocks can fail several checks; counts overlap.</p><ul>'+reasons.slice(0,8).map(function(r){return '<li>'+esc(r.reason)+(r.count==null?'':' · '+esc(r.count)+' stocks')+'</li>';}).join('')+'</ul></details>':'')
-   +(!noSetups?'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button>':'')+'</div>';
+   +(!noSetups?'<button class=idea-text-button type=button onclick="ideaClearFilters()">Show all ideas</button>':'')+'</div>'
+   +(IDEA_UI.view=='discover'&&!IDEA_UI.search&&IDEA_UI.sector=='all'?(p.research_candidates||[]).map(function(r){return ideaResearchCard(r,p);}).join(''):'');
  }
  return rows.map(function(r){
+  if(r.state=='RESEARCH WATCH')return ideaResearchCard(r,p);
   var saved=(p.watchlisted||[]).includes(r.symbol),status=ideaStatus(r),m=r.evidence.metrics||{};
   function level(label,value,cls){return '<div><span>'+label+'</span><b class="'+(cls||'')+'">'+ideaMoney(value)+'</b></div>';}
   return '<article class="ig-card ig-plan" aria-label="'+esc(r.symbol)+' trade plan"><div class=idea-card-head>'
@@ -5564,8 +5579,8 @@ function ideaRepaint(){
  var tracked=document.getElementById('ideaTrackedCount');if(tracked)tracked.textContent=((p.tracking||{}).summary||{}).published||0;
  var session=document.getElementById('ideaMarketSession');if(session)session.textContent=p.tracking&&p.tracking.status!='ok'?'Quote tracking unavailable':p.market_open?'Market open · fresh quotes required':'Market closed · last close shown';
  var filters=document.getElementById('ideaFilters');if(filters)filters.hidden=IDEA_UI.view=='tracking';
- var count=document.getElementById('ideaSavedCount');if(count)count.textContent=(p.ideas||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).length;
- var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':ideaFiltered(p).length+' of '+p.count+' qualifying plans · prices through '+p.price_asof;
+ var count=document.getElementById('ideaSavedCount');if(count)count.textContent=new Set((p.ideas||[]).concat(p.research_candidates||[]).filter(function(r){return (p.watchlisted||[]).includes(r.symbol);}).map(function(r){return r.symbol;})).size;
+ var result=document.getElementById('ideaResultCount');if(result)result.textContent=IDEA_UI.view=='tracking'?(((p.tracking||{}).summary||{}).published||0)+' published versions · original plan history':p.count+' entry plans · '+(p.research_candidates||[]).length+' research candidates · prices through '+p.price_asof;
  document.querySelectorAll('[data-idea-view]').forEach(function(b){b.setAttribute('aria-pressed',b.dataset.ideaView==IDEA_UI.view);});
 }
 function ideaSetView(v){IDEA_UI.view=v;ideaRepaint();if(v=='tracking')ideaRefreshTracking();}
@@ -5592,7 +5607,7 @@ function ideaOpenPlan(sym,review){
   ['Market session',p.market_open,p.market_open?'NSE session is open':'NSE is closed; no order can be placed now'],
   ['Live price',r.quote_price!=null,r.quote_price==null?'Waiting for a fresh quote':ideaMoney(r.quote_price)+' · '+r.quote_at],
   ['Entry confirmation',!!(r.tracking&&r.tracking.confirmation&&r.tracking.confirmation.fresh&&r.tracking.confirmation.eligible),r.tracking&&r.tracking.confirmation?r.tracking.confirmation.reason:r.buy_condition],
-  ['Market gate',!d.decision_stale&&['ON','NEUTRAL'].includes(d.regime),d.decision_stale?'Waiting for a fresh engine review':'Execution regime: '+(d.regime||'unavailable')]];
+  ['Market context',!d.decision_stale&&['ON','NEUTRAL','OFF'].includes(d.regime),d.decision_stale?'Waiting for a fresh engine review':'Stock-specific paper checks; index trend is context']];
  var html='<div class=idea-dialog-head><div><span>'+(review?'ORDER REVIEW · PAPER':'CONDITIONAL TRADE PLAN')+'</span><h2 id=ideaDialogTitle>'+esc(sym)+'</h2></div><button class=idea-dialog-close type=button aria-label="Close trade plan" onclick="this.closest(\'dialog\').close()">×</button></div>'
   +'<div class=idea-dialog-note>Research plan · prices through '+esc(p.price_asof)+'. Targets are scenarios; no validated stock track record.</div>'
   +'<div class=idea-review-summary><div><span>Entry range</span><b>'+ideaMoney(r.entry_low)+' – '+ideaMoney(r.entry_high)+'</b></div><div><span>Quantity</span><b>'+r.qty+' '+(r.qty==1?'share':'shares')+'</b></div><div><span>Allocation</span><b>'+ideaMoney(r.notional)+'</b></div><div><span>Estimated stop loss</span><b class=dn>'+ideaMoney(r.estimated_stop_loss)+'</b></div></div>'
@@ -5740,7 +5755,7 @@ function renderIdeas(d){
  // same reference account, not for theirs.
  var st=d.stats||{},dx=dec.market_context||{},preview=d.stock_plans;
  document.getElementById('ideasStrip').innerHTML=preview?'<div class=ideas-hero><div><span class=ideas-eyebrow>NSE EQUITIES</span><h1>Selective stock ideas</h1><p>Only qualifying setups, with entry levels, exit scenarios and risk sized for your paper book.</p></div>'
-  +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':dec.regime=='OFF'?'Entries paused':'Regime '+(dec.regime||'unavailable'))+'</small></div></div>' :!rows.length?
+  +'<div class=ideas-account><div><span>Paper cash</span><b>'+ccy+f.format(preview.cash)+'</b></div><div><span>Available risk budget</span><b>'+ccy+f.format(preview.risk_cap)+'</b></div><small>Paper automation · '+esc(dec.execution_halted?'Risk halt':dec.decision_stale?'Awaiting engine review':!['ON','NEUTRAL','OFF'].includes(dec.regime)?'Awaiting market data':'Stock-by-stock checks')+'</small></div></div>' :!rows.length?
   '<div class=ig-strip>'
   +'<div><div class=ig-sn>'+esc(dec.regime||'—')+'</div><div class=ig-sl2>market regime</div></div>'
   +'<div><div class=ig-sn>'+(dec.breadth==null?'—':esc(dec.breadth)+'%')+'</div><div class=ig-sl2>market breadth</div></div>'
@@ -5902,7 +5917,7 @@ function loadHome(){
   var RS={STRONG:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
           ON:['is assessing opportunities','supportive conditions allow eligible sleeves to propose trades; data, sizing and book risk checks still apply'],
           NEUTRAL:['is being selective','only eligible mean-reversion and early-momentum setups can proceed, subject to data and book risk checks'],
-          OFF:['is playing defense','the regime gate blocks all new equity longs; existing positions remain under exit management'],
+          OFF:['is assessing stocks individually','the market trend is defensive; paper stocks still need their own confirmed setup and account risk checks'],
           UNKNOWN:['is checking market data','a current regime reading is not available yet']};
   var rg=(d.regime_state||{})[m.market]||'UNKNOWN',rv=RS[rg]||RS.UNKNOWN;
   var risk=m.readiness||{},riskText=risk.halted

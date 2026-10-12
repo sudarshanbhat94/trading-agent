@@ -40,7 +40,9 @@ class DeskStatusCopyTest(unittest.TestCase):
         self.assertIn('320 liquid individual NSE stocks from 500 constituents', html)
         self.assertIn('NSE EQUITY SCREENING', html)
         self.assertIn('MARKET & ENTRY STATUS', html)
-        self.assertIn('NEW RISK PAUSED', html)
+        self.assertIn('SELECTIVE STOCK ENTRIES', html)
+        self.assertIn('Defensive market', html)
+        self.assertNotIn('NEW RISK PAUSED', html)
         self.assertIn('Automated individual-stock entries are not enabled', html)
         self.assertNotIn('STRATEGY STATUS', html)
         self.assertNotIn('so the strategy is holding cash', html)
@@ -64,7 +66,7 @@ class DeskStatusCopyTest(unittest.TestCase):
     def test_held_positions_are_not_described_as_all_cash_or_clean(self):
         data = payload(); data['markets'][0]['positions'] = 1
         html = render(data)
-        self.assertIn('existing strategy positions remain under exit management', html)
+        self.assertIn('Existing strategy positions remain under exit management', html)
         self.assertNotIn('100% cash', html)
         self.assertNotIn('strategy paper book has no open positions', html)
 

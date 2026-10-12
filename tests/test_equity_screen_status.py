@@ -62,7 +62,7 @@ class EquityScreenStatusTest(unittest.TestCase):
         got = paper_execution_scope()
         self.assertEqual(got['production_sleeves'],list(PRODUCTION_SLEEVES))
         self.assertTrue(got['stock_entries_enabled'])
-        self.assertEqual(got['stock_model_version'], 'selective-paper-v2')
+        self.assertEqual(got['stock_model_version'], 'selective-paper-v3')
         self.assertEqual(got['stock_validation'], 'unvalidated paper trial')
         self.assertEqual(got['automated_index_instruments'],[])
         self.assertEqual(SLEEVES,before)

@@ -68,8 +68,8 @@ class ApprovedPaperPipelineTest(unittest.TestCase):
         self.assertGreater(books.cash(self.con,2),before)  # Synthetic favourable price, not strategy evidence.
         self.assertEqual(self.submit(),result);self.assertEqual(books.positions(self.con,2),[])
 
-    def test_off_unknown_outside_zone_stale_and_account_epoch_refuse(self):
-        for i,(regime,price) in enumerate((('OFF',100),('UNKNOWN',100),('ON',105))):
+    def test_unavailable_unknown_outside_zone_stale_and_account_epoch_refuse(self):
+        for i,(regime,price) in enumerate((('UNAVAILABLE',100),('UNKNOWN',100),('ON',105))):
             self.assertFalse(self.submit(key='rejected-'+str(i),regime=regime,price=price)['ok'])
         with self.assertRaises(ValueError):self.submit(uid=3)
         books.reset_book(self.con,2,'IN');self.assertFalse(self.submit(key='new-epoch')['ok'])

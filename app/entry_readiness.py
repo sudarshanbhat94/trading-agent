@@ -62,8 +62,9 @@ def report(book, catalogue, user_id, quotes, *, symbols, regime, regime_current,
             check('book_risk', 'blocked' if halted else 'ready', reason or 'Current account risk checks pass')
     except sqlite3.Error:
         check('book', 'blocked', 'Paper accounting schema unavailable; no guessed balance')
-    check('regime', 'ready' if regime_current and regime in {'ON', 'NEUTRAL'} else 'blocked',
-          ('Current regime is ' + str(regime)) if regime_current else 'Current dated regime evidence unavailable')
+    from .market_entry_policy import allows_paper_entry, describe
+    check('regime', 'ready' if regime_current and allows_paper_entry(regime) else 'blocked',
+          (describe(regime) + '; paper stocks require individual setup and risk approval') if regime_current else 'Current dated market evidence unavailable')
     rows = []
     sessions = []
     discovery = dict(status='missing', order_permission=False)

@@ -30,12 +30,16 @@ def number(value):
         return None
 
 
-def reject_reason(row, screen, now=None):
+def reject_reason(row, screen, now=None, *, stage='entry'):
     """Fail closed on missing facts, including apparently flag-free records."""
     if screen.get("status") != "ok" or screen.get("stale") or screen.get("price_stale"):
         return "Current completed-session evidence unavailable; no new idea"
-    if row.get("flags"):
-        return "; ".join(row["flags"])
+    if stage not in ('entry', 'watch'):
+        return 'Unknown research stage'
+    flags = [flag for flag in row.get('flags', [])
+             if stage != 'watch' or flag != 'no controlled entry setup']
+    if flags:
+        return "; ".join(flags)
     if not row.get("sector") or row["sector"] in ("Unknown", "Other", "NSE Listed Equity"):
         return "Verified sector required for shortlist diversification"
     f, m, p = (row.get(k) or {} for k in ("fundamentals", "metrics", "participation"))
@@ -58,13 +62,16 @@ def reject_reason(row, screen, now=None):
     delivery, average = number(p.get("delivery_pct")), number(p.get("delivery_avg20_pct"))
     if turnover is None or turnover < MIN_TURNOVER:
         return "Completed-session liquidity below the research turnover floor"
-    if m.get("setup") not in ("pullback", "controlled breakout"):
+    if stage == 'entry' and m.get("setup") not in ("pullback", "controlled breakout"):
         return "Controlled price structure required; no chasing an extended move"
     if (m.get("above50") is not True or any((number(m.get(k)) or 0) <= 0
             for k in ("rs_vs_nifty20_pct", "return126_pct", "sector_rs20_pct"))):
         return "Stock or sector momentum confirmation missing"
-    if (volume is None or volume < POLICY["min_relative_volume"] or delivery is None or average is None
-            or not 0 <= average < delivery <= 100 or p.get("session") != screen.get("price_asof")):
+    if (volume is None or volume < 0 or delivery is None or average is None
+            or not 0 <= average <= 100 or not 0 <= delivery <= 100
+            or p.get("session") != screen.get("price_asof")):
+        return "Dated volume and delivery evidence required"
+    if stage == 'entry' and (volume < POLICY["min_relative_volume"] or delivery <= average):
         return "Participation gate failed: volume >=1.5x and delivery above its 20-session average required"
     if number(row.get("score")) is None or not 0 <= float(row["score"]) <= 100:
         return "Finite research ranking score required"

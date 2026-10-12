@@ -140,7 +140,7 @@ var elements={};var document={getElementById:id=>elements[id]||(elements[id]={})
         data['paper_pipeline']=dict(status='ok',orders={},completed=0,exits=0,worker='running')
         html=self.render(data)
         for text in ('Your portfolio','₹10,000','Stocks checked','Pending buys','Completed trades',
-                     'OFF regime','STOCK0','Research only','Data coverage &amp; reasons'):
+                     'Defensive market','STOCK0','Research only','Data coverage &amp; reasons'):
             self.assertIn(text.replace('&amp;','&') if text=='Data coverage &amp; reasons' else text,html)
         self.assertNotIn('Review buy',html)
         self.assertNotIn('Historical options record',html)

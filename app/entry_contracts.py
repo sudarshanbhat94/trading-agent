@@ -57,7 +57,9 @@ def check(market,symbol,quantity,price,stop,target,*,broker='paper',product='D',
                 raise ValueError('Stale regime evidence')
             regime=saved.get('regime')
         except (ValueError,KeyError):regime=None
-    if regime not in {'ON','NEUTRAL'}:raise InstrumentError('Current regime is OFF or unavailable; new equity risk refused')
+    from .market_entry_policy import allows_paper_entry, allows_live_entry
+    if not (allows_paper_entry(regime) if broker == 'paper' else allows_live_entry(regime)):
+        raise InstrumentError('Current market context unavailable or not permitted for this execution route')
     injected=CATALOGUE.get();owned=injected is None
     if injected:
         catalogue,now=injected;now=now or datetime.now(timezone.utc)

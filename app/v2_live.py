@@ -964,8 +964,11 @@ def _remember_sleeve_view(market, result, asof, today_s):
         reason = "no production candidate cleared every gate"
         state = "STAND ASIDE"
     from .sleeves.regime import MODEL_VERSION as market_model_version
+    from .market_entry_policy import VERSION as entry_policy, describe, allows_paper_entry
     _sleeve_views[market] = dict(
         state=state, reason=reason, regime=result.regime.state,
+        market_label=describe(result.regime.state), paper_entry_policy=entry_policy,
+        stock_entry_context_ready=allows_paper_entry(result.regime.state),
         regime_reason=result.regime.reason, breadth=round(result.regime.breadth * 100, 1),
         regime_source=result.regime.source, market_context=result.regime.diagnostics,
         market_model_version=market_model_version,
