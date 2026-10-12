@@ -1,6 +1,18 @@
-## Stock-specific paper entry — 12 October 2026, verified locally
+## Stock-first product UI — 12 October 2026
 
-**TRADING BEHAVIOUR CHANGED; production cutover pending.** `selective-paper-v3`
+Presentation-only redesign; trading behaviour, paper epochs, broker settings and
+registered forward protocol are unchanged. The actual SPA replaces the sidebar
+and dashboard with a stock feed, separate stock detail, owned Portfolio/Orders,
+Saved stocks, desktop top navigation and mobile bottom navigation. Diagnostics
+are disclosures; research does not acquire execution approval. Approved order
+review uses its frozen levels and the existing risk/idempotency/fill lifecycle.
+Account, scope and request identity fence late UI responses. Read failures are
+not empty books. See `docs/stock-first-product-ui.md` and the private deployment
+receipt for exact shipped-build and browser verification evidence.
+
+## Stock-specific paper entry — 12 October 2026, deployed and verified
+
+**TRADING BEHAVIOUR CHANGED; deployed as `5b4ef16` under standing authorization.** `selective-paper-v3`
 removes the blanket index-trend veto for individual paper stocks. The measured
 trend and actual regime tags remain in history. Unknown market data, strict
 stock selection/confirmation, fresh executable quotes, costs and account risk
@@ -14,8 +26,10 @@ and zero strict entry plans. These observations are time-sensitive, not returns.
 Local final suite: 2,678 run / 2,545 pass / 133 skip, plus 108 UI/research functions.
 Synthetic actual production-pass, defensive house/subscriber fills, stop exit,
 cash/inventory reconciliation and old-protocol isolation passed. See
-`docs/stock-specific-paper-entry.md`. Do not claim deployed or profitable until
-the pinned rollout and actual served data have been verified.
+`docs/stock-specific-paper-entry.md`. Encrypted backup and original-row preservation
+passed. Authenticated browser verified the clean ₹10,000 book and VBL/COFORGE
+conditional research. The production cycle assessed 364 stocks with zero qualifying
+entries; these observations do not demonstrate profitability.
 
 ## Current production — data-source repair, 11 October 2026
 

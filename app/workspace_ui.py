@@ -82,10 +82,14 @@ loadOrders=function(){var root=document.getElementById('ordlist');root.innerHTML
 
 
 def enhance(html):
-    # The legacy page has several style blocks. Product styles must follow all
-    # of them; inserting into the first block silently loses the theme/layout.
-    html = html.replace('</head>', '<style id=workspace-design>' + CSS + '</style></head>', 1)
+    from . import product_ui
+    # Replace the previous desk styles and navigation, rather than adding a
+    # fourth competing dashboard. Owned data/action helpers stay available.
+    import re
+    html = re.sub(r'<style id="desk-design">.*?</style>', '', html, count=1, flags=re.S)
+    html = product_ui.apply_shell(html)
+    html = html.replace('</head>', '<style id=product-design>' + product_ui.CSS + '</style></head>', 1)
     anchor = "boot();setInterval(()=>{if(ME)"
     if anchor not in html:
         raise ValueError('Workspace boot anchor missing')
-    return html.replace(anchor, JS + '\n' + anchor, 1)
+    return html.replace(anchor, JS + '\n' + product_ui.JS + '\nproductShell();\n' + anchor, 1)

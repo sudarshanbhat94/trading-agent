@@ -34,7 +34,8 @@ function element(classes){const names=new Set(classes);return {
  classList:{add:x=>names.add(x),remove:x=>names.delete(x),contains:x=>names.has(x),
   toggle:(x,on)=>{if(on===undefined)on=!names.has(x);on?names.add(x):names.delete(x);}},
  style:{},dataset:{},value:'',innerHTML:'',textContent:'',addEventListener(){},
- setAttribute(){},appendChild(){},querySelector(){return null;},querySelectorAll(){return [];}
+ setAttribute(){},appendChild(){},insertAdjacentHTML(_,html){this.innerHTML+=html;},
+ querySelector(){return null;},querySelectorAll(){return [];}
 };}
 const elements=Object.fromEntries(Object.entries(data.elements).map(([id,c])=>[id,element(c)]));
 const calls=[];
