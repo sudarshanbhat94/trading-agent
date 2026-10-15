@@ -4,6 +4,7 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import replace
@@ -23,7 +24,7 @@ def quotes(price=100):
     return {"TEST":dict(price=price,ts=datetime.now(timezone.utc).isoformat())}
 
 
-class CatalogueTest(unittest.TestCase):
+class CatalogueTest(ContractStorageCase):
     def setUp(self):
         self.con = sqlite3.connect(":memory:"); self.addCleanup(self.con.close)
         self.now = datetime.now(timezone.utc)
@@ -86,7 +87,7 @@ class CatalogueTest(unittest.TestCase):
         self.assertFalse(result["execution_enabled"])
 
 
-class DeliveryTest(unittest.TestCase):
+class DeliveryTest(ContractStorageCase):
     def setUp(self):
         self.con=sqlite3.connect(":memory:");v2_live.ensure_schema(self.con);self.addCleanup(self.con.close)
         self.addCleanup(fencing.ACTIVE.set,None)
@@ -175,7 +176,7 @@ class DeliveryTest(unittest.TestCase):
         with self.assertRaises(RuntimeError):outbox.drain(self.con)
 
 
-class ReconciliationTest(unittest.TestCase):
+class ReconciliationTest(ContractStorageCase):
     def setUp(self):
         self.con=sqlite3.connect(":memory:");v2_live.ensure_schema(self.con);self.addCleanup(self.con.close)
         self.now=datetime.now(timezone.utc)
@@ -215,7 +216,7 @@ class ReconciliationTest(unittest.TestCase):
             with self.assertRaises(ValueError):broker._inventory_rows(body)
 
 
-class VaultSessionTest(unittest.TestCase):
+class VaultSessionTest(ContractStorageCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.state_dir=str(Path(self.tmp.name)/"brokers")

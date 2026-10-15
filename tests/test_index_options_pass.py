@@ -19,11 +19,12 @@ from __future__ import annotations
 
 import inspect
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 
 from app import v2_live
 
 
-class WiringTest(unittest.TestCase):
+class WiringTest(ContractStorageCase):
     """The failure that started this: built, tested, and connected to nothing."""
 
     def test_the_pass_exists(self) -> None:
@@ -50,7 +51,7 @@ class WiringTest(unittest.TestCase):
         self.assertIn("record_entry(", src)
 
 
-class GateTest(unittest.TestCase):
+class GateTest(ContractStorageCase):
     def _src(self):
         return inspect.getsource(v2_live.index_options_pass)
 
@@ -322,7 +323,7 @@ def q(strike, side, price, under="NIFTY", lot=65.0):
                 option_type=side, underlying=under)
 
 
-class SeparateBookTest(unittest.TestCase):
+class SeparateBookTest(ContractStorageCase):
     """Options run on their own Rs 1L, ring-fenced from equity.
 
     Sharing one pot would let a bad options week shrink the position sizing of
@@ -354,7 +355,7 @@ class SeparateBookTest(unittest.TestCase):
         self.assertIn("book exhausted", self._src())
 
 
-class ContractPickTest(unittest.TestCase):
+class ContractPickTest(ContractStorageCase):
     """Strike and side are read from STORED COLUMNS, never parsed out of the
     ticker: NIFTY2680424000CE runs the expiry code into the strike, and taking
     digits from the right yields 2,680,424,000 — wrong, but not obviously so,
@@ -414,7 +415,7 @@ class ContractPickTest(unittest.TestCase):
         self.assertAlmostEqual(out["cost"], out["price"] * out["lot_size"])
 
 
-class NoSymbolParsingTest(unittest.TestCase):
+class NoSymbolParsingTest(ContractStorageCase):
     def test_the_ticker_is_never_parsed_for_a_strike(self) -> None:
         """Guards the bug directly: any digits-from-the-right helper is a
         landmine, because the expiry code sits immediately before the strike."""

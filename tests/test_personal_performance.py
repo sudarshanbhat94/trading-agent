@@ -1,10 +1,11 @@
 import sqlite3
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from app import books,v2_live,personal_performance as perf
 from tests.test_release_safety import quotes
 
 
-class PersonalPerformanceTest(unittest.TestCase):
+class PersonalPerformanceTest(ContractStorageCase):
     def setUp(self):
         self.con=sqlite3.connect(':memory:');v2_live.ensure_schema(self.con);self.addCleanup(self.con.close)
 

@@ -3,6 +3,7 @@ import sqlite3
 import os
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import date, datetime, timezone
 from unittest.mock import patch
 
@@ -13,7 +14,7 @@ from app.sleeves.base import Candidate
 from app.sleeves.feeds import fresh_quotes
 
 
-class AuditRegressionTest(unittest.TestCase):
+class AuditRegressionTest(ContractStorageCase):
     def setUp(self):
         self.con = sqlite3.connect(":memory:")
         v2_live.ensure_schema(self.con)
@@ -106,7 +107,7 @@ class AuditRegressionTest(unittest.TestCase):
                          (12500,2,"2026-09-01T00:00:00Z"))
 
 
-class JournalTest(unittest.TestCase):
+class JournalTest(ContractStorageCase):
     def setUp(self):
         # This fixture exercises journal outcomes after an approved boundary;
         # authorization refusal is covered separately in test_live_release.

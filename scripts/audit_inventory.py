@@ -123,7 +123,7 @@ def run():
             result['ui'].append(dict(file=rel, line=1, lines=len(source.splitlines()), functions=dict(collections.Counter(re.findall(r'\b(?:async\s+)?function\s+(\w+)\s*\(',source)))))
         if rel.startswith(('app/','scripts/')):
             for no,line in enumerate(source.splitlines(),1):
-                names=sorted(set(re.findall(r'\b(?:NIFTYBEES|BANKBEES|NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|NSE_EQ|NSE_FO|BSE_EQ|BSE_FO|NSE|BSE|MCX|CNC|MIS|NRML|SL-M|NASDAQ|NYSE)\b',line)))
+                names=sorted(set(re.findall(r'\b(?:NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|NSE_EQ|NSE_FO|BSE_EQ|BSE_FO|NSE|BSE|MCX|CNC|MIS|NRML|SL-M|NASDAQ|NYSE)\b',line)))
                 markers=[m for m in ('lot_size','tick_size','freeze_quantity','expiry','instrument_token','instrument_key') if re.search(r'\b'+m+r'\b',line)]
                 if names or markers:
                     result['instrument_assumption_candidates'].append(dict(file=rel,line=no,names=names,fields=markers))

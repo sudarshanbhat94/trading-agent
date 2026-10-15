@@ -26,6 +26,7 @@ the hold varying: 1 day -5.2%, 2 days -7.3%, 3 days -8.3%, 5 days -8.9%,
 from __future__ import annotations
 
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from datetime import date
 
 from app import v2_live
@@ -50,7 +51,7 @@ def _ev(p, lq, now_hhmm="11:00", today=TODAY, today_s=TODAY_S):
     return v2_live.evaluate_exit(p, lq, None, today, today_s, "IN", now_hhmm)
 
 
-class ExpiryExitTest(unittest.TestCase):
+class ExpiryExitTest(ContractStorageCase):
     def test_a_position_is_closed_at_the_squareoff_on_its_expiry_day(self) -> None:
         peak, eff, ex, reason = _ev(_pos(), _quote(95.0),
                                     now_hhmm=v2_live.INDEX_OPT_SQUAREOFF)
@@ -123,7 +124,7 @@ class ExpiryExitTest(unittest.TestCase):
             self.assertFalse(v2_live._expired_or_expiring(bad, TODAY), bad)
 
 
-class SquareOffTest(unittest.TestCase):
+class SquareOffTest(ContractStorageCase):
     """Measured: holding one extra day costs about a percent of premium."""
 
     def test_index_options_square_off_intraday(self) -> None:
@@ -152,7 +153,7 @@ class SquareOffTest(unittest.TestCase):
         self.assertIsNone(ex, "a 2% pop must not arm a breakeven stop on an option")
 
 
-class TargetByExpiryTest(unittest.TestCase):
+class TargetByExpiryTest(ContractStorageCase):
     """A flat target percentage cannot be right for both a 4-day weekly and a
     25-day monthly. A longer-dated option carries more premium and less gamma,
     so the same index move is a far smaller PERCENTAGE move in the premium.
@@ -202,7 +203,7 @@ class TargetByExpiryTest(unittest.TestCase):
         self.assertIn("premium * (1 + tgt_pct)", src)
 
 
-class FrozenQuoteTest(unittest.TestCase):
+class FrozenQuoteTest(ContractStorageCase):
     """An expired contract's quote stops updating BECAUSE the contract is gone.
     Refusing to act on a stale price there strands the position permanently —
     the last price seen is the only price that will ever exist for it."""
@@ -258,7 +259,7 @@ class FrozenQuoteTest(unittest.TestCase):
         self.assertEqual(position["entry_fee"], 0)
 
 
-class SchemaTest(unittest.TestCase):
+class SchemaTest(ContractStorageCase):
     def test_expiry_is_migrated_onto_an_existing_book(self) -> None:
         import sqlite3
         con = sqlite3.connect(":memory:")

@@ -54,7 +54,7 @@ def _client(tmp):
     from app import telegram_bot
     telegram_bot.V2_DB = v2
     v2_web.MAIN_DB = main_db
-    return TestClient(m.app), m
+    return TestClient(m.app,headers={"Origin":"http://testserver"}), m
 
 
 class RouteCoverageTest(unittest.TestCase):

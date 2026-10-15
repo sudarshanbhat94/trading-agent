@@ -14,7 +14,7 @@ from typing import Iterable, Literal, Sequence
 
 _LOG = logging.getLogger("openstocks.sleeves")
 
-Regime = Literal["ON", "NEUTRAL", "OFF"]
+Regime = Literal["ON", "NEUTRAL", "OFF", "UNAVAILABLE"]
 
 
 @dataclass

@@ -5,6 +5,9 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 | Module | Review status | Finding evidence |
 |---|---|---|
 | app/__init__.py | Inventoried; full semantic review pending |  |
+| app/executable_quotes.py | Narrow source normalization/storage/identity/time/depth boundaries reviewed; production feed certification pending | F25 |
+| app/paper_exchange.py | New owned paper reservation/later-event fill/exit path and runtime outage tests reviewed; partial fills/other routes not implemented | F01, F05, F25 |
+| app/login_guard.py | Narrow shared login reservations/concurrency/restart boundaries reviewed; production security review pending | F38 |
 | app/account.py | Inventoried; full semantic review pending |  |
 | app/account_safety.py | Targeted cited runtime boundary; other functions not certified | F12:36 |
 | app/account_ui.py | New narrow module read/reviewed with isolated acceptance; production/external certification pending |  |
@@ -357,3 +360,37 @@ Inventory is static extraction. Targeted boundary review and invariant fixtures 
 | tests/test_watchlist_grouping.py | Inventoried; full semantic review pending |  |
 | tests/test_watchlist_ui_render.py | Inventoried; full semantic review pending |  |
 | tests/test_whatsapp_alerts.py | Inventoried; full semantic review pending |  |
+| app/angelone_port.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F21 |
+| app/billing_ledger.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F48, F54 |
+| app/broker_ledger.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F09, F11 |
+| app/catalogue_ingestion.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F10 |
+| app/entry_contracts.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F01, F10 |
+| app/incident_inbox.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F20 |
+| app/recovery_stream.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F41 |
+| app/request_security.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F37 |
+| app/research_data.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F28 |
+| app/schema_migrations.py | New narrow module reviewed with isolated acceptance; production/source/commercial certification pending | F40 |
+
+Current release safety boundaries reviewed: sourced entry/approval/catalogue, actual broker ledger/reconciliation, native partial recovery, atomic billing/migration, incident ownership, request origin/proxy, recovery frames and PIT immutability. This does not turn all inventoried legacy files into semantically reviewed files.
+
+The corrected source added the no-op runtime-settings preservation regression. Inventory now includes 179 test modules. Actual pinned-runtime app startup was checked against fresh copied production originals after the reproduced timestamp defect; this verifies those stated preservation boundaries, not full semantic review of every settings consumer.
+
+F58/F59 received targeted semantic review of paper exit/session-cache and exact execution-contract time selection. Six new boundary tests cover sourced closure/reopening, conflict/expiry/future evidence, source outage/cache immutability and pre-open quote times. The inventory now has 180 test modules. This extends narrow runtime review without claiming every legacy module has been semantically reviewed.
+
+## Additional narrow semantic review — 7 October
+
+Protection status/activation/fill/cancellation, amendment claims/resolution, owner-stream collection and exact ledger fee/FIFO/reversal boundaries were reviewed and exercised on current fixtures. Actual broker operation and all other module paths remain uncertified. New modules: `app/protection_amendments.py`, `app/portfolio_stream.py`, `scripts/broker_portfolio_feed.py`; findings F08/F09/F60–F68.
+
+F69 received targeted semantic review of the complete reconciliation comparison/write path and its journal/native-maintenance callers. Six exact-parent regressions cover competing commits, cash-changing zero-inventory round trips, stale fills/commitments, malformed legacy evidence and cross-owner/nonfinancial observations. This adds narrow reviewed scope, not full semantic review of every inventoried file.
+
+Current refreshed static inventory includes 182 test modules. Only explicitly described boundaries are semantically reviewed.
+
+F70–F72: narrowly reviewed provider normalization, exact serialized depth updates, immutable conflict withholding, account-schema-v4 and actual provider → stored depth → owned pending paper order → ledger fixture. Current-date public NSE source retrieval timed out; no full raw-source or production execution coverage is claimed.
+
+## 7 October official research milestone
+
+| Module | Review status | Finding evidence |
+|---|---|---|
+| app/official_research.py | Narrow source/archive/identity/chronology/refusal paths reviewed with synthetic isolated fixtures; real source and commercial acceptance pending | F10, F28, F73 |
+| app/research_data.py | Exact effective/publication/observation cutoffs, correction ordering and tied-time conflicts reproduced/repaired; actual research feed/model validation pending | F28, F73 |
+| scripts/capture_official_research.py | Dedicated source import/fetch/read-only report and bounded operational output reviewed; production scheduling not installed | F10, F28 |

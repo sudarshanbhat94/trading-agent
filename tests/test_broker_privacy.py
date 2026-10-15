@@ -44,7 +44,7 @@ def _client(tmp):
     from app import main as mn
     v2_web.V2_DB = v2
     v2_web.MAIN_DB = main_db
-    return TestClient(mn.app), mn
+    return TestClient(mn.app,headers={"Origin":"http://testserver"}), mn
 
 
 class OverviewLeakTest(unittest.TestCase):

@@ -33,6 +33,9 @@ def _ist(year, month, day, hour, minute=0):
 
 
 class ExpectedSessionTest(unittest.TestCase):
+    def test_notified_nse_holiday_and_following_weekend_target_previous_session(self):
+        self.assertEqual(ci.expected_session(_ist(2026,10,2,16)), '2026-10-01')
+        self.assertEqual(ci.expected_session(_ist(2026,10,5,9)), '2026-10-01')
     def test_after_close_on_a_weekday_is_today(self) -> None:
         # Monday 2026-07-27, 16:00 IST — after the 15:30 close.
         self.assertEqual(ci.expected_session(_ist(2026, 7, 27, 16, 0)), "2026-07-27")
@@ -76,6 +79,12 @@ class _FakeDB:
 
 
 class FreshSymbolsTest(unittest.TestCase):
+    def test_future_day_is_not_evidence_that_target_day_is_complete(self):
+        self._add('FUTURE','2026-07-28')
+        self.assertEqual(ci._fresh_symbols(self.db,'IN','2026-07-27'),set())
+        self._add('TARGET','2026-07-27')
+        self.assertEqual(ci._fresh_symbols(self.db,'IN','2026-07-27',{'TARGET'}),{'TARGET'})
+        self.assertEqual(ci._fresh_symbols(self.db,'IN','2026-07-27',set()),set())
     def setUp(self) -> None:
         fd, self.path = tempfile.mkstemp(suffix=".db")
         os.close(fd)

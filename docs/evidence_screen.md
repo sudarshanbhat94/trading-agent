@@ -16,8 +16,8 @@ blocked. `/v2/api/screen` returns shared, authenticated evidence plus a personal
   do not receive the industrial leverage/cash-flow points; missing capital
   adequacy and asset-quality verification remains an explicit review flag.
 - Technical (30): price above its 50-session mean, positive 126-session return,
-  and 20-session relative strength against NIFTYBEES. The ETF benchmark is
-  explicitly labelled a proxy. Missing benchmark data earns no RS points.
+  and 20-session relative strength against actual Nifty 50 index history.
+  Matched observation dates are required. Missing benchmark data earns no RS points.
 - Participation (15): completed-session delivery above its preceding average
   and volume >=2x the **preceding** 20 sessions. Current-session delivery,
   sector mapping and FII/DII flows are fetched directly from official NSE

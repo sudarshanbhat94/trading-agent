@@ -50,6 +50,16 @@ def test_missing_fundamentals_news_and_benchmark_are_not_good_quality():
     assert row["status"] == "REVIEW REQUIRED"
 
 
+def test_quarantined_identity_cannot_borrow_current_bars_as_research():
+    con=memory()
+    result=build({'TEST':prices()},{'TEST'},{},con,NOW,pd.Timestamp('2026-09-30'),
+                 [dict(symbol='TEST',reason='absent_or_ambiguous_current_master')])
+    assert result['universe_count']==1
+    assert result['liquid_count']==0
+    assert result['equities']==[]
+    assert 'absent_or_ambiguous_current_master' in result['exclusions']['TEST']
+
+
 def test_volume_average_excludes_signal_bar_and_corrupt_price_is_rejected():
     frame = prices()
     frame.loc[frame.index[-1], "volume"] *= 3
@@ -129,7 +139,7 @@ def test_missing_delivery_and_adverse_news_remain_flags_even_on_strong_stock():
     con = memory()
     store.save(con, "TEST", "news", "NSE", {"events":[{"classification":"risk_review"}]}, NOW.isoformat(), NOW)
     store.save(con, "TEST", "participation", "NSE", {"session":"2026-09-29","delivery_pct":95,"delivery_avg20_pct":40}, NOW.isoformat(), NOW)
-    result = build({"TEST":prices(100,150),"NIFTYBEES":prices()}, {"TEST"}, {}, con, NOW, pd.Timestamp("2026-09-30"))
+    result = build({"TEST":prices(100,150),"NIFTY":prices()}, {"TEST"}, {}, con, NOW, pd.Timestamp("2026-09-30"))
     row=result["equities"][0]
     assert "adverse filing headline; manual review required" in row["flags"]
     assert row["participation"] is None
@@ -171,7 +181,9 @@ def test_capture_job_cannot_write_into_a_paper_book(tmp_path):
 
 def test_screen_route_and_ideas_share_research_payload(monkeypatch):
     from app import v2_web
-    monkeypatch.setattr("app.screening.store.report",lambda path:{"equities":[{"symbol":"TEST","actionable":False}]})
+    monkeypatch.setattr("app.screening.store.report",lambda path,now=None:{"status":"ok","data_contract_version":"screening-data-v3","equities":[{"symbol":"TEST","actionable":False}]})
+    # This fixture checks the public research payload, not account sizing.
+    monkeypatch.setattr(v2_web,"_stock_plans",lambda *args,**kwargs:None)
     assert json.loads(v2_web.api_screen("IN", {"id":2}).body)["equities"][0]["actionable"] is False
     assert v2_web._evidence_screen("US")["equities"] == []
 

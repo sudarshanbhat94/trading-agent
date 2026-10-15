@@ -364,8 +364,9 @@ class HonestyTest(unittest.TestCase):
         import pathlib
         spa = pathlib.Path("app/v2_web.py").read_text(encoding="utf-8")
         spa = spa[spa.rindex('SPA_HTML = r"""'):]
-        self.assertIn("completed 200-session trend", spa)
-        self.assertIn("There is no fixed profit target", spa)
+        self.assertIn("Actual Nifty 50 trend and stock breadth", spa)
+        self.assertIn("published entry/stop/target levels", spa)
+        self.assertIn("Paper results remain unvalidated", spa)
 
     def test_the_sample_size_is_shown_next_to_the_win_rate(self) -> None:
         """Both moved into the credibility strip when the advisory layout

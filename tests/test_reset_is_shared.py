@@ -19,12 +19,13 @@ import os
 import sqlite3
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 import uuid
 
 from app import v2_live, v2_web
 
 
-class BookIsSharedTest(unittest.TestCase):
+class BookIsSharedTest(ContractStorageCase):
     """State the premise as an assertion, so the day it stops being true this
     test fails and the guard can be revisited."""
 
@@ -48,7 +49,7 @@ class BookIsSharedTest(unittest.TestCase):
         self.assertIn('"DELETE FROM %s" % t', house)
 
 
-class ResetIsOperatorOnlyTest(unittest.TestCase):
+class ResetIsOperatorOnlyTest(ContractStorageCase):
     def setUp(self) -> None:
         tmp = tempfile.mkdtemp()
         os.environ["OPENSTOCKS_DISABLE_ENGINE"] = "1"
@@ -68,7 +69,7 @@ class ResetIsOperatorOnlyTest(unittest.TestCase):
         from app import main as mn
         v2_web.V2_DB = v2
         v2_web.MAIN_DB = main_db
-        self.client, self.main = TestClient(mn.app), mn
+        self.client, self.main = TestClient(mn.app,headers={"Origin":"http://testserver"}), mn
         self.pw = "Str0ngPassw0rd!x"
 
     def _login_as(self, role):

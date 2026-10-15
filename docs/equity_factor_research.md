@@ -1,3 +1,5 @@
+> Historical research only. Its fund route is retired; these results do not validate current individual-stock entries or actual index derivatives. See [current context](actual-index-context.md).
+
 # Large-cap quality/momentum paper sleeve — evidence and limits
 
 The candidate universe is the intersection of two current NSE constituent
@@ -37,7 +39,7 @@ book. It displays the funded share count and uses the book's net closed-trade
 return for outcomes; managed index and stock positions have no invented T1/T2
 target wins. An OFF regime leaves Ideas empty and explains both sleeve gates.
 
-The ₹10,000 book also constrains the index sleeve: ₹5,000 of NIFTYBEES at
+The ₹10,000 book also constrains the index sleeve: ₹5,000 of retired index fund at
 its 25% disaster stop risks ₹1,250, exceeding the entire 10% book drawdown
 budget. The allocator now reserves ₹150 of stop risk for tactical stock
 positions and caps strategic index stop risk at ₹850, leaving the combined

@@ -38,6 +38,9 @@ def load_panel(con, market: str, topn: int = 700, min_bars: int = 120):
     )
     if df.empty:
         return {}, None
+    from .instrument_policy import retired_symbols
+    df = df[~df["symbol"].isin(retired_symbols(con))].copy()
+    if df.empty: return {}, None
     df["date"] = pd.to_datetime(df["ts"].str[:10])
     for col in ("open", "high", "low", "close", "volume"):
         df[col] = pd.to_numeric(df[col], errors="coerce")

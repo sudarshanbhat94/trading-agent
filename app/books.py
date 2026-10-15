@@ -93,6 +93,8 @@ def ensure_schema(con):
             if field not in existing:con.execute('ALTER TABLE '+table+' ADD COLUMN '+field+' TEXT')
     from . import account_safety
     account_safety.ensure_schema(con)
+    from .paper_exchange import ensure_schema as exchange_schema
+    exchange_schema(con)
     from . import paper_ledger
     paper_ledger.ensure_schema(con)
     con.execute("CREATE TABLE IF NOT EXISTS user_book_decisions("
@@ -322,6 +324,11 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
               allocation.shares if allocation else 0)
         if qty and qty * price < RiskManager().s.min_ticket:
             reason = "approved quantity is below the minimum viable ticket"
+        contract=None
+        if qty and not reason:
+            from . import entry_contracts
+            try:contract=entry_contracts.check(market,symbol,qty,price,stop,target,product=candidate.product,regime=regime)
+            except ValueError as exc:reason=str(exc)
         accepted = bool(qty > 0 and not reason)
         now = datetime.now(IST)
         con.execute("INSERT INTO user_book_decisions(user_id,market,epoch,symbol,accepted,reason,created_at) "
@@ -329,7 +336,8 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
                                              int(accepted), reason or "approved", now.isoformat()))
         if not accepted:
             return 0
-        fee = entry_charge(qty * price, candidate.product) if market == "IN" else 0
+        from . import paper_ledger
+        fee = paper_ledger.minor(entry_charge(qty * price, candidate.product))/100 if market == "IN" else 0
         from .sleeves.risk import stop_loss_including_costs
         initial_risk = stop_loss_including_costs(price,stop,qty,candidate.product) if market == "IN" else None
         from . import paper_ledger
@@ -344,6 +352,9 @@ def buy(con, user_id, market, strategy, symbol, price, shares=None,
                            epoch, policy.encode(), price, fee, candidate.product,initial_risk))
         if cur.rowcount:
             paper_ledger.entry(con,user_id,market,epoch,cur.lastrowid,qty*price,fee)
+            entry_contracts.record(con,'personal',int(user_id),cur.lastrowid,contract)
+            con.execute('UPDATE user_positions SET instrument_id=? WHERE id=? AND user_id=?',
+                        (contract['instrument_id'],cur.lastrowid,int(user_id)))
         if cur.rowcount and request_key:
             con.execute("INSERT INTO paper_entry_intents(user_id,market,epoch,request_key,qty,price,position_id,fingerprint) "
                         "VALUES(?,?,?,?,?,?,?,?)",
@@ -378,6 +389,10 @@ def risk_state(con, user_id, market="IN", quotes=None):
     from . import account_safety
     from .sleeves.risk import BookState, stop_loss_including_costs
     from .sleeves.feeds import fresh_quotes
+    if market=='IN':
+        from .paper_exchange import integrity_reason
+        issue=integrity_reason(con)
+        if issue:return None,issue
     pos = positions(con, user_id, market)
     if quotes is None and pos:
         from .v2_live import _live
@@ -421,10 +436,12 @@ def risk_state(con, user_id, market="IN", quotes=None):
         mark = quotes[p["symbol"]]["price"]
         risk = stop_loss_including_costs(mark, min(mark, p["stop"]), p["shares"], p["product"])
         risks.append((sleeve, risk))
-    return BookState(st["budget"], st["cash"], sum(notional.values()), len(pos), counts,
+    state = BookState(st["budget"], st["cash"], sum(notional.values()), len(pos), counts,
                      st["equity"], max(peak, st["equity"]), st["equity"] - opening,
                      notional, sum(r for _, r in risks),
-                     sum(r for s, r in risks if s == "index_directional")), ""
+                     sum(r for s, r in risks if s == "index_directional"))
+    from .paper_exchange import reserved_state
+    return (reserved_state(con, user_id, epoch, state) if market=='IN' else state), ""
 
 
 def sell(con, user_id, market, symbol, price, reason="manual", position_id=None):
@@ -443,7 +460,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     assert_database_execution_allowed(con)
     epoch = current_epoch(con, user_id, market)
     sql = ("SELECT id,strategy,entry_date,entry_price,shares,opened_at,"
-                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt,instrument_id,plan_id,model_version"
+                      "sleeve,regime,COALESCE(entry_fee,0),risk_amt,instrument_id,plan_id,model_version,product"
            " FROM user_positions WHERE user_id=? AND market=? AND symbol=? "
            "AND COALESCE(book_epoch,?)=?")
     args = [int(user_id), market, symbol, LEGACY_EPOCH, epoch]
@@ -453,7 +470,7 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     row = con.execute(sql, args).fetchone()
     if not row:
         return None
-    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk, instrument_id, plan_id, model_version = row
+    pid, strategy, edate, entry, shares, opened, sleeve, regime, paid_fee, initial_risk, instrument_id, plan_id, model_version, product = row
     price = float(price or 0)
     if not math.isfinite(price) or price <= 0:
         return None
@@ -468,6 +485,16 @@ def _sell_locked(con, user_id, market, symbol, price, reason, position_id):
     # Existing after-cost P&L already includes the entry fee. Only the
     # remaining exit charge belongs to this cash leg.
     exit_charge = shares*(price-entry)-net-paid_fee
+    if market == 'IN' and plan_id:
+        # Managed fills post each cash leg in paise. Rounding only the combined
+        # round trip can disagree by a paise with those immutable postings.
+        # Preserve historical unmanaged calculations; new managed fills use the
+        # stored entry product and the same rounded legs as their cash ledger.
+        from .costs import exit_charge as sell_charge
+        exit_charge = paper_ledger.minor(sell_charge(shares*price, product))/100
+        net = (paper_ledger.minor(shares*price)-paper_ledger.minor(shares*entry)
+               -paper_ledger.minor(paid_fee)-paper_ledger.minor(exit_charge))/100
+        pct = net/(shares*entry)*100 if shares*entry else 0
     paper_ledger.exit(con,user_id,market,epoch,pid,shares*entry,shares*price,exit_charge)
     now = datetime.now(IST)
     con.execute("INSERT INTO user_trades(user_id,market,strategy,symbol,entry_date,"
@@ -516,7 +543,10 @@ def stats(con, user_id, market, live):
     wins = [r for r in rets if r > 0]
     fees = sum(float(p["entry_fee"] or 0) for p in pos)
     free = budget - sum(p["entry_price"] * p["shares"] for p in pos) - fees + realised
+    from .paper_exchange import reservation_summary
+    commitments = reservation_summary(con, user_id, ep) if market=='IN' else dict(pending_orders=0,reserved_cash=0)
     return dict(market=market, budget=budget, cash=round(free, 2),
+                available_cash=round(free-commitments['reserved_cash'], 2), **commitments,
                 deployed=round(mtm, 2), equity=round(free + mtm, 2),
                 overall_pnl=round(realised + unreal - fees, 2), realised=round(realised, 2),
                 unrealised=round(unreal - fees, 2), positions=len(pos), trades=len(rets),
@@ -626,7 +656,11 @@ def mirror_exit(con, db, plans_mod, market, symbol, price, reason, src_id=None, 
                                " WHERE market=? AND symbol=? AND src_id=?",
                                (market, symbol, src_id)).fetchall():
         try:
-            if sell(con, uid, market, symbol, price, reason, position_id=pid):
+            from . import paper_exchange
+            if market=='IN' and paper_exchange.managed_position(con,uid,pid):
+                paper_exchange.queue_exit(con,uid,pid,reason)
+                done += 1
+            elif sell(con, uid, market, symbol, price, reason, position_id=pid):
                 done += 1
         except Exception:
             _LOG.exception("book mirror exit failed for user %s", uid)
@@ -670,7 +704,11 @@ def monitor_positions(con, market, quotes, today=None, regime_view=None):
                     if monthly_rebalance(date.fromisoformat(regime_view["asof"][:10]), today):
                         price, reason = quote["price"], "regime_off"
                 if price is not None:
-                    if _sell_locked(con, uid, market, row["symbol"], price, reason, row["id"]):
+                    from . import paper_exchange
+                    if market=='IN' and paper_exchange.managed_position(con,uid,row['id']):
+                        paper_exchange.queue_exit(con,uid,row['id'],reason,now=now)
+                        done += 1
+                    elif _sell_locked(con, uid, market, row["symbol"], price, reason, row["id"]):
                         done += 1
                 else:
                     con.execute("UPDATE user_positions SET peak=? WHERE id=? AND user_id=?",

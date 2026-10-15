@@ -12,9 +12,9 @@ def install(broker, con):
                                                 "WHEN side='BUY' THEN filled_qty ELSE -filled_qty END)!=0",(uid,))]
     def trades(uid):
         return [dict(trade_id=f"fixture-{rid}",order_id=oid,instrument_token=key,
-                     transaction_type=side,product=product,quantity=int(qty))
-                for rid,oid,key,side,product,qty in con.execute(
-                    "SELECT id,broker_order_id,instrument_key,side,product,filled_qty FROM v2_live_orders "
+                     transaction_type=side,product=product,quantity=int(qty),average_price=float(price),executed_at=ts)
+                for rid,oid,key,side,product,qty,price,ts in con.execute(
+                    "SELECT id,broker_order_id,instrument_key,side,product,filled_qty,average_price,ts FROM v2_live_orders "
                     "WHERE user_id=? AND filled_qty>0",(uid,))]
     broker.positions=positions
     broker.holdings=lambda uid: []

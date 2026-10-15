@@ -11,6 +11,8 @@ import statistics
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from urllib.parse import urlparse
+from .financials import fiscal_date, finite_amount, consecutive_periods
+import httpx
 
 IST = ZoneInfo("Asia/Kolkata")
 NSE = "https://www.nseindia.com"
@@ -73,23 +75,37 @@ def events(announcements, meetings, now):
 
 def statements(payload, now):
     """Same-period ratios; cash flow and leverage are not comparable for banks."""
+    if not isinstance(now,datetime) or now.tzinfo is None:
+        raise ValueError('An aware statement decision time is required')
+    if not isinstance(payload,dict) or not isinstance(payload.get('timeseries'),dict):
+        raise ValueError('Financial statement series unavailable')
+    result=payload['timeseries'].get('result')
+    if payload['timeseries'].get('error') or not isinstance(result,list):
+        raise ValueError('Financial statement provider response invalid')
     series, currencies = {}, {}
-    for item in (payload.get("timeseries") or {}).get("result") or []:
+    for item in result:
+        if not isinstance(item,dict):raise ValueError('Financial statement block invalid')
         for name in TYPES:
-            values = {}
-            for row in item.get(name) or []:
+            if name not in item:continue
+            rows=item[name]
+            if not isinstance(rows,list):raise ValueError('Financial statement rows invalid')
+            for row in rows:
                 try:
-                    period = row["asOfDate"]
-                    value = float(row["reportedValue"]["raw"])
-                    currency = str(row.get("currencyCode") or "")
-                    if (math.isfinite(value) and re.fullmatch(r"[A-Z]{3}", currency)
-                            and period <= now.astimezone(IST).date().isoformat()):
-                        values[period] = value
-                        currencies.setdefault(name, {})[period] = currency
-                except (KeyError, TypeError, ValueError):
-                    continue
-            if values:
-                series[name] = values
+                    period=row['asOfDate'];day=fiscal_date(period)
+                    if day>now.astimezone(IST).date():continue
+                    if row.get('periodType') not in (None,'12M' if name.startswith('annual') else '3M'):
+                        raise ValueError('Statement duration does not match its series')
+                    value=finite_amount(row['reportedValue']['raw'])
+                    currency=row.get('currencyCode')
+                    if not isinstance(currency,str) or not re.fullmatch(r'[A-Z]{3}',currency):
+                        raise ValueError('Statement currency unavailable')
+                except (KeyError,TypeError) as exc:
+                    raise ValueError('Financial statement point invalid') from exc
+                values=series.setdefault(name,{})
+                currency_points=currencies.setdefault(name,{})
+                if period in values and (values[period]!=value or currency_points[period]!=currency):
+                    raise ValueError('Conflicting same-period financial statement values')
+                values[period]=value;currency_points[period]=currency
     incomes = series.get("annualNetIncome", {})
     if not incomes:
         raise ValueError("annual earnings with identified currency unavailable")
@@ -101,7 +117,7 @@ def statements(payload, now):
     series = {name:{p:v for p,v in vals.items() if currencies[name][p] == currency}
               for name,vals in series.items()}
     incomes = series["annualNetIncome"]
-    if (now.date() - datetime.fromisoformat(period).date()).days > 550:
+    if (now.astimezone(IST).date() - fiscal_date(period)).days > 550:
         raise ValueError("annual statement is too old")
     income = incomes[period]
     def at(name):
@@ -116,11 +132,12 @@ def statements(payload, now):
         if not 330 <= gap <= 400:
             return None
         a, b = series[name][current], series[name][prev]
-        return 100 * (a / b - 1) if b > 0 else None
+        return finite_amount(100 * (a / b - 1)) if b > 0 else None
     equity, debt, revenue, ocf = (at(n) for n in (
         "annualStockholdersEquity", "annualTotalDebt", "annualTotalRevenue", "annualOperatingCashFlow"))
-    historical = [incomes[p] for p in sorted(incomes)[-4:]]
-    annual_growth = [growth("annualNetIncome", p) for p in sorted(incomes)]
+    retained=consecutive_periods(incomes)
+    historical = [incomes[p] for p in retained]
+    annual_growth = [growth("annualNetIncome", p) for p in retained[1:]]
     annual_growth = [v for v in annual_growth if v is not None]
     quarterly = {}
     for name in ("quarterlyTotalRevenue", "quarterlyNetIncome"):
@@ -129,16 +146,20 @@ def statements(payload, now):
             cur = max(vals)
             prev = [k for k in vals if 330 <= (datetime.fromisoformat(cur) - datetime.fromisoformat(k)).days <= 400]
             if prev and vals[max(prev)] > 0:
-                quarterly[name] = dict(period=cur, yoy_pct=100*(vals[cur]/vals[max(prev)]-1))
+                quarterly[name] = dict(period=cur, yoy_pct=finite_amount(100*(vals[cur]/vals[max(prev)]-1)))
     return dict(period_end=period, statement_currency=currency, annual_income=income, annual_revenue=revenue,
-        roe_pct=100*income/equity if equity is not None and equity > 0 else None,
-        debt_equity=debt/equity if debt is not None and debt >= 0 and equity is not None and equity > 0 else None,
-        operating_cash_flow=ocf, cash_conversion=ocf/income if ocf is not None and income > 0 else None,
-        profit_margin_pct=100*income/revenue if revenue is not None and revenue > 0 else None,
+        roe_pct=finite_amount(100*(income/equity)) if equity is not None and equity > 0 else None,
+        debt_equity=finite_amount(debt/equity) if debt is not None and debt >= 0 and equity is not None and equity > 0 else None,
+        operating_cash_flow=ocf, cash_conversion=finite_amount(ocf/income) if ocf is not None and income > 0 else None,
+        profit_margin_pct=finite_amount(100*(income/revenue)) if revenue is not None and revenue > 0 else None,
         earnings_growth_pct=growth("annualNetIncome", period),
         revenue_growth_pct=growth("annualTotalRevenue", period),
         positive_earnings_years=sum(v > 0 for v in historical), earnings_years=len(historical),
-        earnings_growth_std_pct=statistics.pstdev(annual_growth) if len(annual_growth) >= 2 else None,
+        earnings_periods=[dict(period_end=p,annual_income=incomes[p],statement_currency=currency) for p in retained],
+        excluded_earnings_periods=sorted(set(incomes)-set(retained)),
+        history_basis="latest uninterrupted annual periods in one reporting currency",
+        financial_contract_version="annual-statements-v2",
+        earnings_growth_std_pct=finite_amount(statistics.pstdev(annual_growth)) if len(annual_growth) >= 2 else None,
         roe_basis="annual earnings / ending equity",
         basic_eps=at("annualBasicEPS"), quarterly_growth=quarterly,
         reliability="secondary financial statements; not exchange-verified ratios")
@@ -147,10 +168,18 @@ def statements(payload, now):
 def fetch_statements(http, symbol, now):
     ticker = symbol + ".NS"
     url = "https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/timeseries/" + ticker
-    response = http.get(url, params=dict(type=",".join(TYPES),
-        period1=int((now - timedelta(days=5*366)).timestamp()), period2=int(now.timestamp())))
-    response.raise_for_status()
-    return statements(response.json(), now)
+    try:
+        response = http.get(url, params=dict(type=",".join(TYPES),
+            period1=int((now - timedelta(days=5*366)).timestamp()), period2=int(now.timestamp())))
+        response.raise_for_status()
+        return statements(response.json(), now)
+    except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
+        from .official_financials import fetch_statements as official
+        try:
+            return official(http,symbol,now)
+        except (httpx.HTTPError,ValueError,KeyError,TypeError) as fallback:
+            safe=lambda e: str(e)[:140] if isinstance(e,ValueError) else type(e).__name__
+            raise ValueError('Secondary statements: '+safe(exc)+'; official fallback: '+safe(fallback)) from None
 
 
 def fetch_chain(http, symbol, now):
@@ -179,6 +208,12 @@ def fetch_chain(http, symbol, now):
 
 
 def fetch_delivery(http, session):
+    return {symbol:r['delivery_pct'] for (symbol,series),r in fetch_cash_session(http,session).items()
+            if series=='EQ' and r['delivery_pct'] is not None}
+
+
+def fetch_cash_session(http, session):
+    """Dated exchange records, including unsupported series and explicit blanks."""
     url = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_"+session.strftime("%d%m%Y")+".csv"
     response = http.get(url)
     response.raise_for_status()
@@ -188,14 +223,17 @@ def fetch_delivery(http, session):
     out = {}
     for raw in reader:
         row = {k.strip():str(v or "").strip() for k,v in raw.items() if k}
-        if row.get("SERIES") != "EQ": continue
         if datetime.strptime(row["DATE1"], "%d-%b-%Y").date() != session.date():
             raise ValueError("delivery report returned a different session")
-        try:
-            pct = float(row["DELIV_PER"])
-            if math.isfinite(pct) and 0 <= pct <= 100: out[row["SYMBOL"]] = pct
-        except ValueError:
-            continue
+        try:pct=float(row['DELIV_PER'])
+        except ValueError:pct=None
+        if pct is not None and (not math.isfinite(pct) or not 0<=pct<=100):pct=None
+        try:volume=finite_amount(row.get('TTL_TRD_QNTY'))
+        except ValueError:volume=None
+        key=(row['SYMBOL'],row['SERIES'])
+        data=dict(series=row['SERIES'],delivery_pct=pct,volume=volume,session=session.strftime('%Y-%m-%d'))
+        if key in out and out[key]!=data:raise ValueError('Conflicting session records')
+        out[key]=data
     if not out: raise ValueError("empty delivery report")
     return out
 
@@ -207,7 +245,7 @@ def fetch_sectors(http):
     if not reader.fieldnames or not {"Symbol", "Industry", "Series"} <= set(reader.fieldnames):
         raise ValueError("sector constituent columns changed")
     out = {row["Symbol"].strip().upper():row["Industry"].strip() for row in reader
-           if row.get("Series") == "EQ" and row.get("Symbol") and row.get("Industry")}
+           if row.get("Series") in ("EQ","BE") and row.get("Symbol") and row.get("Industry")}
     if not 400 <= len(out) <= 600: raise ValueError("incomplete sector constituent file")
     return out
 

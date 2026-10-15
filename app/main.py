@@ -597,6 +597,8 @@ def _configure_logging():
 _configure_logging()
 
 app = FastAPI(title="OpenStocks")
+from .request_security import boundary as _request_boundary
+app.middleware('http')(_request_boundary)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
@@ -4775,6 +4777,12 @@ async def auth_signup(payload: dict[str, Any], response: Response, request: Requ
 @app.post("/api/auth/logout")
 async def auth_logout(response: Response, request: Request) -> dict[str, bool]:
     return logout_user(response, request, settings, db)
+
+
+@app.post('/api/auth/logout-all')
+async def auth_logout_all(response: Response, request: Request) -> dict[str, bool]:
+    from .auth import logout_all
+    return logout_all(response, request, settings, db)
 
 
 @app.get("/api/users")

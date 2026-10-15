@@ -1,0 +1,1790 @@
+diff --git a/app/broker.py b/app/broker.py
+index c2eef5a..71377a6 100644
+--- a/app/broker.py
++++ b/app/broker.py
+@@ -694,3 +694,40 @@ def cancel_protection(user_id,protection_id):
+     if not isinstance(protection_id,str) or not protection_id.startswith('GTT-'):
+         raise ValueError('invalid protection identity')
+     return _execution_request(user_id,'DELETE','/order/gtt/cancel',payload={'gtt_order_id':protection_id})
++
++
++def modify_protection(user_id,protection_id,*,quantity,stop):
++    """Scheduled SINGLE trigger only; lifecycle verifies identity and ownership."""
++    import math
++    if not isinstance(protection_id,str) or not protection_id.startswith('GTT-') or len(protection_id)<=4 or \
++            type(quantity) is not int or quantity<1 or isinstance(stop,bool) or not isinstance(stop,(int,float)) or \
++            not math.isfinite(stop) or stop<=0:
++        raise ValueError('invalid native protection modification')
++    return _execution_request(user_id,'PUT','/order/gtt/modify',payload=dict(type='SINGLE',gtt_order_id=protection_id,
++        quantity=quantity,rules=[dict(strategy='ENTRY',trigger_type='BELOW',trigger_price=stop,market_protection=5)]))
++
++
++def portfolio_stream_access(user_id):
++    """Owner credential -> verified profile and one-use outbound socket URI.
++
++    The returned URI contains authentication material. Never log/store it or
++    return it to a public route. Redirect hosts are restricted to Upstox.
++    """
++    import httpx
++    from urllib.parse import urlsplit
++    headers=_headers(user_id)
++    profile=httpx.get(f'{API_BASE}/user/profile',headers=headers,timeout=15)
++    profile.raise_for_status();body=profile.json()
++    account=(body.get('data') or {}).get('user_id')
++    if body.get('status')!='success' or not isinstance(account,str) or not account.strip():
++        raise ValueError('Verified broker profile unavailable')
++    response=httpx.get(f'{API_BASE}/feed/portfolio-stream-feed/authorize',headers=headers,
++                       params={'update_types':'order,gtt_order'},timeout=15)
++    response.raise_for_status();body=response.json()
++    uri=(body.get('data') or {}).get('authorized_redirect_uri')
++    parsed=urlsplit(uri) if isinstance(uri,str) else None
++    if body.get('status')!='success' or not parsed or parsed.scheme!='wss' or \
++            not parsed.hostname or not parsed.hostname.endswith('.upstox.com') or parsed.username or parsed.password or \
++            parsed.fragment or parsed.port not in (None,443):
++        raise ValueError('Invalid authenticated portfolio socket URI')
++    return account,uri
+diff --git a/app/broker_ledger.py b/app/broker_ledger.py
+index 5b390f0..f0d838c 100644
+--- a/app/broker_ledger.py
++++ b/app/broker_ledger.py
+@@ -48,6 +48,8 @@ def _amount(value):
+
+
+ def _post(con,uid,broker,key,kind,data,postings,now):
++    from .worker_fencing import require_current
++    require_current(con)
+     if not con.in_transaction:raise RuntimeError('Accounting requires serialized transaction')
+     if type(uid) is not int or uid<1 or not key or not broker or not data.get('source'):
+         raise ValueError('Owned and sourced accounting identity required')
+@@ -123,18 +125,21 @@ def ingest_trades(con,uid,trades,*,broker='upstox',now=None):
+         return inserted
+
+
+-def record_fee(con,uid,order_id,reference,amount,*,source,occurred_at,broker='upstox',now=None):
++def record_fee(con,uid,order_id,reference,amount,*,source,occurred_at,broker='upstox',now=None,covered_quantity=None):
+     """One immutable total fee assessment per sourced reference, never estimated."""
+     now=now or datetime.now(timezone.utc)
+     if not isinstance(reference,str) or not reference.strip() or _time(occurred_at)>now:
+         raise ValueError('Sourced fee identity/date required')
+     if isinstance(amount,bool):raise ValueError('Invalid fee amount')
++    if covered_quantity is not None and (type(covered_quantity) is not int or covered_quantity<1):
++        raise ValueError('Sourced final fee coverage requires positive whole quantity')
+     amount=_amount(amount) if amount!=0 else Decimal(0)
+     ensure_schema(con)
+     with atomic(con):
+         if not con.execute('SELECT 1 FROM v2_live_orders WHERE user_id=? AND broker_order_id=?',(uid,order_id)).fetchone():
+             raise ValueError('Fee belongs to an unknown account order')
+         data=dict(order_id=order_id,currency='INR',source=source,occurred_at=occurred_at,amount=str(amount))
++        if covered_quantity is not None:data['covered_quantity']=covered_quantity
+         return _post(con,uid,broker,'fee:'+reference,'FEE',data,{'fees':minor(amount),'trade_payable':-minor(amount)},now)[0]
+
+
+@@ -162,9 +167,10 @@ def reverse(con,uid,event_id,reference,*,source,occurred_at,broker='upstox',now=
+     now=now or datetime.now(timezone.utc)
+     if not reference or _time(occurred_at)>now:raise ValueError('Sourced correction required')
+     with atomic(con):
+-        row=con.execute('SELECT currency FROM broker_ledger_events WHERE id=? AND user_id=? AND broker=?',
++        row=con.execute('SELECT currency,kind FROM broker_ledger_events WHERE id=? AND user_id=? AND broker=?',
+                         (event_id,uid,broker)).fetchone()
+         if not row:raise ValueError('Unknown owned correction target')
++        if row[1]=='REVERSAL':raise ValueError('Reversals cannot themselves be reversed; append sourced replacement evidence')
+         if con.execute("SELECT 1 FROM broker_ledger_events WHERE user_id=? AND broker=? AND kind='REVERSAL' "
+                        "AND json_extract(payload,'$.reverses')=?",(uid,broker,event_id)).fetchone():
+             raise ValueError('Event already reversed')
+@@ -180,22 +186,52 @@ def report(con,uid,broker='upstox'):
+     # FIFO gross outcomes remain separate from unsourced final charges.
+     from collections import defaultdict,deque
+     lots=defaultdict(deque);gross=Decimal(0);closed=0;oversold=False
+-    fills=con.execute("SELECT instrument_key,product,side,quantity,price FROM broker_ledger_events e WHERE user_id=? AND broker=? "
++    fills=con.execute("SELECT instrument_key,product,side,quantity,price,order_id,occurred_at,id FROM broker_ledger_events e WHERE user_id=? AND broker=? "
+                       "AND kind='FILL' AND NOT EXISTS (SELECT 1 FROM broker_ledger_events r WHERE r.user_id=e.user_id "
+                       "AND r.broker=e.broker AND r.kind='REVERSAL' AND json_extract(r.payload,'$.reverses')=e.id) "
+-                      "ORDER BY julianday(occurred_at),id",(uid,broker))
+-    for key,product,side,qty,px in fills:
++                      "ORDER BY id",(uid,broker)).fetchall()
++    # SQLite Julian days round close timestamps. Arrival order is not execution
++    # order: sort the original aware times at full precision, including offsets.
++    fills.sort(key=lambda r:(_time(r[6]),r[7]))
++    totals=defaultdict(int);closed_by_order=defaultdict(int);times=defaultdict(set)
++    for key,product,side,qty,px,oid,ts,_ in fills:
++        totals[oid]+=qty;times[(key,product,_time(ts))].add((side,str(Decimal(px).normalize()),oid))
++    # Equal buy times can also change which priced/fee-bearing lot is closed.
++    # Receipt IDs do not prove order within one exchange timestamp.
++    ambiguous=any(len({side for side,_,_ in observations})>1 or
++                  len({(price,oid) for side,price,oid in observations if side=='BUY'})>1
++                  for observations in times.values())
++    for key,product,side,qty,px,oid,_,_ in fills:
+         px=Decimal(px);queue=lots[(key,product)]
+-        if side=='BUY':queue.append([qty,px]);continue
++        if side=='BUY':queue.append([qty,px,oid]);continue
+         remaining=qty
+         while remaining and queue:
+             taken=min(remaining,queue[0][0]);gross+=taken*(px-queue[0][1]);closed+=taken
++            closed_by_order[queue[0][2]]+=taken;closed_by_order[oid]+=taken
+             remaining-=taken;queue[0][0]-=taken
+             if not queue[0][0]:queue.popleft()
+         if remaining:oversold=True
++    fees=defaultdict(list)
++    for oid,payload, in con.execute("SELECT order_id,payload FROM broker_ledger_events e WHERE user_id=? AND broker=? AND kind='FEE' "
++                      "AND NOT EXISTS (SELECT 1 FROM broker_ledger_events r WHERE r.user_id=e.user_id AND r.broker=e.broker "
++                      "AND r.kind='REVERSAL' AND json_extract(r.payload,'$.reverses')=e.id)",(uid,broker)):
++        fees[oid].append(json.loads(payload))
++    missing=[];allocated=0
++    for oid,quantity in closed_by_order.items():
++        order=con.execute('SELECT status,filled_qty FROM v2_live_orders WHERE user_id=? AND broker_order_id=?',(uid,oid)).fetchall()
++        assessments=fees[oid]
++        if len(assessments)!=1 or assessments[0].get('covered_quantity')!=totals[oid] or len(order)!=1 or \
++                order[0][0] not in {'filled','cancelled','rejected'} or order[0][1]!=totals[oid]:
++            missing.append(oid);continue
++        # Allocate each final total once, in paise. The open share portion of
++        # an entry keeps its own fee cost; it is not expensed twice on exits.
++        allocated+=minor(assessments[0]['amount'])*quantity//totals[oid]
++    net=None if oversold or ambiguous or missing else minor(gross)-allocated
+     return dict(scope='actual-owned-broker-accounting',broker=broker,currency='INR',balances_minor=balances,
+                 events_by_kind=counts,balanced=sum(balances.values())==0,available_margin=None,
+-                realised_gross_minor=None if oversold else minor(gross),closed_units=closed,
+-                realised_net_minor=None,inventory_consistent=not oversold,
++                realised_gross_minor=None if oversold or ambiguous else minor(gross),closed_units=closed,
++                realised_net_minor=net,inventory_consistent=not oversold,
++                execution_ordering_ambiguous=ambiguous,net_fee_coverage_missing_orders=sorted(missing),
++                realised_fee_allocation_minor=None if missing else allocated,
+                 fee_coverage='sourced-assessments-only',settlement_coverage='sourced-statements-only',
+                 certified=False,note='Trade-date postings are not spendable broker cash or certified net P&L')
+diff --git a/app/broker_reconciliation.py b/app/broker_reconciliation.py
+index e437b9f..b5e8776 100644
+--- a/app/broker_reconciliation.py
++++ b/app/broker_reconciliation.py
+@@ -4,6 +4,7 @@ External holdings are never adopted. Unknown/ambiguous broker data is a
+ blocked reconciliation, not a zero balance. Evidence is retained per account.
+ """
+ import json
++import hashlib
+ import math
+ import time
+ from datetime import datetime, timezone, timedelta
+@@ -51,10 +52,36 @@ def inventory(positions, holdings):
+
+
+ def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, checked_at=None):
++    """Compare and publish against one locked owned-order snapshot.
++
++    Network reads happen in refresh before this transaction. A competing fill
++    cannot commit between our inventory comparisons and the readiness write.
++    """
++    ensure_schema(con)
++    with atomic(con):
++        from .worker_fencing import require_current
++        require_current(con)
++        return _reconcile_locked(con, uid, positions=positions, holdings=holdings,
++                                 funds=funds, trades=trades, orders=orders, checked_at=checked_at)
++
++
++def _owned_state_fingerprint(con, uid):
++    # Exclude receipt times/responses: another identical status observation is
++    # harmless. Include commitments, confirmed inventory and financial inputs.
++    rows = list(con.execute('SELECT id,market,symbol,instrument_key,product,side,qty,price,notional,'
++                            'filled_qty,average_price,status,broker_order_id,intent_key,cancel_requested_at,'
++                            'origin_position_id,semantic_key,request_fingerprint FROM v2_live_orders '
++                            'WHERE user_id=? ORDER BY id', (uid,)))
++    payload = json.dumps([1,uid,[list(row) for row in rows]], separators=(',', ':'), allow_nan=False)
++    return hashlib.sha256(payload.encode()).hexdigest()
++
++
++def _reconcile_locked(con, uid, *, positions, holdings, funds, trades, orders=None, checked_at=None):
+     checked_at = time.time() if checked_at is None else checked_at
+     reasons, differences = [], []
+-    available = None
++    available, fingerprint = None, None
+     try:
++        fingerprint = _owned_state_fingerprint(con, uid)
+         actual = inventory(positions,holdings)
+         available = float(funds["data"]["equity"]["available_margin"])
+         if not math.isfinite(available) or available < 0 or not isinstance(trades,list):
+@@ -110,18 +137,17 @@ def reconcile(con, uid, *, positions, holdings, funds, trades, orders=None, chec
+         status = "mismatch" if reasons else "ok"
+     except (KeyError,TypeError,ValueError,OverflowError):
+         status, reasons = "unknown", ["complete, unambiguous broker evidence unavailable"]
+-    ensure_schema(con)
+-    with atomic(con):
+-        payload = dict(reasons=sorted(set(reasons)),differences=differences,
+-                       managed_only=True,external_adopted=False,fee_certified=False)
+-        con.execute("INSERT INTO broker_reconciliation VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+-                    "checked_at=excluded.checked_at,status=excluded.status,available_cash=excluded.available_cash,"
+-                    "payload=excluded.payload",(uid,checked_at,status,available,json.dumps(payload)))
+-        if status != "ok":
+-            incident(con,uid,"BROKER_RECONCILIATION",uid,"; ".join(payload["reasons"]))
+-        else:
+-            con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='BROKER_RECONCILIATION'",
+-                        (checked_at,uid))
++    payload = dict(reasons=sorted(set(reasons)),differences=differences,
++                   managed_only=True,external_adopted=False,fee_certified=False,
++                   owned_state_fingerprint=fingerprint)
++    con.execute("INSERT INTO broker_reconciliation VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
++                "checked_at=excluded.checked_at,status=excluded.status,available_cash=excluded.available_cash,"
++                "payload=excluded.payload",(uid,checked_at,status,available,json.dumps(payload)))
++    if status != "ok":
++        incident(con,uid,"BROKER_RECONCILIATION",uid,"; ".join(payload["reasons"]))
++    else:
++        con.execute("UPDATE execution_incidents SET resolved_at=? WHERE user_id=? AND code='BROKER_RECONCILIATION'",
++                    (checked_at,uid))
+     return dict(status=status,checked_at=checked_at,available_cash=available,**payload)
+
+
+@@ -145,5 +171,16 @@ def refresh(con, uid, port=None):
+
+ def ready(con, uid, now=None):
+     now = time.time() if now is None else now
+-    row = con.execute("SELECT checked_at,status FROM broker_reconciliation WHERE user_id=?",(uid,)).fetchone()
+-    return bool(row and row[1]=='ok' and 0 <= now-row[0] <= 120)
++    # Entry/maintenance callers already hold the writer lock; a standalone
++    # check also reads evidence and current orders from one consistent state.
++    with atomic(con):
++        row = con.execute("SELECT checked_at,status,payload FROM broker_reconciliation WHERE user_id=?",(uid,)).fetchone()
++        if not row or row[1]!='ok' or not 0 <= now-row[0] <= 120:
++            return False
++        try:
++            evidence = json.loads(row[2])
++            return bool(isinstance(evidence,dict) and evidence.get('owned_state_fingerprint') ==
++                        _owned_state_fingerprint(con,uid))
++        except (TypeError,ValueError):
++            # Pre-upgrade or corrupt permission requires fresh broker evidence.
++            return False
+diff --git a/app/execution_ports.py b/app/execution_ports.py
+index c61f4d9..f3d003f 100644
+--- a/app/execution_ports.py
++++ b/app/execution_ports.py
+@@ -49,6 +49,7 @@ class BrokerPort(Protocol):
+                    *, product: str, stop: float) -> dict: ...
+     def protection_status(self, user_id: int, protection_id: str) -> list: ...
+     def cancel_protection(self, user_id: int, protection_id: str) -> dict: ...
++    def modify_protection(self, user_id: int, protection_id: str, *, quantity: int, stop: float) -> dict: ...
+
+
+ class UpstoxPort:
+@@ -113,14 +114,18 @@ class UpstoxPort:
+         from . import broker
+         return broker.cancel_protection(user_id,protection_id)
+
++    def modify_protection(self,user_id,protection_id,*,quantity,stop):
++        from . import broker
++        return broker.modify_protection(user_id,protection_id,quantity=quantity,stop=stop)
++
+
+ def capability_report():
+     from .angelone_port import capabilities as angel_capabilities
+     return dict(routes=[dict(broker=r.broker,venue=r.venue,segment=r.segment,kind=r.kind,
+                              product=r.product,order_type=r.order_type,validity=r.validity,
+-                             implementation=r.enabled,live_certified=False,
++                             implementation=r.enabled and (r.broker!='paper' or r.product=='D'),live_certified=False,
+                              native_protection=r.native_protection) for r in ROUTES],
+                 additional_adapters=[angel_capabilities()],
+-                unsupported=["BSE execution", "US execution adapter", "futures", "options",
++                unsupported=["paper intraday order lifecycle", "BSE execution", "US execution adapter", "futures", "options",
+                              "currency", "commodities", "multi-leg", "Angel One", "Zerodha", "Dhan"],
+-                note="Instrument discovery is broader than certified execution. Live release remains blocked.")
++                note="Paper approved-order orchestration implements delivery only; lower-level prototypes do not enable intraday orders. Instrument discovery is broader than certified execution. Live release remains blocked.")
+diff --git a/app/live_trade.py b/app/live_trade.py
+index ab98037..4fe7fe3 100644
+--- a/app/live_trade.py
++++ b/app/live_trade.py
+@@ -475,12 +475,21 @@ def service(v2, main_db, quotes):
+         for entry_id, in v2.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? AND state='required'",(uid,)).fetchall():
+             protection.submit_stop(v2,uid,entry_id,UpstoxPort())
+         protection.refresh(v2,uid,UpstoxPort())
++        from .portfolio_stream import order_updates
++        journal.reconcile(v2,uid,order_updates(v2,uid))
+         # Triggered native stops create an owned exit intent before ordinary
+         # order reconciliation; application exits cannot race that SELL.
+         if v2.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND state='triggered' LIMIT 1",(uid,)).fetchone():
+             journal.refresh(v2,uid)
++        protection.cancel_overreserved_children(v2,uid,UpstoxPort())
+         from . import broker_reconciliation
+         broker_reconciliation.refresh(v2,uid)
++        from .protection_amendments import reduce
++        # Only exact owned inventory, a fresh matching broker account and the
++        # existing separately reviewed policy can reduce a scheduled stop.
++        for entry_id, in v2.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? "
++                                    "AND state IN ('armed','unknown') AND native_id IS NOT NULL",(uid,)).fetchall():
++            reduce(v2,uid,entry_id,UpstoxPort())
+         state, why = account_risk_state(v2, uid, broker.state(uid), quotes)
+         if state is None:
+             _LOG.warning("broker account risk valuation u%s unavailable: %s", uid, why)
+diff --git a/app/order_journal.py b/app/order_journal.py
+index 042b540..7fd5ec9 100644
+--- a/app/order_journal.py
++++ b/app/order_journal.py
+@@ -205,9 +205,11 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
+             con.rollback()
+             return "pending: broker reconciliation required"
+         held = con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty "
+-                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND symbol=?",
+-                           (uid, symbol)).fetchone()[0]
+-        if (side == "BUY" and held > 0) or (side == "SELL" and qty > held):
++                           "ELSE -filled_qty END),0) FROM v2_live_orders WHERE user_id=? AND instrument_key=? AND product=?",
++                           (uid,key,product)).fetchone()[0]
++        symbol_held=con.execute("SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN filled_qty ELSE -filled_qty END),0) "
++                                "FROM v2_live_orders WHERE user_id=? AND symbol=?",(uid,symbol)).fetchone()[0]
++        if (side == "BUY" and symbol_held > 0) or (side == "SELL" and qty > held):
+             con.rollback()
+             return "rejected: position changed before submission"
+         if side == "BUY":
+@@ -298,14 +300,20 @@ def submit(con, uid, market, symbol, key, side, qty, reference, product, reason,
+
+
+ def protect(con, uid, symbol, stop, target):
+-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
+-                "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
+-                "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
+-    con.commit()
++    from .account_safety import atomic
++    from .worker_fencing import require_current
++    with atomic(con):
++        require_current(con)
++        con.execute("INSERT INTO v2_live_protection(user_id,symbol,stop,target) VALUES(?,?,?,?) "
++                    "ON CONFLICT(user_id,symbol) DO UPDATE SET stop=excluded.stop,"
++                    "target=excluded.target,exit_reason=NULL", (uid, symbol, stop, target))
+
+
+ def request_exit(con, uid, symbol, reason):
+-    con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
+-                "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
+-                (uid, symbol, reason))
+-    con.commit()
++    from .account_safety import atomic
++    from .worker_fencing import require_current
++    with atomic(con):
++        require_current(con)
++        con.execute("INSERT INTO v2_live_protection(user_id,symbol,exit_reason) VALUES(?,?,?) "
++                    "ON CONFLICT(user_id,symbol) DO UPDATE SET exit_reason=excluded.exit_reason",
++                    (uid, symbol, reason))
+diff --git a/app/portfolio_stream.py b/app/portfolio_stream.py
+new file mode 100644
+index 0000000..76bfcb1
+--- /dev/null
++++ b/app/portfolio_stream.py
+@@ -0,0 +1,176 @@
++"""Account-bound, durable Upstox portfolio observations.
++
++Only the authenticated outbound collector calls ingest; there is no public
++webhook. Unsequenced notifications never arm a stop or release a sell right.
++They can retain an exact child identity omitted by the completed-GTT REST API.
++Actual journal/order/trade/inventory reconciliation remains authoritative.
++"""
++import hashlib
++import json
++import math
++import time
++from uuid import uuid4
++
++from .account_safety import atomic
++
++
++def ensure_schema(con):
++    con.execute('''CREATE TABLE IF NOT EXISTS broker_stream_accounts(
++      user_id INTEGER PRIMARY KEY,account_hash TEXT NOT NULL UNIQUE)''')
++    con.execute('''CREATE TABLE IF NOT EXISTS broker_stream_connections(
++      id TEXT PRIMARY KEY,user_id INTEGER NOT NULL,account_hash TEXT NOT NULL,
++      generation INTEGER NOT NULL,started_at REAL NOT NULL,expires_at REAL NOT NULL,
++      state TEXT NOT NULL,UNIQUE(user_id,generation))''')
++    con.execute('''CREATE TABLE IF NOT EXISTS broker_stream_events(
++      id INTEGER PRIMARY KEY,connection_id TEXT NOT NULL,user_id INTEGER NOT NULL,
++      kind TEXT NOT NULL,payload TEXT NOT NULL,received_at REAL NOT NULL,fingerprint TEXT NOT NULL,
++      UNIQUE(connection_id,kind,fingerprint))''')
++    con.execute('CREATE INDEX IF NOT EXISTS stream_owned_events ON broker_stream_events(user_id,kind,id)')
++    for table in ('broker_stream_accounts','broker_stream_events'):
++        for action in ('UPDATE','DELETE'):
++            con.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
++                        "BEGIN SELECT RAISE(ABORT,'immutable owned stream evidence'); END")
++
++
++def account_hash(account):
++    if not isinstance(account,str) or not account.strip():raise ValueError('Verified broker profile identity required')
++    return hashlib.sha256(('upstox:'+account.strip()).encode()).hexdigest()
++
++
++def open_connection(con,uid,account,*,now=None,ttl=90):
++    now=time.time() if now is None else now
++    if type(uid) is not int or uid<1:raise ValueError('Invalid stream owner')
++    digest=account_hash(account)
++    with atomic(con):
++        owned=con.execute('SELECT account_hash FROM broker_stream_accounts WHERE user_id=?',(uid,)).fetchone()
++        other=con.execute('SELECT user_id FROM broker_stream_accounts WHERE account_hash=?',(digest,)).fetchone()
++        if owned and owned[0]!=digest or other and other[0]!=uid:
++            raise ValueError('Broker identity changed or is already bound to another account; reconcile ownership')
++        active=con.execute('SELECT generation,state,expires_at FROM broker_stream_connections WHERE user_id=? '
++                           'ORDER BY generation DESC LIMIT 1',(uid,)).fetchone()
++        if active and active[1]=='open' and active[2]>now:raise ValueError('Account stream already leased')
++        con.execute('INSERT OR IGNORE INTO broker_stream_accounts VALUES(?,?)',(uid,digest))
++        identity=uuid4().hex;generation=active[0]+1 if active else 1
++        con.execute('INSERT INTO broker_stream_connections VALUES(?,?,?,?,?,?,?)',
++                    (identity,uid,digest,generation,now,now+ttl,'open'))
++        _append(con,identity,uid,'connection',dict(generation=generation,reconnect=bool(active)),now)
++        return identity
++
++
++def _current(con,connection,now):
++    row=con.execute('SELECT user_id,account_hash,generation,expires_at,state,started_at FROM broker_stream_connections WHERE id=?',
++                    (connection,)).fetchone()
++    latest=con.execute('SELECT MAX(generation) FROM broker_stream_connections WHERE user_id=?',(row[0],)).fetchone() if row else None
++    bound=con.execute('SELECT account_hash FROM broker_stream_accounts WHERE user_id=?',(row[0],)).fetchone() if row else None
++    if not row or row[4]!='open' or row[3]<=now or row[5]>now or latest[0]!=row[2] or not bound or bound[0]!=row[1]:
++        raise ValueError('Expired/replaced account stream or conflicting owner')
++    return row[:5]
++
++
++def heartbeat(con,connection,*,now=None):
++    now=time.time() if now is None else now
++    with atomic(con):
++        _current(con,connection,now)
++        con.execute('UPDATE broker_stream_connections SET expires_at=? WHERE id=?',(now+90,connection))
++
++
++def close_connection(con,connection,*,now=None):
++    now=time.time() if now is None else now
++    with atomic(con):
++        row=con.execute('SELECT user_id,state FROM broker_stream_connections WHERE id=?',(connection,)).fetchone()
++        if row and row[1]=='open':
++            con.execute("UPDATE broker_stream_connections SET state='closed',expires_at=? WHERE id=?",(now,connection))
++            _append(con,connection,row[0],'gap',dict(reason='Connection closed; polling reconciliation required'),now)
++
++
++def _append(con,connection,uid,kind,data,now):
++    payload=json.dumps(data,sort_keys=True,separators=(',',':'),allow_nan=False)
++    digest=hashlib.sha256(payload.encode()).hexdigest()
++    con.execute('INSERT OR IGNORE INTO broker_stream_events(connection_id,user_id,kind,payload,received_at,fingerprint) '
++                'VALUES(?,?,?,?,?,?)',(connection,uid,kind,payload,now,digest))
++
++
++def ingest(con,connection,data,*,now=None):
++    """Receive from the verified owner socket. Retain only necessary fields."""
++    now=time.time() if now is None else now
++    if not isinstance(data,dict):raise ValueError('Invalid portfolio event')
++    kind=data.get('update_type')
++    if kind not in {'order','gtt_order'}:return False
++    with atomic(con):
++        uid,digest,*_=_current(con,connection,now)
++        for key in ('user_id','userId','placed_by'):
++            if data.get(key) is not None and account_hash(data[key])!=digest:
++                raise ValueError('Portfolio event broker identity conflicts with authenticated owner')
++        if kind=='order':
++            fields=('order_id','tag','instrument_token','instrument_key','transaction_type','product',
++                    'quantity','filled_quantity','average_price','status')
++            payload={key:data[key] for key in fields if key in data}
++            if not isinstance(payload.get('order_id'),str) or not payload['order_id']:raise ValueError('Missing order identity')
++            if type(payload.get('quantity')) is not int or payload['quantity']<1 or \
++                    type(payload.get('filled_quantity')) is not int or not 0<=payload['filled_quantity']<=payload['quantity'] or \
++                    payload.get('transaction_type') not in {'BUY','SELL'} or payload.get('product') not in {'D','I'}:
++                raise ValueError('Invalid owned order quantities/side/product')
++            average=payload.get('average_price')
++            if isinstance(average,bool) or not isinstance(average,(int,float)) or not math.isfinite(average) or \
++                    average<0 or payload['filled_quantity'] and average<=0:raise ValueError('Invalid order price evidence')
++        else:
++            fields=('type','instrument_token','product','quantity','gtt_order_id','expires_at','created_at')
++            payload={key:data[key] for key in fields if key in data}
++            if not isinstance(payload.get('gtt_order_id'),str) or not payload['gtt_order_id'].startswith('GTT-'):
++                raise ValueError('Missing native identity')
++            if type(payload.get('quantity')) is not int or payload['quantity']<1:raise ValueError('Invalid native quantity')
++            rules=data.get('rules')
++            if not isinstance(rules,list) or not 0<len(rules)<=3 or any(not isinstance(r,dict) for r in rules):
++                raise ValueError('Invalid native rules')
++            keep=('strategy','status','trigger_type','trigger_price','transaction_type','order_id')
++            payload['rules']=[{key:r[key] for key in keep if key in r} for r in rules]
++        _append(con,connection,uid,kind,payload,now)
++    return True
++
++
++def child_evidence(con,uid,row,*,now=None):
++    """Archived identity is useful across gaps; archived status is not current.
++
++    Multiple child identities are a conflict, not a choice of the latest
++    message. CANCELLED/SCHEDULED notifications never free or arm inventory.
++    """
++    from .protection import _native_evidence
++    from .protection_amendments import latest
++    now=time.time() if now is None else now
++    amendment=latest(con,uid,row['entry_id'])
++    quantities={row['coverage_quantity']}
++    if amendment and amendment['native_id']==row['native_id']:quantities.add(amendment['to_quantity'])
++    found={}
++    records=con.execute("SELECT payload FROM broker_stream_events WHERE user_id=? AND kind='gtt_order' "
++                        "AND json_extract(payload,'$.gtt_order_id')=? AND received_at<=? ORDER BY id",
++                        (uid,row['native_id'],now))
++    for payload, in records:
++        data=json.loads(payload)
++        if data.get('quantity') not in quantities:continue
++        try:rule,_=_native_evidence(row,[data],quantity=data['quantity'])
++        except (ValueError,TypeError,KeyError):continue
++        if rule['status'] not in {'TRIGGERED','OPEN','COMPLETED'} or not rule.get('order_id'):continue
++        identity=(rule['order_id'],data['quantity'])
++        found[identity]=data
++    if len(found)>1:raise ValueError('Conflicting owned native child observations')
++    return list(found.values())
++
++
++def order_updates(con,uid,*,now=None):
++    now=time.time() if now is None else now
++    records=con.execute("SELECT payload FROM broker_stream_events WHERE user_id=? AND kind='order' "
++                        "AND received_at<=? ORDER BY id DESC LIMIT 1000",(uid,now)).fetchall()
++    return [json.loads(r[0]) for r in reversed(records)]
++
++
++def report(con,uid,*,now=None):
++    now=time.time() if now is None else now
++    row=con.execute('SELECT generation,expires_at,state,id FROM broker_stream_connections WHERE user_id=? '
++                    'ORDER BY generation DESC LIMIT 1',(uid,)).fetchone()
++    counts=dict(con.execute('SELECT kind,COUNT(*) FROM broker_stream_events WHERE user_id=? GROUP BY kind',(uid,)))
++    connected=False
++    if row:
++        try:_current(con,row[3],now);connected=True
++        except ValueError:pass
++    return dict(connected=connected,generation=row[0] if row else None,
++                event_counts=counts,notification_status_authoritative=False,authenticated_outbound_only=True)
+diff --git a/app/protection.py b/app/protection.py
+index 7ecb964..59ee1e9 100644
+--- a/app/protection.py
++++ b/app/protection.py
+@@ -13,11 +13,15 @@ from datetime import datetime,timezone
+ from .account_safety import atomic
+ from .live_release import authorized as live_scope_authorized
+
+-BLOCKING = {'app_only','required','submitting','unknown','failed','triggered','cancelling'}
++BLOCKING = {'app_only','required','submitting','amending','unknown','failed','triggered','cancelling'}
+ SAFE_TO_SELL = {'app_only','cancelled','closed'}
+
+
+ def ensure_schema(con):
++    from .protection_amendments import ensure_schema as amendments_schema
++    amendments_schema(con)
++    from .portfolio_stream import ensure_schema as stream_schema
++    stream_schema(con)
+     con.execute('''CREATE TABLE IF NOT EXISTS protection_obligations(
+       entry_id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,symbol TEXT NOT NULL,
+       instrument_key TEXT NOT NULL,product TEXT NOT NULL,quantity INTEGER NOT NULL,
+@@ -27,6 +31,9 @@ def ensure_schema(con):
+         con.execute('ALTER TABLE protection_obligations ADD COLUMN submission_attempted INTEGER NOT NULL DEFAULT 0')
+         con.execute("UPDATE protection_obligations SET submission_attempted=1 WHERE native_id IS NOT NULL "
+                     "OR (authorization_reference IS NOT NULL AND state IN ('submitting','unknown','armed','triggered','cancelling'))")
++    if 'coverage_quantity' not in {r[1] for r in con.execute('PRAGMA table_info(protection_obligations)')}:
++        con.execute('ALTER TABLE protection_obligations ADD COLUMN coverage_quantity INTEGER')
++        con.execute('UPDATE protection_obligations SET coverage_quantity=quantity WHERE native_id IS NOT NULL')
+     con.execute('''CREATE TABLE IF NOT EXISTS protection_events(
+       id INTEGER PRIMARY KEY,entry_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
+       state TEXT NOT NULL,detail TEXT NOT NULL,observed_at REAL NOT NULL)''')
+@@ -37,17 +44,17 @@ def ensure_schema(con):
+
+ def _row(con,uid,entry_id):
+     row=con.execute('SELECT entry_id,user_id,symbol,instrument_key,product,quantity,stop,state,native_id,'
+-                    'exit_order_id,authorization_reference,cancel_requested_at,submission_attempted FROM protection_obligations '
++                    'exit_order_id,authorization_reference,cancel_requested_at,submission_attempted,coverage_quantity FROM protection_obligations '
+                     'WHERE entry_id=? AND user_id=?',(entry_id,uid)).fetchone()
+     return dict(zip(('entry_id','user_id','symbol','instrument_key','product','quantity','stop','state',
+-                     'native_id','exit_order_id','authorization_reference','cancel_requested_at','submission_attempted'),row)) if row else None
++                     'native_id','exit_order_id','authorization_reference','cancel_requested_at','submission_attempted','coverage_quantity'),row)) if row else None
+
+
+-def _event(con,row,state,detail,now=None):
++def _event(con,row,state,detail,now=None,*,observed=False):
+     from .worker_fencing import require_current
+     require_current(con)
+     now=time.time() if now is None else now
+-    if row['state']==state:return
++    if row['state']==state and not observed:return
+     con.execute('UPDATE protection_obligations SET state=?,updated_at=? WHERE entry_id=? AND user_id=?',
+                 (state,now,row['entry_id'],row['user_id']))
+     con.execute('INSERT INTO protection_events(entry_id,user_id,state,detail,observed_at) VALUES(?,?,?,?,?)',
+@@ -96,12 +103,15 @@ def _activation_contract(con,uid,row):
+     if not entry or entry[0] not in {'filled','cancelled','rejected'} or entry[1]!=row['quantity'] or \
+             _owned_remaining(con,uid).get(row['entry_id'],0)!=row['quantity']:
+         raise ValueError('Entry fills or remaining owned inventory are unresolved')
++    if _pending_exit(con,uid,row):raise ValueError('Pending owned exit prevents native activation')
+     from .entry_contracts import protective_contract
+     protective_contract(row['symbol'],row['quantity'],row['stop'],row['product'],row['instrument_key'])
+
+
+ def observe_fills(con,uid):
+     """Inside fill transaction; import ownership from exact journal entries only."""
++    from .worker_fencing import require_current
++    require_current(con)
+     ensure_schema(con)
+     remaining=_owned_remaining(con,uid)
+     entries=con.execute("SELECT o.id,o.symbol,o.instrument_key,o.product,o.filled_qty,p.stop "
+@@ -131,6 +141,12 @@ def observe_fills(con,uid):
+         exit_filled=con.execute("SELECT status FROM v2_live_orders WHERE user_id=? AND broker_order_id=?",(uid,row['exit_order_id'])).fetchone() if row['exit_order_id'] else None
+         if held==0 and (row['state'] in SAFE_TO_SELL or (exit_filled and exit_filled[0]=='filled')):
+             _event(con,row,'closed','Owned journal inventory is flat')
++        elif exit_filled and exit_filled[0] in {'cancelled','rejected'} and not _pending_exit(con,uid,row):
++            _event(con,row,'closed' if held==0 else 'cancelled',
++                   'Native child is terminal; any remaining inventory is unprotected and blocks new entries')
++        elif row['native_id'] and not row['exit_order_id'] and row['state'] not in {'closed','cancelled'} and \
++                held!=row['coverage_quantity']:
++            _event(con,row,'unknown','Remaining owned inventory differs from native stop quantity')
+
+
+ def request_native(con,uid,entry_id,*,authorization_reference):
+@@ -216,8 +232,8 @@ def submit_stop(con,uid,entry_id,port):
+         except ValueError:
+             _event(con,row,'failed','Native authorization/contract/ownership no longer valid; no transmission')
+             return 'failed'
+-        con.execute('UPDATE protection_obligations SET submission_attempted=1 WHERE entry_id=? AND user_id=?',
+-                    (entry_id,uid))
++        con.execute('UPDATE protection_obligations SET submission_attempted=1,coverage_quantity=? WHERE entry_id=? AND user_id=?',
++                    (row['quantity'],entry_id,uid))
+         _event(con,row,'submitting','Stop submission reserved before broker I/O')
+     # atomic() uses a savepoint if called inside an existing transaction. Do
+     # not transmit from a caller's uncommitted transaction.
+@@ -240,8 +256,41 @@ def submit_stop(con,uid,entry_id,port):
+     return state
+
+
++def _pending_exit(con,uid,row):
++    return bool(con.execute("SELECT 1 FROM v2_live_orders WHERE user_id=? AND instrument_key=? AND product=? "
++                            "AND side='SELL' AND status IN ('pending','submitted','partial','unknown','sent') LIMIT 1",
++                            (uid,row['instrument_key'],row['product'])).fetchone())
++
++
++def _native_evidence(row,rows,*,quantity=None):
++    """Strict identity/trigger binding; a trigger is never evidence of a fill."""
++    if not isinstance(rows,list):raise ValueError('native evidence unavailable')
++    matches=[r for r in rows if isinstance(r,dict) and r.get('gtt_order_id')==row['native_id']]
++    if len(matches)!=1:raise ValueError('missing/ambiguous native stop')
++    evidence=matches[0];rules=evidence.get('rules',[])
++    expected=row['coverage_quantity'] if quantity is None else quantity
++    if evidence.get('type')!='SINGLE' or evidence.get('instrument_token')!=row['instrument_key'] or \
++            evidence.get('product')!=row['product'] or type(evidence.get('quantity')) is not int or \
++            evidence['quantity']!=expected or not isinstance(rules,list) or len(rules)!=1:
++        raise ValueError('native contract changed')
++    rule=rules[0]
++    if not isinstance(rule,dict) or rule.get('transaction_type')!='SELL' or rule.get('strategy')!='ENTRY' or \
++            rule.get('trigger_type')!='BELOW' or isinstance(rule.get('trigger_price'),bool) or rule.get('trigger_price')!=row['stop']:
++        raise ValueError('native trigger changed')
++    expires=evidence.get('expires_at')
++    if isinstance(expires,bool) or not isinstance(expires,(int,float)) or not math.isfinite(expires):
++        raise ValueError('native expiry unavailable')
++    oid=rule.get('order_id')
++    if oid is not None and (not isinstance(oid,str) or not oid.strip()):raise ValueError('invalid native child identity')
++    status=rule.get('status')
++    if status not in {'SCHEDULED','TRIGGERED','EXPIRED','OPEN','COMPLETED','CANCELLED','PENDING','FAILED','INACTIVE'}:
++        raise ValueError('unknown native status')
++    return rule,expires
++
++
+ def refresh(con,uid,port):
+     """Missing GTT is unknown: this endpoint omits completed triggers."""
++    from .worker_fencing import require_current
+     ensure_schema(con)
+     ids=[r[0] for r in con.execute("SELECT entry_id FROM protection_obligations WHERE user_id=? "
+                                    "AND state NOT IN ('app_only','closed','cancelled')",(uid,))]
+@@ -251,46 +300,54 @@ def refresh(con,uid,port):
+             if row['state']=='submitting':
+                 with atomic(con):_event(con,row,'unknown','Worker resumed after uncertain submission')
+             continue
+-        try:
+-            rows=port.protection_status(uid,row['native_id'])
+-            matches=[r for r in rows if r.get('gtt_order_id')==row['native_id']]
+-            if len(matches)!=1:raise ValueError('missing/ambiguous native stop')
+-            evidence=matches[0];rules=evidence.get('rules',[])
+-            if evidence.get('type')!='SINGLE' or evidence.get('instrument_token')!=row['instrument_key'] or \
+-                    evidence.get('product')!=row['product'] or type(evidence.get('quantity')) is not int or \
+-                    evidence['quantity']!=row['quantity'] or len(rules)!=1:
+-                raise ValueError('native contract changed')
+-            rule=rules[0]
+-            if rule.get('transaction_type')!='SELL' or rule.get('strategy')!='ENTRY' or rule.get('trigger_type')!='BELOW' or \
+-                    rule.get('trigger_price')!=row['stop']:
+-                raise ValueError('native trigger changed')
+-            status=rule.get('status');oid=rule.get('order_id')
+-            expires=evidence.get('expires_at')
+-            if isinstance(expires,bool) or not isinstance(expires,(int,float)) or not math.isfinite(expires):
+-                raise ValueError('native expiry unavailable')
+-            state='armed' if status=='SCHEDULED' and expires>time.time()*1_000_000 else \
+-                  'cancelled' if status=='CANCELLED' and not oid else \
+-                  'failed' if status in {'EXPIRED','FAILED'} and not oid else 'unknown'
+-            if oid:
+-                state='triggered'
+-                with atomic(con):
++        try:rows=port.protection_status(uid,row['native_id'])
++        except Exception:rows=[]  # No response cannot release inventory or a sell reservation.
++        from .portfolio_stream import child_evidence
++        # Missing completed triggers can be bound only by an exact observation
++        # received on this account's authenticated outbound portfolio socket.
++        if rows==[]:
++            try:rows=child_evidence(con,uid,row)
++            except ValueError:rows=[]
++        with atomic(con):
++            # Network I/O may outlive our lease or change the obligation. All
++            # child binding and status writes share this fenced transaction.
++            require_current(con)
++            current=_row(con,uid,entry_id)
++            if not current or current['native_id']!=row['native_id'] or current['state'] in {'closed','cancelled'}:continue
++            row=current
++            from .protection_amendments import resolve,latest
++            row=resolve(con,row,rows)
++            try:
++                rule,expires=_native_evidence(row,rows)
++                status=rule['status'];oid=rule.get('order_id')
++                state='armed' if status=='SCHEDULED' and expires>time.time()*1_000_000 else \
++                      'cancelled' if status=='CANCELLED' and not oid else \
++                      'failed' if status in {'EXPIRED','FAILED'} and not oid else 'unknown'
++                if row['exit_order_id'] and str(oid or '')!=row['exit_order_id']:
++                    raise ValueError('previous native child identity disappeared or changed')
++                if oid:
+                     existing=con.execute('SELECT id,instrument_key,side,product,qty FROM v2_live_orders '
+                                          'WHERE user_id=? AND broker_order_id=?',(uid,str(oid))).fetchall()
+-                    if existing and (len(existing)!=1 or tuple(existing[0][1:])!=(row['instrument_key'],'SELL',row['product'],row['quantity'])):
++                    if existing and (len(existing)!=1 or tuple(existing[0][1:])!=(row['instrument_key'],'SELL',row['product'],row['coverage_quantity'])):
+                         raise ValueError('native exit ownership conflict')
++                    if row['exit_order_id'] and row['exit_order_id']!=oid:raise ValueError('native child identity changed')
+                     if not existing:
+                         con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,notional,"
+                                     "product,status,reason,broker_order_id,semantic_key,origin_position_id,filled_qty) "
+                                     "VALUES(?,?,'IN',?,?,'SELL',?,?,?,?, 'submitted','native stop',?,?,?,0)",
+-                                    (datetime.now(timezone.utc).isoformat(),uid,row['symbol'],row['instrument_key'],row['quantity'],
+-                                     row['stop'],row['quantity']*row['stop'],row['product'],str(oid),
++                                    (datetime.now(timezone.utc).isoformat(),uid,row['symbol'],row['instrument_key'],row['coverage_quantity'],
++                                     row['stop'],row['coverage_quantity']*row['stop'],row['product'],str(oid),
+                                      f"protection:{entry_id}:{oid}",entry_id))
+                     con.execute('UPDATE protection_obligations SET exit_order_id=? WHERE entry_id=? AND user_id=?',
+                                 (str(oid),entry_id,uid))
+-            if row['cancel_requested_at'] and state=='armed':state='cancelling'
+-        except Exception:
+-            state='unknown'
+-        with atomic(con):_event(con,row,state,'Native status observed; trigger is not an exchange fill')
++                    state='triggered'
++                elif state=='armed' and (_owned_remaining(con,uid).get(entry_id,0)!=row['coverage_quantity'] or _pending_exit(con,uid,row)):
++                    state='unknown'
++                amendment=latest(con,uid,entry_id)
++                if state=='armed' and amendment and amendment['state']!='confirmed':state='unknown'
++                if row['cancel_requested_at'] and state=='armed':state='cancelling'
++            except (ValueError,TypeError,KeyError):state='unknown'
++            _event(con,row,state,'Native status observed; trigger is not an exchange fill',observed=True)
+
+
+ def prepare_exit(con,uid,symbol,port):
+@@ -323,20 +380,55 @@ def prepare_exit(con,uid,symbol,port):
+     return all(row['state'] in SAFE_TO_SELL or (row['state'] in {'failed','unknown'} and not row['native_id'] and not row['submission_attempted']) for row in rows)
+
+
++def cancel_overreserved_children(con,uid,port):
++    """A triggered child may win a quantity-reduction race. Cancel once.
++
++    Inventory remains reserved through ambiguity; an acknowledgement never
++    makes another exit safe. Actual terminal child evidence is required.
++    """
++    from .worker_fencing import require_current
++    from .recovery_guard import assert_database_execution_allowed
++    from .execution_outbox import incident
++    assert_database_execution_allowed(con)
++    if con.in_transaction:raise RuntimeError('Child cancellation requires a committed claim')
++    rows=con.execute("SELECT p.entry_id,p.exit_order_id FROM protection_obligations p WHERE p.user_id=? "
++                     "AND p.exit_order_id IS NOT NULL AND p.state NOT IN ('closed','cancelled')",(uid,)).fetchall()
++    for entry_id,oid in rows:
++        with atomic(con):
++            require_current(con)
++            child=con.execute('SELECT id,qty,filled_qty,status,cancel_requested_at FROM v2_live_orders '
++                              'WHERE user_id=? AND broker_order_id=?',(uid,oid)).fetchall()
++            if len(child)!=1:continue
++            rid,quantity,filled,status,requested=child[0]
++            held=_owned_remaining(con,uid).get(entry_id,0)
++            if status not in {'pending','submitted','partial','unknown','sent'} or quantity-filled<=held:continue
++            incident(con,uid,'NATIVE_EXIT_OVERRESERVED',entry_id,'Triggered child exceeds remaining owned inventory; cancellation and reconciliation required')
++            if requested:continue
++            con.execute('UPDATE v2_live_orders SET cancel_requested_at=? WHERE id=? AND user_id=?',
++                        (datetime.now(timezone.utc).isoformat(),rid,uid))
++        try:port.cancel(uid,oid)
++        except Exception:pass  # Reservation persists until actual terminal evidence.
++
++
+ def blocks_entry(con,uid):
+     marks=','.join('?' for _ in BLOCKING)
+-    return bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN ("+marks+") "
++    blocked=bool(con.execute("SELECT 1 FROM protection_obligations WHERE user_id=? AND (state IN ("+marks+") "
+                             "OR (state='armed' AND updated_at<?)) LIMIT 1",
+                             (uid,*sorted(BLOCKING),time.time()-120)).fetchone())
++    if blocked:return True
++    remaining=_owned_remaining(con,uid)
++    return any(remaining.get(entry_id,0)>0 for entry_id, in con.execute(
++        "SELECT entry_id FROM protection_obligations WHERE user_id=? AND state IN ('cancelled','closed')",(uid,)))
+
+
+ def report(con,uid):
+-    rows=con.execute('SELECT entry_id,symbol,quantity,stop,state,native_id,exit_order_id,updated_at FROM protection_obligations '
++    from .portfolio_stream import report as stream_report
++    rows=con.execute('SELECT entry_id,symbol,quantity,stop,state,native_id,exit_order_id,updated_at,coverage_quantity FROM protection_obligations '
+                      'WHERE user_id=? ORDER BY entry_id DESC LIMIT 100',(uid,)).fetchall()
+     remaining=_owned_remaining(con,uid)
+-    result=[dict(zip(('entry_id','symbol','quantity','stop','state','native_id','exit_order_id','updated_at'),r)) for r in rows]
++    result=[dict(zip(('entry_id','symbol','quantity','stop','state','native_id','exit_order_id','updated_at','coverage_quantity'),r)) for r in rows]
+     for row in result:row['remaining_quantity']=remaining.get(row['entry_id'],0)
+     from .live_release import native_policy
+     return dict(rows=result,native_guarantees_fill=False,
+                 activation_automatic=bool(native_policy(uid,'D') or native_policy(uid,'I')),
+-                activation_requires_separate_review=True,live_certified=False)
++                activation_requires_separate_review=True,live_certified=False,portfolio_stream=stream_report(con,uid))
+diff --git a/app/protection_amendments.py b/app/protection_amendments.py
+new file mode 100644
+index 0000000..bec3b19
+--- /dev/null
++++ b/app/protection_amendments.py
+@@ -0,0 +1,115 @@
++"""Claim-once reductions of a known scheduled native stop.
++
++Only confirmed owned inventory can reduce coverage. Acceptance and timeouts
++both require a later exact broker observation; neither permits a retry.
++"""
++import time
++
++from .account_safety import atomic
++from .worker_fencing import require_current
++
++
++def ensure_schema(con):
++    con.execute('''CREATE TABLE IF NOT EXISTS native_amendment_intents(
++      id INTEGER PRIMARY KEY,entry_id INTEGER NOT NULL,user_id INTEGER NOT NULL,
++      native_id TEXT NOT NULL,from_quantity INTEGER NOT NULL,to_quantity INTEGER NOT NULL,
++      stop REAL NOT NULL,created_at REAL NOT NULL)''')
++    con.execute('''CREATE TABLE IF NOT EXISTS native_amendment_events(
++      id INTEGER PRIMARY KEY,amendment_id INTEGER NOT NULL,state TEXT NOT NULL,
++      detail TEXT NOT NULL,observed_at REAL NOT NULL)''')
++    for table in ('native_amendment_intents','native_amendment_events'):
++        for action in ('UPDATE','DELETE'):
++            con.execute(f"CREATE TRIGGER IF NOT EXISTS {table}_no_{action.lower()} BEFORE {action} ON {table} "
++                        "BEGIN SELECT RAISE(ABORT,'immutable native amendment'); END")
++
++
++def latest(con,uid,entry_id):
++    row=con.execute('SELECT id,native_id,from_quantity,to_quantity,stop FROM native_amendment_intents '
++                    'WHERE user_id=? AND entry_id=? ORDER BY id DESC LIMIT 1',(uid,entry_id)).fetchone()
++    if not row:return None
++    state=con.execute('SELECT state FROM native_amendment_events WHERE amendment_id=? ORDER BY id DESC LIMIT 1',
++                      (row[0],)).fetchone()
++    return dict(zip(('id','native_id','from_quantity','to_quantity','stop'),row),state=state[0] if state else 'unknown')
++
++
++def _event(con,intent,state,detail):
++    require_current(con)
++    con.execute('INSERT INTO native_amendment_events(amendment_id,state,detail,observed_at) VALUES(?,?,?,?)',
++                (intent,state,detail,time.time()))
++
++
++def resolve(con,row,rows):
++    """Called inside the fenced status transaction, never on an API ack."""
++    from . import protection
++    prior=latest(con,row['user_id'],row['entry_id'])
++    if not prior or prior['state']=='confirmed':return row
++    if prior['native_id']!=row['native_id'] or prior['stop']!=row['stop']:return row
++    try:rule,expires=protection._native_evidence(row,rows,quantity=prior['to_quantity'])
++    except (ValueError,TypeError,KeyError):return row
++    if rule['status']=='SCHEDULED' and not rule.get('order_id') and expires>time.time()*1_000_000 or \
++            rule['status'] in {'CANCELLED','EXPIRED','FAILED'} and not rule.get('order_id') or \
++            rule['status'] in {'TRIGGERED','OPEN','COMPLETED'} and rule.get('order_id'):
++        require_current(con)
++        con.execute('UPDATE protection_obligations SET coverage_quantity=? WHERE entry_id=? AND user_id=?',
++                    (prior['to_quantity'],row['entry_id'],row['user_id']))
++        _event(con,prior['id'],'confirmed','Exact broker quantity observed; acceptance alone was not confirmation')
++        return protection._row(con,row['user_id'],row['entry_id'])
++    return row
++
++
++def reduce(con,uid,entry_id,port):
++    """Maintain separately authorized coverage; never increase exposure."""
++    from . import protection,live_release,broker_reconciliation
++    from .entry_contracts import protective_contract
++    from .recovery_guard import assert_database_execution_allowed
++    assert_database_execution_allowed(con)
++    if con.in_transaction:raise RuntimeError('Stop amendment requires a committed claim')
++    row=protection._row(con,uid,entry_id)
++    if not row or not row['native_id']:return 'skipped'
++    prior=latest(con,uid,entry_id)
++    if prior and prior['state']!='confirmed':return 'unknown'
++    target=protection._owned_remaining(con,uid).get(entry_id,0)
++    if not row['coverage_quantity'] or not 0<target<row['coverage_quantity'] or row['exit_order_id'] or row['cancel_requested_at']:
++        return 'skipped'
++    try:rows=port.protection_status(uid,row['native_id'])
++    except Exception:return 'unknown'
++    with atomic(con):
++        require_current(con)
++        current=protection._row(con,uid,entry_id)
++        if not current or current['native_id']!=row['native_id']:return 'skipped'
++        row=current
++        prior=latest(con,uid,entry_id)
++        if prior and prior['state']!='confirmed':return 'unknown'
++        if not row['authorization_reference'] or row['cancel_requested_at'] or row['exit_order_id'] or \
++                row['state'] not in {'armed','unknown'}:return 'skipped'
++        target=protection._owned_remaining(con,uid).get(entry_id,0)
++        if not row['coverage_quantity'] or not 0<target<row['coverage_quantity'] or protection._pending_exit(con,uid,row):
++            return 'skipped'
++        entry=con.execute('SELECT status FROM v2_live_orders WHERE id=? AND user_id=?',(entry_id,uid)).fetchone()
++        if not entry or entry[0] not in {'filled','cancelled','rejected'}:return 'skipped'
++        allowed,_=protection.live_scope_authorized(uid,product=row['product'],model='native-protection')
++        if not allowed or not live_release.native_policy(uid,row['product']) or not broker_reconciliation.ready(con,uid):
++            return 'skipped'
++        try:
++            rule,expires=protection._native_evidence(row,rows)
++            if rule['status']!='SCHEDULED' or rule.get('order_id') or expires<=time.time()*1_000_000:
++                return 'skipped'  # OPEN/triggered quantities cannot be modified.
++            protective_contract(row['symbol'],target,row['stop'],row['product'],row['instrument_key'])
++        except (ValueError,TypeError,KeyError):return 'unknown'
++        cursor=con.execute('INSERT INTO native_amendment_intents(entry_id,user_id,native_id,from_quantity,to_quantity,stop,created_at) '
++                           'VALUES(?,?,?,?,?,?,?)',(entry_id,uid,row['native_id'],row['coverage_quantity'],target,row['stop'],time.time()))
++        intent=cursor.lastrowid
++        _event(con,intent,'claimed','Reduction reserved before broker I/O')
++        protection._event(con,row,'amending','Native quantity reduction reserved; coverage unresolved')
++    try:port.modify_protection(uid,row['native_id'],quantity=target,stop=row['stop'])
++    except Exception:pass  # Even a successful acknowledgement needs exact later status.
++    with atomic(con):
++        require_current(con)
++        latest_state=con.execute('SELECT state FROM native_amendment_events WHERE amendment_id=? ORDER BY id DESC LIMIT 1',
++                                 (intent,)).fetchone()
++        if latest_state and latest_state[0]=='confirmed':return 'confirmed'
++        _event(con,intent,'unknown','Submission outcome awaits exact broker evidence; never blind retry')
++        current=protection._row(con,uid,entry_id)
++        if current and current['state']=='amending':
++            protection._event(con,current,'unknown','Quantity reduction awaits exact native status')
++    return 'unknown'
+diff --git a/app/schema_migrations.py b/app/schema_migrations.py
+index 00bfcdc..7538c48 100644
+--- a/app/schema_migrations.py
++++ b/app/schema_migrations.py
+@@ -59,11 +59,18 @@ def validate_trading(connection):
+         'paper_order_state':{'order_id','status','result'},
+         'paper_order_events':{'order_id','kind','payload','observed_at'},
+         'execution_contract_evidence':{'id','kind','identity','observed_at','effective_from','effective_until','source','payload'},
++        'protection_obligations':{'entry_id','user_id','coverage_quantity','submission_attempted'},
++        'native_amendment_intents':{'id','entry_id','user_id','native_id','from_quantity','to_quantity','stop'},
++        'native_amendment_events':{'id','amendment_id','state','observed_at'},
++        'broker_stream_accounts':{'user_id','account_hash'},
++        'broker_stream_connections':{'id','user_id','generation','expires_at','state'},
++        'broker_stream_events':{'id','connection_id','user_id','kind','payload','received_at','fingerprint'},
+     }
+     for table,columns in required.items():
+         missing=columns-{r[1] for r in connection.execute('PRAGMA table_info('+table+')')}
+         if missing:raise RuntimeError('Required migration contract incomplete: '+table+' '+str(sorted(missing)))
+-    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings','paper_order_intents','paper_order_events','execution_contract_evidence'):
++    for table in ('broker_ledger_events','broker_ledger_postings','entry_contract_records','approved_execution_plans','approved_execution_events','manual_plan_bindings','paper_order_intents','paper_order_events','execution_contract_evidence',
++                  'native_amendment_intents','native_amendment_events','broker_stream_accounts','broker_stream_events'):
+         triggers=[(r[0] or '').upper() for r in connection.execute('SELECT sql FROM sqlite_master WHERE type=? AND tbl_name=?',('trigger',table))]
+         if any(not any(('BEFORE '+operation) in sql and 'RAISE(ABORT' in sql for sql in triggers) for operation in ('UPDATE','DELETE')):
+             raise RuntimeError('Required immutable table protection unavailable: '+table)
+diff --git a/app/v2_live.py b/app/v2_live.py
+index 2d87bfb..6127352 100644
+--- a/app/v2_live.py
++++ b/app/v2_live.py
+@@ -997,7 +997,7 @@ def sleeve_view(market="IN"):
+
+ def ensure_schema(v2):
+     from .schema_migrations import apply,TRADING_CONTRACT,validate_trading
+-    apply(v2,'trading-schema-v5',dict(TRADING_CONTRACT,version=5,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache'),_ensure_schema,validate_trading)
++    apply(v2,'trading-schema-v6',dict(TRADING_CONTRACT,version=6,paper_exchange='next-event-aon-v1',exit_sessions='immutable-sourced-cache',native_coverage='owned-claim-once-reduction',portfolio_observations='authenticated-owner-stream'),_ensure_schema,validate_trading)
+
+
+ def _ensure_schema(v2):
+diff --git a/deploy/opentrade-portfolio-feed.service b/deploy/opentrade-portfolio-feed.service
+new file mode 100644
+index 0000000..f8c16f1
+--- /dev/null
++++ b/deploy/opentrade-portfolio-feed.service
+@@ -0,0 +1,23 @@
++[Unit]
++Description=OpenStocks authenticated read-only portfolio observations
++After=network-online.target opentrade.service
++Wants=network-online.target
++
++[Service]
++Type=simple
++User=ubuntu
++Group=ubuntu
++WorkingDirectory=/opt/opentrade
++EnvironmentFile=/opt/opentrade/.env
++ExecStart=/opt/opentrade/.venv/bin/python3 -u scripts/broker_portfolio_feed.py --loop
++Restart=always
++RestartSec=10
++UMask=0077
++NoNewPrivileges=true
++PrivateTmp=true
++ProtectSystem=strict
++ProtectHome=true
++ReadWritePaths=/opt/opentrade/var
++
++[Install]
++WantedBy=multi-user.target
+diff --git a/scripts/broker_portfolio_feed.py b/scripts/broker_portfolio_feed.py
+new file mode 100644
+index 0000000..1ae2806
+--- /dev/null
++++ b/scripts/broker_portfolio_feed.py
+@@ -0,0 +1,85 @@
++#!/usr/bin/env python3
++"""Read-only authenticated portfolio collector; never submits broker orders.
++
++Run separately from the execution writer. Existing private per-user tokens
++authorize the outbound socket; the URI and profile identity are never logged.
++This does not connect/arm accounts or modify the reviewed execution policy.
++"""
++import argparse
++import asyncio
++import json
++import os
++from pathlib import Path
++import sqlite3
++import sys
++import time
++
++sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
++from app import broker,portfolio_stream
++
++
++async def collect(uid,path,*,duration=None):
++    from websockets.asyncio.client import connect
++    connection=None
++    # The execution service must have migrated this database before collection.
++    # mode=rw refuses accidental creation of an empty substitute paper book.
++    con=sqlite3.connect('file:'+str(Path(path).resolve())+'?mode=rw',uri=True,timeout=10)
++    try:
++        if not con.execute("SELECT 1 FROM sqlite_master WHERE name='broker_stream_accounts'").fetchone():
++            raise ValueError('Execution stream schema is not migrated')
++        account,uri=await asyncio.to_thread(broker.portfolio_stream_access,uid)
++        connection=portfolio_stream.open_connection(con,uid,account)
++        started=time.monotonic()
++        async with connect(uri,open_timeout=15,close_timeout=5,ping_interval=20,ping_timeout=20,max_size=65536) as socket:
++            while duration is None or time.monotonic()-started<duration:
++                remaining=15 if duration is None else min(15,max(.01,duration-(time.monotonic()-started)))
++                try:message=await asyncio.wait_for(socket.recv(),timeout=remaining)
++                except asyncio.TimeoutError:
++                    portfolio_stream.heartbeat(con,connection)
++                    continue
++                payload=json.loads(message)
++                portfolio_stream.ingest(con,connection,payload)
++                portfolio_stream.heartbeat(con,connection)
++    finally:
++        if connection:portfolio_stream.close_connection(con,connection)
++        con.close()
++
++
++async def run(path,once=False,duration=20):
++    tasks={}
++    try:
++        while True:
++            users={uid for uid in broker.linked_users() if broker.state(uid).get('exit_ready')}
++            for uid,task in list(tasks.items()):
++                if task.done():
++                    try:task.result()
++                    except Exception as exc:
++                        # Transport exception text can contain the signed URI.
++                        print('portfolio collector failed: '+type(exc).__name__,flush=True)
++                    del tasks[uid]
++                elif uid not in users:
++                    task.cancel();await asyncio.gather(task,return_exceptions=True);del tasks[uid]
++            for uid in users-tasks.keys():
++                tasks[uid]=asyncio.create_task(collect(uid,path,duration=duration if once else None))
++            if once:
++                results=await asyncio.gather(*tasks.values(),return_exceptions=True)
++                errors=[type(result).__name__ for result in results if isinstance(result,BaseException)]
++                print(json.dumps(dict(accounts=len(tasks),failures=errors,orders_submitted=0)))
++                return 1 if errors else 0
++            await asyncio.sleep(30)
++    finally:
++        for task in tasks.values():task.cancel()
++        await asyncio.gather(*tasks.values(),return_exceptions=True)
++
++
++def main():
++    parser=argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--database',default=os.environ.get('V2_PAPER_DB','/opt/opentrade/var/v2_paper.db'))
++    mode=parser.add_mutually_exclusive_group(required=True);mode.add_argument('--loop',action='store_true');mode.add_argument('--once',action='store_true')
++    parser.add_argument('--duration',type=int,default=20)
++    args=parser.parse_args()
++    if not 1<=args.duration<=60:parser.error('duration must be 1–60 seconds')
++    return asyncio.run(run(args.database,args.once,args.duration))
++
++
++if __name__=='__main__':sys.exit(main())
+diff --git a/tests/test_broker_ledger.py b/tests/test_broker_ledger.py
+index 83a10e6..5d0e1e7 100644
+--- a/tests/test_broker_ledger.py
++++ b/tests/test_broker_ledger.py
+@@ -1,6 +1,6 @@
+ import sqlite3
+ import unittest
+-from datetime import datetime,timezone
++from datetime import datetime,timedelta,timezone
+ from app import v2_live,broker_ledger as ledger
+
+
+@@ -16,10 +16,10 @@ class ActualBrokerLedgerTest(unittest.TestCase):
+
+     def trade(self,tid='t1',oid='buy',side='BUY',qty=10,px=100):
+         return dict(trade_id=tid,order_id=oid,instrument_token='NSE_EQ|TEST',transaction_type=side,product='D',
+-                    quantity=qty,average_price=px,executed_at=self.ts)
++                    quantity=qty,average_price=px,executed_at=(self.now-timedelta(seconds=2 if side=='BUY' else 1)).isoformat())
+
+     def test_partial_duplicates_restart_and_actual_fifo_outcome(self):
+-        first=self.trade();second=self.trade('t2',qty=10,px=102)
++        first=self.trade();second=dict(self.trade('t2',qty=10,px=102),executed_at=(self.now-timedelta(seconds=2)+timedelta(microseconds=1)).isoformat())
+         self.assertEqual(ledger.ingest_trades(self.con,2,[first,first,second]),2)
+         self.assertEqual(ledger.ingest_trades(self.con,2,[second,first]),0)
+         self.assertEqual(ledger.ingest_trades(self.con,2,[self.trade('s1','sell','SELL',15,110)]),1)
+@@ -50,3 +50,51 @@ class ActualBrokerLedgerTest(unittest.TestCase):
+         self.assertEqual(ledger.report(self.con,2)['balances_minor']['fees'],0)
+         with self.assertRaises(ValueError):ledger.reverse(self.con,2,fee,'second',source='fixture',occurred_at=self.ts)
+         with self.assertRaises(ValueError):ledger.record_fee(self.con,3,'buy','cross-owner',1,source='fixture',occurred_at=self.ts)
++
++    def test_microsecond_execution_order_beats_arrival_and_julian_rounding(self):
++        base=self.now-timedelta(seconds=2)
++        sell=dict(self.trade('later','sell','SELL',10,110),executed_at=(base+timedelta(microseconds=2)).isoformat())
++        buy=dict(self.trade('earlier','buy','BUY',10,100),executed_at=(base+timedelta(microseconds=1)).isoformat())
++        ledger.ingest_trades(self.con,2,[sell,buy])
++        self.assertEqual(ledger.report(self.con,2)['realised_gross_minor'],10000)
++        self.assertTrue(ledger.report(self.con,2)['inventory_consistent'])
++        self.assertEqual(self.con.execute('SELECT julianday(?)-julianday(?)',(buy['executed_at'],sell['executed_at'])).fetchone()[0],0)
++
++    def test_net_requires_terminal_exact_final_fee_coverage_and_allocates_only_closed_units(self):
++        ledger.ingest_trades(self.con,2,[self.trade(qty=20),self.trade('exit','sell','SELL',10,110)])
++        self.con.execute("UPDATE v2_live_orders SET status='filled',filled_qty=20 WHERE broker_order_id='buy'")
++        self.con.execute("UPDATE v2_live_orders SET status='cancelled',filled_qty=10 WHERE broker_order_id='sell'");self.con.commit()
++        ledger.record_fee(self.con,2,'buy','entry-final',20,source='sourced total fixture',occurred_at=self.ts,covered_quantity=20)
++        self.assertIsNone(ledger.report(self.con,2)['realised_net_minor'])
++        fee=ledger.record_fee(self.con,2,'sell','exit-final',10,source='sourced total fixture',occurred_at=self.ts,covered_quantity=10)
++        result=ledger.report(self.con,2)
++        self.assertEqual(result['realised_gross_minor'],10000);self.assertEqual(result['realised_net_minor'],8000)
++        self.assertEqual(result['realised_fee_allocation_minor'],2000)
++        self.assertIsNone(result['available_margin']);self.assertFalse(result['certified'])
++        correction=ledger.reverse(self.con,2,fee,'wrong-final-fee',source='fixture correction',occurred_at=self.ts)
++        self.assertIsNone(ledger.report(self.con,2)['realised_net_minor'])
++        with self.assertRaisesRegex(ValueError,'cannot themselves'):
++            ledger.reverse(self.con,2,correction,'reverse-reversal',source='fixture',occurred_at=self.ts)
++        ledger.record_fee(self.con,2,'sell','replacement',12,source='fixture corrected total',occurred_at=self.ts,covered_quantity=10)
++        self.assertEqual(ledger.report(self.con,2)['realised_net_minor'],7800)
++
++    def test_tied_opposite_fills_or_ambiguous_fee_totals_do_not_publish_profits(self):
++        ledger.ingest_trades(self.con,2,[self.trade(qty=20),dict(self.trade('exit','sell','SELL',20,110),executed_at=self.trade()['executed_at'])])
++        self.assertTrue(ledger.report(self.con,2)['execution_ordering_ambiguous'])
++        self.assertIsNone(ledger.report(self.con,2)['realised_gross_minor'])
++        self.assertIsNone(ledger.report(self.con,2)['realised_net_minor'])
++
++    def test_reversed_reversal_cannot_restore_cash_with_missing_active_trade(self):
++        ledger.ingest_trades(self.con,2,[self.trade()])
++        event=self.con.execute("SELECT id FROM broker_ledger_events WHERE kind='FILL'").fetchone()[0]
++        reversed_event=ledger.reverse(self.con,2,event,'correct-fill',source='fixture correction',occurred_at=self.ts)
++        with self.assertRaisesRegex(ValueError,'cannot themselves'):
++            ledger.reverse(self.con,2,reversed_event,'undo-correction',source='fixture',occurred_at=self.ts)
++        self.assertEqual(ledger.report(self.con,2)['balances_minor']['inventory_cost'],0)
++
++    def test_indistinguishable_priced_buy_lots_do_not_invent_partial_fifo_profit(self):
++        ledger.ingest_trades(self.con,2,[self.trade('first',qty=10,px=100),self.trade('second',qty=10,px=102),
++                                      self.trade('exit','sell','SELL',15,110)])
++        result=ledger.report(self.con,2)
++        self.assertTrue(result['execution_ordering_ambiguous'])
++        self.assertIsNone(result['realised_gross_minor']);self.assertIsNone(result['realised_net_minor'])
+diff --git a/tests/test_broker_worker_fencing.py b/tests/test_broker_worker_fencing.py
+new file mode 100644
+index 0000000..a055a12
+--- /dev/null
++++ b/tests/test_broker_worker_fencing.py
+@@ -0,0 +1,52 @@
++import unittest
++from unittest.mock import patch
++
++from app import broker,broker_ledger,broker_reconciliation,order_journal,protection,worker_fencing
++from tests import test_protection_races as fixtures
++
++
++class BrokerWriteFenceTest(unittest.TestCase):
++    setUp=fixtures.ProtectionRaceTest.setUp
++    fill=fixtures.ProtectionRaceTest.fill
++    native=fixtures.ProtectionRaceTest.native
++    state=fixtures.ProtectionRaceTest.state
++    sell=fixtures.ProtectionRaceTest.sell
++
++    def stale(self):
++        worker_fencing.ensure_schema(self.con)
++        token=worker_fencing.acquire(self.con,'old')
++        self.con.execute('UPDATE worker_leases SET expires=0');self.con.commit()
++        worker_fencing.acquire(self.con,'new')
++        context=worker_fencing.ACTIVE.set(token);self.addCleanup(worker_fencing.ACTIVE.reset,context)
++
++    def test_stale_worker_cannot_post_fees_settle_change_stops_or_request_exit(self):
++        self.fill();self.stale()
++        calls=(lambda:broker_ledger.record_fee(self.con,2,'entry','fee',20,source='fixture',occurred_at=self.now.isoformat()),
++               lambda:order_journal.protect(self.con,2,'TEST',80,120),
++               lambda:order_journal.request_exit(self.con,2,'TEST','late exit'),
++               lambda:broker_reconciliation.reconcile(self.con,2,positions=[],holdings=[],funds={},trades=[]),
++               lambda:protection.observe_fills(self.con,2))
++        for call in calls:
++            with self.assertRaisesRegex(RuntimeError,'stale paper-engine fence'):call()
++        self.assertEqual(self.con.execute('SELECT stop,exit_reason FROM v2_live_protection').fetchone(),(95,None))
++        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM broker_ledger_events').fetchone()[0],0)
++        self.assertEqual(self.con.execute('SELECT COUNT(*) FROM broker_reconciliation').fetchone()[0],0)
++
++    def test_sell_cannot_use_another_product_or_contract_inventory(self):
++        self.fill(10)
++        self.con.execute("UPDATE v2_live_orders SET status='cancelled' WHERE side='BUY'")
++        self.con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,notional,product,status,filled_qty) "
++                         "VALUES(?,2,'IN','TEST','NSE_EQ|TEST','BUY',10,100,1000,'I','filled',10)",(self.now.isoformat(),))
++        self.con.commit()
++        with patch.object(broker,'state',return_value={'exit_ready':True}),patch.object(protection,'prepare_exit',return_value=True), \
++                patch.object(broker,'place_order',side_effect=AssertionError('must not transmit')):
++            result=order_journal.submit(self.con,2,'IN','TEST','NSE_EQ|TEST','SELL',20,100,'D','fixture')
++        self.assertIn('position changed',result)
++        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM v2_live_orders WHERE side='SELL'").fetchone()[0],0)
++
++    def test_stop_or_exit_write_never_commits_parent_transaction(self):
++        self.con.execute('BEGIN IMMEDIATE')
++        order_journal.protect(self.con,2,'TEST',90,120)
++        order_journal.request_exit(self.con,2,'TEST','fixture')
++        self.assertTrue(self.con.in_transaction);self.con.rollback()
++        self.assertEqual(self.con.execute('SELECT stop,exit_reason FROM v2_live_protection').fetchone(),(95,None))
+diff --git a/tests/test_execution_capabilities.py b/tests/test_execution_capabilities.py
+index ca1c16b..a52d01a 100644
+--- a/tests/test_execution_capabilities.py
++++ b/tests/test_execution_capabilities.py
+@@ -1,10 +1,17 @@
+ import unittest
+ from unittest.mock import patch
+ from app import broker,order_journal
+-from app.execution_ports import UpstoxPort,InstrumentError
++from app.execution_ports import UpstoxPort,InstrumentError,capability_report
+
+
+ class ExecutionCapabilityTest(unittest.TestCase):
++    def test_capabilities_do_not_advertise_unimplemented_paper_intraday_lifecycle(self):
++        result=capability_report()
++        for route in result['routes']:
++            self.assertFalse(route['live_certified'])
++            if route['broker']=='paper':self.assertEqual(route['implementation'],route['product']=='D')
++        self.assertIn('paper intraday order lifecycle',result['unsupported'])
++
+     def test_unsupported_segments_never_reach_broker_or_account_reads(self):
+         with patch.object(broker,'state',side_effect=AssertionError('account read')),patch.object(broker,'place_order',side_effect=AssertionError('order')):
+             for key in ('NSE_FO|OPT','NSE_INDEX|Nifty 50','BSE_EQ|STOCK','MCX_FO|FUT','NYSE|STOCK','NSE_EQ|'):
+diff --git a/tests/test_portfolio_collector_wire.py b/tests/test_portfolio_collector_wire.py
+new file mode 100644
+index 0000000..57006fb
+--- /dev/null
++++ b/tests/test_portfolio_collector_wire.py
+@@ -0,0 +1,42 @@
++"""Actual local WebSocket frames exercise the read-only collector contract."""
++import asyncio
++import json
++from pathlib import Path
++import sqlite3
++import tempfile
++import unittest
++from unittest.mock import patch
++
++from app import portfolio_stream,v2_live
++from scripts import broker_portfolio_feed
++
++
++class PortfolioCollectorWireTest(unittest.IsolatedAsyncioTestCase):
++    async def test_authenticated_binding_real_frames_durable_gap_no_book_changes(self):
++        from websockets.asyncio.server import serve
++        from websockets.exceptions import ConnectionClosedOK
++        with tempfile.TemporaryDirectory() as root:
++            path=Path(root)/'paper.db';con=sqlite3.connect(path);v2_live.ensure_schema(con)
++            book=con.execute('SELECT * FROM v2_book').fetchall();con.close()
++            messages=[dict(update_type='order',order_id='unknown-external-order',quantity=20,filled_quantity=0,
++                           average_price=0,instrument_token='NSE_EQ|TEST',product='D',transaction_type='SELL',status='open'),
++                      dict(update_type='gtt_order',type='SINGLE',instrument_token='NSE_EQ|TEST',product='D',quantity=20,
++                           gtt_order_id='GTT-fixture',expires_at=1,rules=[dict(strategy='ENTRY',trigger_type='BELOW',
++                           trigger_price=95,transaction_type='SELL',status='COMPLETED',order_id='fixture-child')])]
++            async def send(socket):
++                for message in messages:await socket.send(json.dumps(message))
++                await socket.close()
++            async with serve(send,'127.0.0.1',0) as server:
++                uri='ws://127.0.0.1:'+str(server.sockets[0].getsockname()[1])
++                with patch.object(broker_portfolio_feed.broker,'portfolio_stream_access',return_value=('fixture-profile',uri)), \
++                        patch.object(broker_portfolio_feed.broker,'place_order',side_effect=AssertionError('collector cannot trade')):
++                    with self.assertRaises(ConnectionClosedOK):await broker_portfolio_feed.collect(2,path,duration=2)
++            con=sqlite3.connect(path)
++            try:
++                self.assertEqual(con.execute('SELECT * FROM v2_book').fetchall(),book)
++                self.assertEqual(con.execute('SELECT COUNT(*) FROM v2_live_orders').fetchone()[0],0)
++                report=portfolio_stream.report(con,2)
++                self.assertFalse(report['connected'])
++                self.assertEqual(report['event_counts'],{'connection':1,'order':1,'gtt_order':1,'gap':1})
++                self.assertEqual(portfolio_stream.report(con,3)['event_counts'],{})
++            finally:con.close()
+diff --git a/tests/test_portfolio_stream.py b/tests/test_portfolio_stream.py
+new file mode 100644
+index 0000000..2b299d0
+--- /dev/null
++++ b/tests/test_portfolio_stream.py
+@@ -0,0 +1,124 @@
++import copy
++import json
++import sqlite3
++import unittest
++from unittest.mock import Mock,patch
++
++from app import broker,order_journal,portfolio_stream,protection
++from tests import test_protection_races as fixtures
++
++
++class OwnedPortfolioStreamTest(unittest.TestCase):
++    setUp=fixtures.ProtectionRaceTest.setUp
++    fill=fixtures.ProtectionRaceTest.fill
++    native=fixtures.ProtectionRaceTest.native
++    state=fixtures.ProtectionRaceTest.state
++
++    def connect(self,uid=2,account='isolated-profile'):
++        return portfolio_stream.open_connection(self.con,uid,account)
++
++    def event(self,oid='completed-exit'):
++        event=copy.deepcopy(self.evidence)
++        event['update_type']='gtt_order'
++        event['rules'][0].update(status='COMPLETED',order_id=oid)
++        return event
++
++    def test_completed_trigger_survives_gap_and_restart_without_inventing_fill(self):
++        self.native();connection=self.connect();event=self.event()
++        portfolio_stream.ingest(self.con,connection,event)
++        portfolio_stream.ingest(self.con,connection,event)
++        portfolio_stream.close_connection(self.con,connection)
++        self.port.protection_status.return_value=[]
++        protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'triggered')
++        self.assertEqual(self.con.execute("SELECT COUNT(*),SUM(filled_qty) FROM v2_live_orders WHERE side='SELL'").fetchone(),(1,0))
++        self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++        restarted=sqlite3.connect(':memory:');self.addCleanup(restarted.close);self.con.backup(restarted)
++        protection.refresh(restarted,2,self.port)
++        self.assertEqual(restarted.execute("SELECT COUNT(*) FROM v2_live_orders WHERE side='SELL'").fetchone()[0],1)
++        self.assertFalse(portfolio_stream.report(restarted,2)['connected'])
++        self.fill(20,'SELL','completed-exit');self.assertEqual(self.state(),'closed')
++
++    def test_authenticated_connection_and_payload_identity_are_owner_bound(self):
++        self.native();connection=self.connect(3,'another-profile')
++        portfolio_stream.ingest(self.con,connection,self.event())
++        self.port.protection_status.return_value=[];protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'unknown')
++        with self.assertRaisesRegex(ValueError,'already bound'):self.connect(2,'another-profile')
++        connection=self.connect()
++        with self.assertRaisesRegex(ValueError,'identity conflicts'):
++            portfolio_stream.ingest(self.con,connection,dict(self.event(),user_id='wrong-owner'))
++        portfolio_stream.close_connection(self.con,connection)
++        with self.assertRaises(ValueError):self.connect(2,'different-new-profile')
++        self.assertEqual(portfolio_stream.report(self.con,2)['event_counts'],{'connection':1,'gap':1})
++
++    def test_expired_replaced_connections_and_ambiguous_children_refuse(self):
++        self.native();old=self.connect()
++        self.con.execute('UPDATE broker_stream_connections SET expires_at=0');self.con.commit()
++        current=self.connect()
++        with self.assertRaises(ValueError):portfolio_stream.ingest(self.con,old,self.event())
++        portfolio_stream.ingest(self.con,current,self.event('first-child'))
++        portfolio_stream.ingest(self.con,current,self.event('different-child'))
++        self.port.protection_status.return_value=[];protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'unknown')
++        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM v2_live_orders WHERE side='SELL'").fetchone()[0],0)
++
++    def test_notifications_never_arm_or_free_inventory_and_originals_are_immutable(self):
++        self.native();connection=self.connect()
++        for status in ('SCHEDULED','CANCELLED','FAILED'):
++            event=self.event();event['rules'][0].update(status=status,order_id=None)
++            portfolio_stream.ingest(self.con,connection,event)
++        self.port.protection_status.return_value=[];protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'unknown')
++        self.assertTrue(protection.blocks_entry(self.con,2))
++        with self.assertRaises(sqlite3.IntegrityError):self.con.execute('DELETE FROM broker_stream_events')
++        self.con.rollback()
++        with self.assertRaises(sqlite3.IntegrityError):self.con.execute("UPDATE broker_stream_accounts SET user_id=3")
++        self.con.rollback()
++
++    def test_order_notification_preceding_child_can_reconcile_exact_owned_fill(self):
++        self.native();connection=self.connect()
++        order=dict(update_type='order',user_id='isolated-profile',order_id='completed-exit',quantity=20,
++                   instrument_token='NSE_EQ|TEST',transaction_type='SELL',product='D',filled_quantity=20,
++                   average_price=94,status='complete',status_message='never retain arbitrary messages')
++        portfolio_stream.ingest(self.con,connection,order)
++        order_journal.reconcile(self.con,2,portfolio_stream.order_updates(self.con,2))
++        self.assertEqual(self.state(),'armed')
++        portfolio_stream.ingest(self.con,connection,self.event())
++        self.port.protection_status.return_value=[];protection.refresh(self.con,2,self.port)
++        order_journal.reconcile(self.con,2,portfolio_stream.order_updates(self.con,2))
++        self.assertEqual(self.state(),'closed')
++        self.assertNotIn('never retain',json.dumps(portfolio_stream.order_updates(self.con,2)))
++        self.assertEqual(portfolio_stream.order_updates(self.con,3),[])
++
++    def test_changed_contract_and_malformed_quantity_never_attach(self):
++        self.native();connection=self.connect()
++        event=self.event();event['instrument_token']='NSE_EQ|ANOTHER'
++        portfolio_stream.ingest(self.con,connection,event)
++        for quantity in (True,[],0,1.5):
++            with self.assertRaises(ValueError):portfolio_stream.ingest(self.con,connection,dict(self.event(),quantity=quantity))
++        self.port.protection_status.return_value=[];protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'unknown')
++        self.assertIsNone(self.con.execute('SELECT exit_order_id FROM protection_obligations').fetchone()[0])
++
++    def test_conflicting_connection_owner_or_backward_clock_cannot_ingest(self):
++        connection=self.connect()
++        with self.assertRaises(ValueError):portfolio_stream.ingest(self.con,connection,self.event(),now=0)
++        self.con.execute("UPDATE broker_stream_connections SET account_hash='wrong-profile'");self.con.commit()
++        with self.assertRaises(ValueError):portfolio_stream.ingest(self.con,connection,self.event())
++        self.assertFalse(portfolio_stream.report(self.con,2)['connected'])
++        self.assertEqual(portfolio_stream.report(self.con,2)['event_counts'],{'connection':1})
++
++
++class PortfolioStreamTransportTest(unittest.TestCase):
++    def test_only_authenticated_upstox_uri_and_profile_allowed(self):
++        profile=Mock();profile.json.return_value=dict(status='success',data={'user_id':'fixture-profile'})
++        response=Mock();response.json.return_value=dict(status='success',data={'authorized_redirect_uri':'wss://stream.upstox.com/feed?code=private-fixture'})
++        with patch.object(broker,'_headers',return_value={'Authorization':'Bearer isolated-fixture'}),patch('httpx.get',side_effect=[profile,response]) as fetch:
++            self.assertEqual(broker.portfolio_stream_access(2)[0],'fixture-profile')
++            self.assertEqual(fetch.call_args.kwargs['params'],{'update_types':'order,gtt_order'})
++        for uri in ('ws://stream.upstox.com/feed','wss://upstox.com.evil.invalid/feed','wss://user@stream.upstox.com/feed',
++                    'wss://stream.upstox.com:80/feed','wss://evil.invalid/feed','https://stream.upstox.com/feed'):
++            response.json.return_value=dict(status='success',data={'authorized_redirect_uri':uri})
++            with patch.object(broker,'_headers',return_value={}),patch('httpx.get',side_effect=[profile,response]):
++                with self.assertRaises(ValueError):broker.portfolio_stream_access(2)
+diff --git a/tests/test_protection_amendments.py b/tests/test_protection_amendments.py
+new file mode 100644
+index 0000000..7f051ee
+--- /dev/null
++++ b/tests/test_protection_amendments.py
+@@ -0,0 +1,148 @@
++import sqlite3
++import unittest
++from unittest.mock import patch
++
++from app import protection, protection_amendments, broker, worker_fencing
++from tests import test_protection_races as fixtures
++
++
++class NativeAmendmentTest(unittest.TestCase):
++    setUp=fixtures.ProtectionRaceTest.setUp
++    fill=fixtures.ProtectionRaceTest.fill
++    native=fixtures.ProtectionRaceTest.native
++    state=fixtures.ProtectionRaceTest.state
++    sell=fixtures.ProtectionRaceTest.sell
++
++    def ready(self):
++        self.native();self.sell(7)
++        protection.observe_fills(self.con,2);self.con.commit()
++        for name in ('app.live_release.native_policy','app.broker_reconciliation.ready'):
++            mock=patch(name,return_value=True);mock.start();self.addCleanup(mock.stop)
++
++    def test_reduction_needs_later_exact_evidence_and_survives_restart(self):
++        self.ready()
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'unknown')
++        self.port.modify_protection.assert_called_once_with(2,'GTT-stop',quantity=13,stop=95)
++        protection_amendments.reduce(self.con,2,self.entry,self.port)
++        protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'unknown');self.assertEqual(self.port.modify_protection.call_count,1)
++        self.evidence['quantity']=13
++        protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'armed')
++        self.assertEqual(protection.report(self.con,2)['rows'][0]['coverage_quantity'],13)
++        self.assertFalse(protection.blocks_entry(self.con,2))
++        self.assertEqual(protection_amendments.latest(self.con,2,self.entry)['state'],'confirmed')
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'skipped')
++        self.assertEqual(protection_amendments.reduce(self.con,3,self.entry,self.port),'skipped')
++        # A new connection/restart sees the immutable claim and never repeats I/O.
++        restarted=sqlite3.connect(':memory:');self.addCleanup(restarted.close);self.con.backup(restarted)
++        self.assertEqual(protection_amendments.reduce(restarted,2,self.entry,self.port),'skipped')
++        self.assertEqual(self.port.modify_protection.call_count,1)
++        with self.assertRaises(sqlite3.IntegrityError):self.con.execute('DELETE FROM native_amendment_intents')
++
++    def test_timeout_does_not_retry_and_trigger_race_keeps_original_sell_reserved(self):
++        self.ready();self.port.modify_protection.side_effect=TimeoutError('ambiguous')
++        protection_amendments.reduce(self.con,2,self.entry,self.port)
++        self.evidence['rules'][0].update(status='TRIGGERED',order_id='old-size-exit')
++        protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'triggered')
++        self.assertEqual(self.con.execute("SELECT qty FROM v2_live_orders WHERE broker_order_id='old-size-exit'").fetchone()[0],20)
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'unknown')
++        self.assertEqual(self.port.modify_protection.call_count,1)
++        self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++
++    def test_open_trigger_revoked_scope_unreconciled_or_pending_sell_never_modify(self):
++        self.ready()
++        self.evidence['rules'][0].update(status='OPEN',order_id='native-child')
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'skipped')
++        self.evidence['rules'][0].update(status='SCHEDULED',order_id=None)
++        with patch.object(protection,'live_scope_authorized',return_value=(False,'revoked')):
++            self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'skipped')
++        with patch('app.broker_reconciliation.ready',return_value=False):
++            self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'skipped')
++        self.con.execute("UPDATE v2_live_orders SET status='partial' WHERE side='SELL'");self.con.commit()
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'skipped')
++        self.port.modify_protection.assert_not_called()
++
++    def test_late_ack_cannot_revert_exact_confirmed_reduction(self):
++        self.ready()
++        def observed_before_ack(*_,**__):
++            self.evidence['quantity']=13
++            protection.refresh(self.con,2,self.port)
++            return {'ok':True}
++        self.port.modify_protection.side_effect=observed_before_ack
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'confirmed')
++        self.assertEqual(protection_amendments.latest(self.con,2,self.entry)['state'],'confirmed')
++        self.assertEqual(self.state(),'armed')
++
++    def test_takeover_during_amendment_claim_preserves_unknown_without_retry(self):
++        self.ready();worker_fencing.ensure_schema(self.con)
++        token=worker_fencing.acquire(self.con,'old-worker');context=worker_fencing.ACTIVE.set(token)
++        self.addCleanup(worker_fencing.ACTIVE.reset,context)
++        def takeover(*_,**__):
++            self.con.execute('UPDATE worker_leases SET expires=0');self.con.commit()
++            worker_fencing.acquire(self.con,'replacement-worker')
++            return {'ok':True}
++        self.port.modify_protection.side_effect=takeover
++        with self.assertRaisesRegex(RuntimeError,'stale paper-engine fence'):
++            protection_amendments.reduce(self.con,2,self.entry,self.port)
++        self.assertEqual(self.state(),'amending')
++        worker_fencing.ACTIVE.set(None)
++        self.assertEqual(protection_amendments.reduce(self.con,2,self.entry,self.port),'unknown')
++        self.assertEqual(self.port.modify_protection.call_count,1)
++
++    def test_cancelled_coverage_with_remaining_inventory_blocks_new_risk(self):
++        self.native();protection.prepare_exit(self.con,2,'TEST',self.port)
++        self.evidence['rules'][0]['status']='CANCELLED';protection.refresh(self.con,2,self.port)
++        self.assertTrue(protection.prepare_exit(self.con,2,'TEST',self.port))
++        self.assertTrue(protection.blocks_entry(self.con,2))
++        self.sell(20);protection.observe_fills(self.con,2);self.con.commit()
++        self.assertEqual(self.state(),'closed');self.assertFalse(protection.blocks_entry(self.con,2))
++
++    def test_trigger_winning_reduction_is_cancelled_once_before_another_exit(self):
++        self.ready();protection_amendments.reduce(self.con,2,self.entry,self.port)
++        self.evidence['rules'][0].update(status='TRIGGERED',order_id='raced-child')
++        protection.refresh(self.con,2,self.port)
++        protection.cancel_overreserved_children(self.con,2,self.port)
++        protection.cancel_overreserved_children(self.con,2,self.port)
++        self.port.cancel.assert_called_once_with(2,'raced-child')
++        self.assertEqual(self.state(),'triggered')
++        self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++        from app import order_journal
++        order_journal.reconcile(self.con,2,[dict(order_id='raced-child',instrument_token='NSE_EQ|TEST',transaction_type='SELL',
++            product='D',filled_quantity=3,average_price=94,status='cancelled')])
++        self.assertEqual(self.state(),'cancelled')
++        self.assertEqual(protection.report(self.con,2)['rows'][0]['remaining_quantity'],10)
++        self.assertTrue(protection.prepare_exit(self.con,2,'TEST',self.port))
++        self.assertTrue(protection.blocks_entry(self.con,2))
++
++    def test_unknown_child_cancellation_never_retries_or_frees_inventory(self):
++        self.ready();self.evidence['rules'][0].update(status='TRIGGERED',order_id='raced-child')
++        protection.refresh(self.con,2,self.port)
++        self.port.cancel.side_effect=TimeoutError('unknown cancellation')
++        protection.cancel_overreserved_children(self.con,2,self.port)
++        protection.cancel_overreserved_children(self.con,2,self.port)
++        self.assertEqual(self.port.cancel.call_count,1)
++        self.assertEqual(self.state(),'triggered')
++        self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++
++    def test_confirmed_cancel_after_quantity_reduction_does_not_stick_unknown(self):
++        self.ready();protection_amendments.reduce(self.con,2,self.entry,self.port)
++        self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++        self.evidence['quantity']=13;self.evidence['rules'][0].update(status='CANCELLED',order_id=None)
++        protection.refresh(self.con,2,self.port)
++        self.assertEqual(self.state(),'cancelled')
++        self.assertTrue(protection.prepare_exit(self.con,2,'TEST',self.port))
++        self.assertTrue(protection.blocks_entry(self.con,2))
++
++
++class NativeAmendmentTransportTest(unittest.TestCase):
++    def test_exact_scheduled_single_payload_and_no_transport_retry(self):
++        with patch.object(broker,'_execution_request',return_value={'ok':True}) as send:
++            broker.modify_protection(2,'GTT-stop',quantity=13,stop=95)
++            self.assertEqual(send.call_args.args,(2,'PUT','/order/gtt/modify'))
++            self.assertEqual(send.call_args.kwargs['payload'],dict(type='SINGLE',gtt_order_id='GTT-stop',quantity=13,
++                rules=[dict(strategy='ENTRY',trigger_type='BELOW',trigger_price=95,market_protection=5)]))
++            for quantity in (True,0,1.5):
++                with self.assertRaises(ValueError):broker.modify_protection(2,'GTT-stop',quantity=quantity,stop=95)
++            self.assertEqual(send.call_count,1)
+diff --git a/tests/test_protection_races.py b/tests/test_protection_races.py
+new file mode 100644
+index 0000000..909d7db
+--- /dev/null
++++ b/tests/test_protection_races.py
+@@ -0,0 +1,76 @@
++"""Protection writes must remain owned and fenced across broker I/O."""
++import unittest
++
++from app import protection, worker_fencing
++from tests import test_protection_lifecycle as fixtures
++
++
++class ProtectionRaceTest(unittest.TestCase):
++    def setUp(self):
++        fixtures.ProtectionLifecycleTest.setUp(self)
++
++    fill = fixtures.ProtectionLifecycleTest.fill
++    native = fixtures.ProtectionLifecycleTest.native
++    state = fixtures.ProtectionLifecycleTest.state
++
++    def sell(self, quantity, *, status='filled', filled=None):
++        self.con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,notional,"
++                         "product,status,broker_order_id,filled_qty) VALUES(?,2,'IN','TEST','NSE_EQ|TEST','SELL',?,100,?,"
++                         "'D',?,'other-exit',?)", (self.now.isoformat(), quantity, quantity*100, status,
++                                                  quantity if filled is None else filled))
++        self.con.commit()
++
++    def test_worker_takeover_during_status_read_cannot_attach_exit(self):
++        self.native()
++        worker_fencing.ensure_schema(self.con)
++        token = worker_fencing.acquire(self.con, 'old-worker')
++        context = worker_fencing.ACTIVE.set(token)
++        self.addCleanup(worker_fencing.ACTIVE.reset, context)
++
++        def late_status(*_):
++            self.con.execute("UPDATE worker_leases SET expires=0")
++            self.con.commit()
++            worker_fencing.acquire(self.con, 'replacement-worker')
++            self.evidence['rules'][0].update(status='TRIGGERED', order_id='late-exit')
++            return [self.evidence]
++
++        self.port.protection_status.side_effect = late_status
++        with self.assertRaisesRegex(RuntimeError, 'stale paper-engine fence'):
++            protection.refresh(self.con, 2, self.port)
++        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM v2_live_orders WHERE side='SELL'").fetchone()[0], 0)
++        self.assertIsNone(self.con.execute("SELECT exit_order_id FROM protection_obligations").fetchone()[0])
++
++    def test_partial_owned_exit_cannot_leave_oversized_stop_armed(self):
++        self.native()
++        self.sell(7)
++        protection.observe_fills(self.con, 2)
++        self.con.commit()
++        self.assertEqual(self.state(), 'unknown')
++        protection.refresh(self.con, 2, self.port)
++        self.assertEqual(self.state(), 'unknown')
++        self.assertTrue(protection.blocks_entry(self.con, 2))
++
++    def test_pending_exit_prevents_native_activation(self):
++        self.fill()
++        self.sell(20, status='submitted', filled=0)
++        with self.assertRaisesRegex(ValueError, 'exit'):
++            protection.request_native(self.con, 2, self.entry, authorization_reference='fixture review')
++        self.assertEqual(self.state(), 'app_only')
++        self.port.place_stop.assert_not_called()
++
++    def test_repeated_valid_status_refreshes_coverage_age(self):
++        self.native()
++        self.con.execute('UPDATE protection_obligations SET updated_at=0');self.con.commit()
++        self.assertTrue(protection.blocks_entry(self.con,2))
++        protection.refresh(self.con,2,self.port)
++        self.assertFalse(protection.blocks_entry(self.con,2))
++
++    def test_disappearing_or_changed_child_cannot_release_sell_reservation(self):
++        self.native();self.evidence['rules'][0].update(status='TRIGGERED',order_id='native-child')
++        protection.refresh(self.con,2,self.port)
++        for status,oid in (('SCHEDULED',None),('CANCELLED',None),('TRIGGERED','different-child')):
++            self.evidence['rules'][0].update(status=status,order_id=oid)
++            protection.refresh(self.con,2,self.port)
++            self.assertEqual(self.state(),'unknown')
++            self.assertFalse(protection.prepare_exit(self.con,2,'TEST',self.port))
++        self.assertEqual(self.con.execute("SELECT COUNT(*) FROM v2_live_orders WHERE side='SELL'").fetchone()[0],1)
+diff --git a/tests/test_reconciliation_snapshot.py b/tests/test_reconciliation_snapshot.py
+new file mode 100644
+index 0000000..200a91e
+--- /dev/null
++++ b/tests/test_reconciliation_snapshot.py
+@@ -0,0 +1,91 @@
++"""Risk permission must describe the same owned state as its broker evidence."""
++from contextlib import contextmanager
++import json
++from pathlib import Path
++import sqlite3
++import tempfile
++
++from unittest.mock import patch
++
++from app import broker, broker_reconciliation as recon
++from tests import test_execution_hardening as fixtures
++from tests import test_execution_events as execution_fixtures
++from tests.contract_storage_fixtures import ContractStorageCase
++
++
++class ReconciliationSnapshotTest(ContractStorageCase):
++    setUp = fixtures.ReconciliationTest.setUp
++    review = fixtures.ReconciliationTest.review
++
++    def ready(self):
++        return recon.ready(self.con, 1, self.now.timestamp() + 1)
++
++    def test_confirmed_fill_change_invalidates_recent_permission(self):
++        self.assertEqual(self.review()['status'], 'ok')
++        self.con.execute('UPDATE v2_live_orders SET filled_qty=19')
++        self.con.commit()
++        self.assertFalse(self.ready())
++
++    def test_new_pending_commitment_invalidates_recent_permission(self):
++        self.review()
++        self.con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,"
++                         "product,status,filled_qty) VALUES(?,1,'IN','OTHER','NSE_EQ|OTHER','BUY',1,100,'D','unknown',0)",
++                         (self.now.isoformat(),))
++        self.con.commit()
++        self.assertFalse(self.ready())
++
++    def test_other_owner_and_observation_time_do_not_invalidate_permission(self):
++        self.review()
++        self.con.execute('UPDATE v2_live_orders SET reconciled_at=?', (self.now.isoformat(),))
++        self.con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,"
++                         "product,status,filled_qty) VALUES(?,2,'IN','OTHER','NSE_EQ|OTHER','BUY',1,100,'D','unknown',0)",
++                         (self.now.isoformat(),))
++        self.con.commit()
++        self.assertTrue(self.ready())
++
++    def test_unbound_or_corrupt_old_evidence_never_grants_permission(self):
++        for payload in ('{}', '{bad', json.dumps({'owned_state_fingerprint': 'wrong'})):
++            with self.subTest(payload=payload):
++                self.review()
++                self.con.execute('UPDATE broker_reconciliation SET payload=?', (payload,))
++                self.con.commit()
++                self.assertFalse(self.ready())
++
++    def test_owned_reads_and_evidence_write_are_one_serialized_snapshot(self):
++        directory = tempfile.TemporaryDirectory(); self.addCleanup(directory.cleanup)
++        db = str(Path(directory.name) / 'book.db')
++        target = sqlite3.connect(db); self.con.backup(target); self.con.close()
++        self.con = target; self.addCleanup(target.close)
++        writer = sqlite3.connect(db); self.addCleanup(writer.close)
++        original_atomic = recon.atomic
++
++        @contextmanager
++        def mutate_before_lock(con):
++            # The competing commit happens just before the reviewer acquires
++            # its lock. It must not retain comparisons made before this commit.
++            writer.execute('UPDATE v2_live_orders SET filled_qty=19'); writer.commit()
++            with original_atomic(con):
++                yield
++
++        with patch.object(recon, 'atomic', mutate_before_lock):
++            result = self.review()
++        self.assertEqual(result['status'], 'mismatch')
++        self.assertFalse(self.ready())
++
++
++class ReconciliationEntryGateTest(ContractStorageCase):
++    setUp = execution_fixtures.ExecutionObservationTest.setUp
++    submit = execution_fixtures.ExecutionObservationTest.submit
++
++    def test_closed_round_trip_cannot_reuse_pre_trade_funds_permission(self):
++        # Inventory returns to zero, but those fills changed cash and risk.
++        # A 120-second-old empty-inventory reconciliation is insufficient.
++        for side, price in (('BUY', 200), ('SELL', 199)):
++            self.con.execute("INSERT INTO v2_live_orders(ts,user_id,market,symbol,instrument_key,side,qty,price,"
++                             "product,status,broker_order_id,filled_qty,average_price) "
++                             "VALUES(datetime('now'),2,'IN','TEST','NSE_EQ|TEST',?,5,?,'D','filled',?,5,?)",
++                             (side, price, 'prior-' + side, price))
++        self.con.commit()
++        with patch.object(broker, 'place_order', side_effect=AssertionError('must not transmit')) as transport:
++            self.assertIn('reconciliation', self.submit())
++            transport.assert_not_called()
+diff --git a/tests/test_schema_migrations.py b/tests/test_schema_migrations.py
+index ece6008..25ac392 100644
+--- a/tests/test_schema_migrations.py
++++ b/tests/test_schema_migrations.py
+@@ -20,7 +20,7 @@ class TransactionalMigrationTest(unittest.TestCase):
+         self.assertEqual(self.con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),[])
+         self.assertFalse(self.con.in_transaction)
+         v2_live.ensure_schema(self.con)
+-        self.assertEqual(self.con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'trading-schema-v5')
++        self.assertEqual(self.con.execute('SELECT version FROM schema_migration_receipts').fetchone()[0],'trading-schema-v6')
+
+     def test_existing_book_epoch_capital_inventory_and_nested_transaction_preserved(self):
+         v2_live.ensure_schema(self.con);books.ensure_book(self.con,2);self.con.commit()
+@@ -34,7 +34,7 @@ class TransactionalMigrationTest(unittest.TestCase):
+         v2_live.ensure_schema(self.con)
+         self.assertTrue(self.con.in_transaction);self.con.rollback()
+         self.assertFalse(self.con.execute("SELECT 1 FROM sqlite_master WHERE name='parent_fixture'").fetchone())
+-        with self.assertRaises(RuntimeError):schema_migrations.apply(self.con,'trading-schema-v5',{'changed':True},lambda c:None,lambda c:None)
++        with self.assertRaises(RuntimeError):schema_migrations.apply(self.con,'trading-schema-v6',{'changed':True},lambda c:None,lambda c:None)
+         with self.assertRaises(sqlite3.IntegrityError):self.con.execute('DELETE FROM schema_migration_receipts')
+
+     def test_script_parses_trigger_and_literal_semicolons_without_commit(self):

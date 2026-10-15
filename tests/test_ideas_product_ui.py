@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from app import books, v2_web
-from app.screening.plans import shortlist
+from app.screening.plans import shortlist, research_candidates
 from tests.test_stock_plans import screen, book, NOW
 
 
@@ -53,6 +53,67 @@ def test_search_sector_saved_views_and_empty_state(tmp_path):
     assert 'No matching ideas' in result['empty']
 
 
+def test_no_qualifying_setup_explains_rejection_without_a_daily_quota(tmp_path):
+    data=screen(1);data['equities'][0]['metrics']['relative_volume']=1
+    preview=shortlist(data,book(),now=NOW)
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans)}));",preview)
+    assert 'No qualifying setups' in result['html']
+    assert 'No daily quota; some sessions have none' in result['html']
+    assert 'Participation gate failed' in result['html']
+    assert 'Try another search' not in result['html'] and 'Show all ideas' not in result['html']
+    assert '<article' not in result['html']
+
+
+def test_research_candidates_render_levels_wait_reason_and_watchlist_without_buy(tmp_path):
+    data=screen(1);data['equities'][0]['metrics']['relative_volume']=.7
+    preview=shortlist(data,book(),now=NOW)
+    preview['research_candidates']=research_candidates(data,book(),now=NOW)
+    result=run_js(tmp_path,"""
+    const initial=renderStockPlans(IDEAS.stock_plans);
+    IDEA_UI.view='research';const research=ideaCards(IDEAS.stock_plans);
+    IDEAS.stock_plans.watchlisted=['STOCK0'];IDEA_UI.view='saved';const saved=ideaCards(IDEAS.stock_plans);
+    let calls=0;function api(){calls++;throw new Error('no order permitted')};
+    ideaOpenPlan('STOCK0',true);
+    console.log(JSON.stringify({initial,research,saved,calls}));""",preview)
+    for html in (result['initial'],result['research'],result['saved']):
+        assert 'STOCK0' in html and 'Research · waiting for entry' in html
+        assert 'Stop-loss' in html and 'Target 3' in html
+        assert 'Participation gate failed' in html
+        assert 'Review buy' not in html
+        assert 'ideaToggleWatch' in html
+    assert '0 entry plans · 1 research candidates' in result['initial']
+    assert result['calls']==0
+
+
+def test_incomplete_screening_is_not_presented_as_no_qualifying_market(tmp_path):
+    data=screen(1);data['equities'][0]['fundamentals'].pop('earnings_periods')
+    preview=shortlist(data,book(),now=NOW)
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans)}));",preview)
+    assert 'Screening data incomplete' in result['html']
+    assert 'verified for 0 of 1 screened stocks' in result['html']
+    assert 'No qualifying setups' not in result['html']
+    assert 'Stock setups are evaluated independently of index direction' in result['html']
+    assert 'counts overlap' in result['html']
+    assert '<article' not in result['html']
+
+
+def test_empty_rejection_summary_is_counted_bounded_and_escaped(tmp_path):
+    data=screen(1);data['equities'][0]['flags']=['<img src=x onerror=alert(1)>',*['reason'+str(i) for i in range(12)]]
+    preview=shortlist(data,book(),now=NOW)
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans)}));",preview)
+    assert '<img' not in result['html'] and '&lt;img' in result['html']
+    assert result['html'].count('<li>')==8
+    assert '1 stocks' in result['html']
+
+
+def test_card_exposes_after_cost_scenario_and_v3_tracks_confirmation(tmp_path):
+    result=run_js(tmp_path,"console.log(JSON.stringify({html:renderStockPlans(IDEAS.stock_plans),confirmation:ideaConfirmationHtml({plan:IDEAS.stock_plans.ideas[0]})}));")
+    assert result['html'].count('<article')==3
+    assert 'Final-target net scenario' in result['html'] and 'after costs; not a forecast' in result['html']
+    assert 'waiting for the next evidence check' in result['confirmation']
+    assert 'legacy first-touch' not in result['confirmation']
+
+
 def test_failed_save_keeps_previous_state_and_success_can_add_and_remove(tmp_path):
     result=run_js(tmp_path,"""
     const calls=[];let success=false;
@@ -91,7 +152,7 @@ def test_order_review_is_explicit_and_cannot_submit_unapproved_stock(tmp_path):
     assert 'Buy unavailable · research plan' in result['review']
     assert 'disabled>' in result['review']
     assert 'Stock execution has not been approved' in result['review']
-    assert 'Execution regime: OFF' in result['review']
+    assert 'Stock-specific paper checks; index trend is context' in result['review']
     assert 'Estimated net at T1 / T2 / T3' in result['detail']
     assert 'Net reward / estimated stop loss' in result['detail']
     assert 'Stop-loss' in result['detail']
