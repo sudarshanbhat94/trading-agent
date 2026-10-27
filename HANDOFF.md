@@ -1,3 +1,14 @@
+## Data refresh repair — 28 October 2026
+
+**TRADING BEHAVIOUR CHANGED locally through corrected data inputs and refresh timing.**
+Completed source-dated daily snapshots avoid replaying old history; quote watches
+include automation publications and refresh the broad universe; financial collection
+repairs pagination, valid XML size, standalone revisions and retry starvation.
+No selection/risk parameter, paper epoch, broker setting or forward protocol changes.
+See `docs/data-refresh-repair.md`. Read-only source replay recovered 2,615 dated bars
+in 27 requests; unresolved identities and financial facts remain explicit. Deployment
+and post-fix actual market-hour verification require their own dated receipts.
+
 ## Product workspace revision — 27 October 2026, local only
 
 User rejected the sparse premium layout. Local changes add a more legible

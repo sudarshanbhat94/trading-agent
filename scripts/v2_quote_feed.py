@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import math
 import os
 import sys
 import time
 from dataclasses import replace
+from collections import Counter
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import Settings, settings_from_overrides   # noqa: E402
@@ -124,22 +128,30 @@ def _held(path=None, *, strict=False):
 def _tracked():
     """Issued research plans need the hot feed even when they are not positions.
 
-    Read only the separate tracker; never invoke a strategy or create a book.
+    Read only the separate journals; never invoke a strategy or create a book.
     This adds quote coverage, not candidates to the trading engine.
     """
-    from app.screening import tracking
-    path=tracking.default_path(MAIN_DB)
-    if not os.path.exists(path):
-        return set()
-    try:
-        return set(tracking.symbols(path))
-    except (sqlite3.Error,OSError,ValueError):
-        print('issued idea quote watch unavailable; tracker coverage must be checked',flush=True)
-        return set()
+    from app.screening import automation, tracking
+    symbols = set()
+    # These are separate journals. A research UI visit is not a prerequisite
+    # for an automation publication to receive fast quotes.
+    for scope, resolve in (('research', lambda: tracking.default_path(MAIN_DB)),
+                           ('automation', automation.default_path)):
+        try:
+            path = resolve()
+            if os.path.exists(path):
+                symbols.update(tracking.symbols(path))
+        except (sqlite3.Error, OSError, ValueError):
+            print(f'{scope} issued idea quote watch unavailable; tracker coverage must be checked', flush=True)
+    return symbols
+
+
+def _hot_symbols(market, held, tracked):
+    return set(held.get(market, ())) | set(WATCH_HOT.get(market, ())) | (set(tracked) if market == 'IN' else set())
 
 
 def _hot_rows(symmap,held,tracked):
-    return {m:[symmap[m][s] for s in sorted(set(held.get(m,())) | set(WATCH_HOT.get(m,())) | (set(tracked) if m=='IN' else set()))
+    return {m:[symmap[m][s] for s in sorted(_hot_symbols(m, held, tracked))
                if s in symmap.get(m,{})] for m in MARKETS}
 
 
@@ -156,7 +168,25 @@ def _refresh_quote_map(db, previous):
     return result
 
 
+def _refresh_full_rows(db, previous):
+    """Selection can change after startup; keep the broad lane current."""
+    result = dict(previous)
+    for market in MARKETS:
+        try:
+            result[market] = db.get_universe(enabled_only=True, market_region=market)
+        except Exception:
+            print('full quote universe refresh unavailable for ' + market, flush=True)
+    return result
+
+
 _cooldown: dict = {}   # market -> unix time to resume after a rate-limit (429)
+_coverage_gaps: dict = {}  # lane/market -> last reported missing/stale sets
+_coverage_archive_last: dict = {}
+_coverage_archive_lock = threading.Lock()
+_coverage_warnings: set = set()
+COVERAGE_ARCHIVE_INTERVAL = 60
+COVERAGE_ARCHIVE_DAYS = 14
+COVERAGE_ARCHIVE_MAX_BYTES = 2 * 1024 * 1024
 
 # The hot lane always keeps this small liquid base fresh (every `interval`s) even
 # when the book is EMPTY — otherwise latest_quotes only refreshes on the slow full
@@ -175,7 +205,128 @@ BENCHMARK_ROWS = [
 ]
 
 
+def _deliver(db, provider, market, quotes):
+    indices = {s: q for s, q in quotes.items() if market == 'IN' and s in ('NIFTY', 'BANKNIFTY')}
+    equities = {s: q for s, q in quotes.items() if s not in indices}
+    if equities:
+        db.upsert_quotes(equities)
+    execution = getattr(provider, 'execution_quotes', {})
+    if execution:
+        from app import executable_quotes
+        try:
+            with db.connect() as con:
+                for snapshot in execution.values():
+                    executable_quotes.write(con, snapshot)
+        except sqlite3.Error:
+            print('executable depth capture unavailable; valuation quotes delivered', flush=True)
+    if indices:
+        from app.screening import tracking
+        try:
+            tracking.observe_benchmarks(tracking.default_path(MAIN_DB),
+                {s: dict(price=q.price, ts=q.asof, source=q.source) for s, q in indices.items()})
+        except (sqlite3.Error, OSError, ValueError):
+            print('benchmark capture unavailable; equity quotes delivered', flush=True)
+
+
+def _quote_coverage(market, rows, quotes, now):
+    """Report per-symbol source age using the existing 120s observation contract.
+
+    Returned quotes are not necessarily fresh. Never substitute receipt time or
+    change their source labels, including on retry.
+    """
+    requested = {r['symbol'] for r in rows}
+    fresh = set()
+    for symbol in requested & quotes.keys():
+        q = quotes[symbol]
+        try:
+            at = datetime.fromisoformat(q.asof.replace('Z', '+00:00'))
+            if (at.tzinfo is not None and math.isfinite(q.price) and q.price > 0
+                    and (q.source == 'upstox-live' if market == 'IN'
+                         else q.source.startswith('alpaca-') and q.source.endswith('-live'))
+                    and 0 <= (now - at).total_seconds() <= 120
+                    and market_regions.market_session_for_region(market, at).get('is_open')):
+                fresh.add(symbol)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    returned = requested & quotes.keys()
+    return dict(requested=len(requested), returned=len(returned), fresh_symbols=sorted(fresh),
+                missing_symbols=sorted(requested - returned), stale_symbols=sorted(returned - fresh),
+                source_counts=dict(Counter(quotes[s].source for s in returned)))
+
+
+def _coverage_summary(report, now, status):
+    """Bound stdout/storage without dropping detail from the caller's report.
+
+    checked_at dates this poll receipt, never the broker's quote. Sources count
+    only returned requested equities, including stale/last-traded labels.
+    """
+    return dict(checked_at=now.isoformat(), status=status,
+                coverage_source='quote_provider_response' if status == 'polled' else 'quote_provider_error',
+                requested=report['requested'], returned=report['returned'],
+                fresh=len(report['fresh_symbols']), missing=len(report['missing_symbols']),
+                stale=len(report['stale_symbols']), source_counts=report['source_counts'],
+                missing_sample=report['missing_symbols'][:10], stale_sample=report['stale_symbols'][:10])
+
+
+def _archive_coverage(market, lane, summary, now):
+    """At most one market-hour sample/minute/lane, with bounded private files.
+
+    Skips/closed hours are not observations. This is sampled telemetry, not
+    proof of continuous coverage between checks. No paper database is used.
+    """
+    if not market_regions.market_session_for_region(market, now).get('is_open'):
+        return
+    with _coverage_archive_lock:
+        tick = time.monotonic()
+        key = (market, lane)
+        previous = _coverage_archive_last.get(key)
+        if previous is not None and tick - previous < COVERAGE_ARCHIVE_INTERVAL:
+            return
+        # Failed filesystem writes are paced too; the current DB receipt is
+        # independent and still attempted on every actual poll.
+        _coverage_archive_last[key] = tick
+        folder = Path(os.getenv('QUOTE_FEED_COVERAGE_DIR', str(Path(MAIN_DB).parent / 'quote_feed_coverage')))
+        folder.mkdir(parents=True, exist_ok=True)
+        prefix = f'coverage_{market}_{lane}_'
+        path = folder / f"{prefix}{now.date().isoformat()}.jsonl"
+        files = sorted(set(folder.glob(prefix + '????-??-??.jsonl')) | {path})
+        for old in files[:-COVERAGE_ARCHIVE_DAYS]:
+            old.unlink(missing_ok=True)
+        if path not in files[-COVERAGE_ARCHIVE_DAYS:]:
+            return
+        record = dict(summary, market=market, lane=lane)
+        data = (json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n').encode('utf-8')
+        size = path.stat().st_size if path.exists() else 0
+        if size + len(data) <= COVERAGE_ARCHIVE_MAX_BYTES:
+            with path.open('ab') as archive:
+                archive.write(data)
+
+
+def _record_coverage(db, market, lane, summary, now):
+    # Each destination fails independently, after quote delivery. An unavailable
+    # telemetry sink must never turn a successful fetch into an all-missing one.
+    # Only actual polls renew checked_at; closed/cooldown skips leave it dated.
+    for sink, write in (
+        ('state', lambda: db.set_state(f'quote_feed_coverage_{market}_{lane}', summary)),
+        ('archive', lambda: _archive_coverage(market, lane, summary, now)),
+    ):
+        key = (market, lane, sink)
+        try:
+            write()
+            _coverage_warnings.discard(key)
+        except Exception:
+            if key not in _coverage_warnings:
+                print(f'  [{market}/{lane}] coverage {sink} unavailable; quote delivery unaffected', flush=True)
+            _coverage_warnings.add(key)
+
+
+def _rate_limited(message):
+    return any(code in message for code in ('429', 'Too Many Request', 'UDAPI10005'))
+
+
 def _poll(db, providers, rows_for, label, benchmarks=False):
+    coverage = {}
+    lane_label = 'hot' if benchmarks else 'full'
     for m, rws in rows_for.items():
         if m not in providers or not rws:
             continue
@@ -186,36 +337,68 @@ def _poll(db, providers, rows_for, label, benchmarks=False):
                 continue
             requested=rws+BENCHMARK_ROWS if benchmarks and m=='IN' else rws
             quotes = asyncio.run(providers[m].get_quotes(requested))
-            indices={s:q for s,q in quotes.items() if m=='IN' and s in ('NIFTY','BANKNIFTY')}
-            quotes={s:q for s,q in quotes.items() if s not in indices}
             # Portfolio marks get written first. Research capture failures must
             # never discard or delay delivery of already fetched equity quotes.
-            if quotes:
-                db.upsert_quotes(quotes)
-            execution = getattr(providers[m], 'execution_quotes', {})
-            if execution:
-                from app import executable_quotes
+            _deliver(db, providers[m], m, quotes)
+            diagnostics = getattr(providers[m], 'last_quote_diagnostics', {})
+            limited = _rate_limited(str(diagnostics.get('errors', [])))
+            # One extra broker batch at most. Stale trades are source evidence,
+            # not transport failures, and must not trigger repeated requests.
+            missing = [row for row in rws if row['symbol'] not in quotes][:100]
+            if missing and not limited and market_regions.market_session_for_region(m).get('is_open'):
                 try:
-                    with db.connect() as con:
-                        for snapshot in execution.values(): executable_quotes.write(con, snapshot)
-                except sqlite3.Error:
-                    print('executable depth capture unavailable; valuation quotes delivered', flush=True)
-            if indices:
-                from app.screening import tracking
-                try:
-                    tracking.observe_benchmarks(tracking.default_path(MAIN_DB),
-                        {s:dict(price=q.price,ts=q.asof,source=q.source) for s,q in indices.items()})
-                except (sqlite3.Error,OSError,ValueError):
-                    print('benchmark capture unavailable; equity quotes delivered',flush=True)
-            if label:
-                print(f"  [{m}/{label}] {len(quotes)} quotes @ {datetime.now(timezone.utc).strftime('%H:%M:%S')}", flush=True)
+                    retried = asyncio.run(providers[m].get_quotes(missing))
+                    retry_symbols = {r['symbol'] for r in missing}
+                    retried = {s: q for s, q in retried.items() if s in retry_symbols}
+                    _deliver(db, providers[m], m, retried)
+                    quotes.update(retried)
+                    limited = _rate_limited(str(getattr(providers[m], 'last_quote_diagnostics', {}).get('errors', [])))
+                except Exception as exc:
+                    limited = _rate_limited(str(exc))
+                    print(f'  [{m}] missing-symbol retry failed: {str(exc)[:180]}', flush=True)
+            if limited:
+                _cooldown[m] = time.time() + 45
+                print(f'  [{m}] rate-limited by broker (429) — backing off 45s', flush=True)
+            now = datetime.now(timezone.utc)
+            report = _quote_coverage(m, rws, quotes, now)
+            coverage[m] = report
+            summary = _coverage_summary(report, now, 'polled')
+            _record_coverage(db, m, lane_label, summary, now)
+            gaps = (tuple(report['missing_symbols']), tuple(report['stale_symbols']))
+            lane = (m, benchmarks)
+            changed = gaps != _coverage_gaps.get(lane, ((), ()))
+            _coverage_gaps[lane] = gaps
+            if label or changed:
+                print(f"  [{m}/{lane_label}] coverage={json.dumps(summary, separators=(',', ':'))}", flush=True)
         except Exception as exc:
+            # An all-symbol transport failure is still an explicit coverage gap.
+            now = datetime.now(timezone.utc)
+            coverage[m] = _quote_coverage(m, rws, {}, now)
             msg = str(exc)
-            if "429" in msg or "Too Many Request" in msg or "UDAPI10005" in msg:
+            if _rate_limited(msg):
                 _cooldown[m] = time.time() + 45   # Upstox rate-limited us: pause both lanes ~45s
                 print(f"  [{m}] rate-limited by broker (429) — backing off 45s", flush=True)
             else:
                 print(f"  [{m}] fetch error: {msg[:180]}", flush=True)
+            summary = _coverage_summary(coverage[m], now, 'fetch_error')
+            _record_coverage(db, m, lane_label, summary, now)
+            print(f"  [{m}/{lane_label}] coverage={json.dumps(summary, separators=(',', ':'))}", flush=True)
+    return coverage
+
+
+def _full_worker(interval):
+    db, providers, rows, _symmap = _build()
+    print(f"full worker up @ {interval}s universe={ {m: len(rows.get(m, [])) for m in providers} }", flush=True)
+    last_refresh = time.monotonic()
+    n = 0
+    while True:
+        t0 = time.monotonic()
+        if t0 - last_refresh >= 60:
+            rows = _refresh_full_rows(db, rows)
+            last_refresh = t0
+        _poll(db, providers, rows, 'full' if n % 8 == 0 else '')
+        n += 1
+        time.sleep(max(1.0, interval - (time.monotonic() - t0)))
 
 
 # ---- index option lane -------------------------------------------------------
@@ -475,36 +658,27 @@ def main():
                 symmap = _refresh_quote_map(db, symmap)
                 last_map_refresh = time.monotonic()
             held = _held()
-            # Held symbols, base liquidity names and issued research plans.
-            hot = _hot_rows(symmap,held,_tracked())
-            missing = tuple(sorted((m, s) for m in MARKETS for s in held.get(m, ())
+            # Held symbols, base names and BOTH publication journals.
+            tracked = _tracked()
+            hot = _hot_rows(symmap, held, tracked)
+            missing = tuple(sorted((m, s) for m in MARKETS for s in _hot_symbols(m, held, tracked)
                                    if s not in symmap.get(m, {})))
             if missing != missing_before:
                 if missing:
-                    print(f'held quote identities unresolved: {len(missing)}; exit coverage requires review', flush=True)
+                    print(f'hot quote identities unresolved: count={len(missing)} sample={missing[:10]}; quote coverage requires review', flush=True)
                 elif missing_before:
-                    print('held quote identities recovered', flush=True)
+                    print('hot quote identities recovered', flush=True)
                 missing_before = missing
             if any(hot.values()):
                 _poll(db, providers, hot, "", benchmarks=True)
             time.sleep(max(0.2, a.interval - (time.time() - t0)))
-
-    def _full_worker():
-        db, providers, rows, _symmap = _build()
-        print(f"full worker up @ {a.full_interval}s universe={ {m: len(rows.get(m, [])) for m in providers} }", flush=True)
-        n = 0
-        while True:
-            t0 = time.time()
-            _poll(db, providers, rows, "full" if n % 8 == 0 else "")
-            n += 1
-            time.sleep(max(1.0, a.full_interval - (time.time() - t0)))
 
     t = threading.Thread(target=_hot_worker, daemon=True)
     t.start()
     if not a.no_nfo:
         threading.Thread(target=_nfo_worker, args=(a.nfo_interval, a.nfo_hot_interval),
                          daemon=True).start()
-    _full_worker()
+    _full_worker(a.full_interval)
 
 
 if __name__ == "__main__":

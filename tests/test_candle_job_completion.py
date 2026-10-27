@@ -46,6 +46,58 @@ class CandleJobCompletionTest(unittest.TestCase):
         self.assertEqual(provider.get_candles.await_count,2)
         self.assertEqual((result['status'],result['requested'],result['fresh'],result['missing']),('complete',1,1,0))
 
+    def test_batched_completed_snapshot_avoids_repeated_old_history_downloads(self):
+        from app.market_data import UpstoxMarketDataProvider
+        self.db.upsert_candles({'ACTIVE':[bar('ACTIVE','2026-10-05')]})
+        provider=Mock(spec=UpstoxMarketDataProvider)
+        provider.get_candles=AsyncMock(return_value={})
+        def snapshot(provider,db,rows,target):
+            db.upsert_candles({'ACTIVE':[bar('ACTIVE',target)]})
+            return dict(returned=1,status='complete')
+        with patch.object(ingest,'build_market_data_provider',return_value=provider), \
+             patch.object(ingest,'expected_session',return_value='2026-10-06'), \
+             patch.object(ingest,'_held',return_value=set()), \
+             patch.object(ingest,'_refresh_completed_snapshot',side_effect=snapshot):
+            result=ingest.ingest('IN','upstox',self.db,Settings(),pause=0)
+        self.assertEqual((result['status'],result['fresh'],result['candles_written']),('complete',1,1))
+        provider.get_candles.assert_not_awaited()
+
+    def test_current_snapshot_does_not_skip_cold_start_history(self):
+        from app.market_data import UpstoxMarketDataProvider
+        provider=Mock(spec=UpstoxMarketDataProvider)
+        provider.get_candles=AsyncMock(return_value={'ACTIVE':[
+            bar('ACTIVE','2026-10-05'),bar('ACTIVE','2026-10-06')]})
+        def snapshot(provider,db,rows,target):
+            db.upsert_candles({'ACTIVE':[bar('ACTIVE',target)]})
+            return dict(returned=1,status='complete')
+        with patch.object(ingest,'build_market_data_provider',return_value=provider), \
+             patch.object(ingest,'expected_session',return_value='2026-10-06'), \
+             patch.object(ingest,'_held',return_value=set()), \
+             patch.object(ingest,'_refresh_completed_snapshot',side_effect=snapshot),patch.object(ingest.time,'sleep'):
+            result=ingest.ingest('IN','upstox',self.db,Settings(),pause=0)
+        self.assertEqual(result['status'],'complete')
+        provider.get_candles.assert_awaited_once()
+        with closing(sqlite3.connect(self.path)) as con:
+            self.assertEqual(con.execute('SELECT COUNT(*) FROM candles').fetchone()[0],2)
+
+    def test_auth_or_quota_failure_keeps_gap_and_does_not_burst_history_requests(self):
+        from app.market_data import UpstoxMarketDataProvider
+        self.db.upsert_candles({'ACTIVE':[bar('ACTIVE','2026-10-05')]})
+        for status in (401,403,429):
+            with self.subTest(status=status):
+                provider=Mock(spec=UpstoxMarketDataProvider)
+                provider.get_candles=AsyncMock(return_value={})
+                receipt=dict(returned=0,status='partial',errors=[dict(http_status=status)])
+                with patch.object(ingest,'build_market_data_provider',return_value=provider), \
+                     patch.object(ingest,'expected_session',return_value='2026-10-06'), \
+                     patch.object(ingest,'_held',return_value=set()), \
+                     patch.object(ingest,'_refresh_completed_snapshot',return_value=receipt), \
+                     patch.object(ingest,'_session_records',side_effect=ValueError('no report')):
+                    result=ingest.ingest('IN','upstox',self.db,Settings(),pause=0)
+                self.assertEqual((result['status'],result['fresh'],result['unresolved']),('partial',0,1))
+                self.assertIsNotNone(result['deferred_reason'])
+                provider.get_candles.assert_not_awaited()
+
     def test_partial_history_and_not_yet_completed_day_cannot_be_green(self):
         result,provider=self.run_ingest([{'ACTIVE':[bar('ACTIVE','2026-10-05'),bar('ACTIVE','2026-10-07')]},{}])
         self.assertEqual((result['status'],result['fresh'],result['missing']),('partial',0,1))

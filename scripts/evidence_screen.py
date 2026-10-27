@@ -117,24 +117,37 @@ def _rows(con, sql, params=()):
 
 def capture_bank_metrics(http,con,symbols,sectors,now,errors,limit=8,budget_seconds=120):
     """Collect lender facts without promoting a different entry policy."""
-    from app.screening.official_financials import fetch_bank_metrics
+    from app.screening.official_financials import BANK_COLLECTOR_VERSION, fetch_bank_metrics
+    if not 0<=limit<=400 or budget_seconds<0:raise ValueError('bounded bank refresh required')
     count=0;deadline=monotonic()+budget_seconds
-    for symbol in symbols:
+    queue=[]
+    for symbol in dict.fromkeys(symbols):
         if not any(s in sectors.get(symbol,'').lower() for s in ('financial','bank')):continue
-        if store.latest(con,symbol,'bank_metrics',now,7):continue
-        attempt=store.latest(con,symbol,'bank_metric_attempt',now,1)
+        cached=store.latest(con,symbol,'bank_metrics',now,7)
+        # Recollect incompatible snapshots once, including partial captures.
+        # Current-version honest gaps retain the normal seven-day cache.
+        if cached and cached.get('collector_version')==BANK_COLLECTOR_VERSION:continue
+        attempt=store.latest(con,symbol,'bank_metric_attempt',now,14)
         if attempt and (now-store.timestamp(attempt['known_at'])).total_seconds()<3600:continue
+        queue.append(((attempt or {}).get('known_at',''),symbol))
+    # Rotate failures behind untried/older attempts instead of retrying the
+    # alphabetically first eight unavailable lenders every hour forever.
+    for _,symbol in sorted(queue):
         if count>=limit or monotonic()>=deadline:break
-        count+=1;reason=None
+        count+=1;reason=None;paused=False
         try:
             data=fetch_bank_metrics(http,symbol,datetime.now(timezone.utc))
             seen=datetime.now(timezone.utc)
             store.save(con,symbol,'bank_metrics','NSE official bank XBRL',data,seen.isoformat(),seen)
         except (httpx.HTTPError,ValueError,KeyError,TypeError) as exc:
             reason=str(exc)[:180] if isinstance(exc,ValueError) else type(exc).__name__
+            errors.append(symbol+' bank metrics unavailable: '+reason)
+            paused=isinstance(exc,httpx.HTTPStatusError) and exc.response.status_code in (429,503)
         seen=datetime.now(timezone.utc)
         store.save(con,symbol,'bank_metric_attempt','NSE official bank XBRL',
-            dict(status='failed' if reason else 'captured',reason=reason),seen.isoformat(),seen)
+            dict(status='failed' if reason else 'captured',reason=reason,
+                 collector_version=BANK_COLLECTOR_VERSION),seen.isoformat(),seen)
+        if paused:break
     return count
 
 

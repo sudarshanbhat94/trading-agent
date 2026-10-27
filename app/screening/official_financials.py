@@ -16,6 +16,12 @@ from ..exchange_session_feed import archive_bytes
 
 API = 'https://www.nseindia.com/api/'
 NS = {'x':'http://www.xbrl.org/2003/instance'}
+# Integrated filings include related-party disclosures: ICICI's September 2026
+# standalone instance is 5.46 MiB. Keep a bound that admits that official format.
+MAX_XML_BYTES = 8*1024*1024
+MAX_INDEX_PAGES = 16
+# Collection compatibility is independent of the financial evidence contract.
+BANK_COLLECTOR_VERSION = 'nse-bank-xbrl-v2'
 FIELDS = {
     'annualNetIncome': ('ProfitLossForPeriod','ProfitLossForThePeriod'),
     'annualTotalRevenue': ('RevenueFromOperations',),
@@ -26,14 +32,14 @@ FIELDS = {
 BANK = {'gross_npa_pct': ('PercentageOfGrossNpa',),
         'net_npa_pct': ('PercentageOfNpa',),
         'capital_adequacy_pct': ('CapitalAdequacyRatio', 'CapitalAdequecyRatio'),
-        'cet1_pct': ('CommonEquityTier1Ratio',)}
+        'cet1_pct': ('CommonEquityTier1Ratio', 'CET1Ratio')}
 
 
 def _tag(e): return e.tag.rsplit('}',1)[-1]
 
 
 def document(raw, symbol):
-    if len(raw)>2*1024*1024 or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
+    if len(raw)>MAX_XML_BYTES or b'<!DOCTYPE' in raw.upper() or b'<!ENTITY' in raw.upper():
         raise ValueError('Unsafe or oversized financial XML')
     try:root=ET.fromstring(raw)
     except ET.ParseError:raise ValueError('Invalid financial XBRL') from None
@@ -93,16 +99,28 @@ def document(raw, symbol):
 
 def _rows(http, symbol, now, path):
     local=now.astimezone(timezone(timedelta(hours=5,minutes=30)))
-    r=http.get(API+path,params=dict(index='equities',symbol=symbol,
-        from_date=(local-timedelta(days=5*366)).strftime('%d-%m-%Y'),to_date=local.strftime('%d-%m-%Y')),
-        follow_redirects=False)
-    r.raise_for_status()
-    if len(r.content)>4*1024*1024:raise ValueError('Oversized financial filing index')
-    p=r.json();rows=p if isinstance(p,list) else p.get('data')
-    if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):raise ValueError('Financial filing index unavailable')
-    if isinstance(p,dict) and int(p.get('totalCount',len(rows)))>len(rows):
-        raise ValueError('Financial filing index is incomplete')
-    return rows
+    params=dict(index='equities',symbol=symbol,
+        from_date=(local-timedelta(days=5*366)).strftime('%d-%m-%Y'),to_date=local.strftime('%d-%m-%Y'))
+    result=[];total=None
+    for page in range(1,MAX_INDEX_PAGES+1):
+        # NSE takes one-based request pages (response page is zero-based).
+        r=http.get(API+path,params=dict(params,page=page,size=20),follow_redirects=False)
+        r.raise_for_status()
+        if len(r.content)>4*1024*1024:raise ValueError('Oversized financial filing index')
+        p=r.json();rows=p if isinstance(p,list) else p.get('data') if isinstance(p,dict) else None
+        if not isinstance(rows,list) or any(not isinstance(row,dict) for row in rows):
+            raise ValueError('Financial filing index unavailable')
+        count=int(p.get('totalCount',len(rows))) if isinstance(p,dict) else len(rows)
+        if count<0 or (total is not None and count!=total):
+            raise ValueError('Financial filing index changed during collection')
+        total=count
+        # A repeated/ignored page or empty truncated response is not coverage.
+        if any(row in result or row in rows[:i] for i,row in enumerate(rows)) or (not rows and len(result)<total):
+            raise ValueError('Financial filing index is incomplete')
+        result.extend(rows)
+        if len(result)==total:return result
+        if len(result)>total:raise ValueError('Financial filing index is incomplete')
+    raise ValueError('Financial filing index is incomplete (page bound reached)')
 
 
 def filings(http,symbol,now,bank_only=False):
@@ -112,6 +130,7 @@ def filings(http,symbol,now,bank_only=False):
     valid=[]
     for r in rows:
         if r.get('symbol')!=symbol or ('type' in r and 'Financial' not in r['type']):continue
+        if bank_only and r.get('consolidated') not in (None,'Standalone','Non-Consolidated'):continue
         url=r.get('xbrl') or ''
         parsed=urlparse(url)
         if parsed.scheme!='https' or parsed.hostname!='nsearchives.nseindia.com' or not parsed.path.startswith('/corporate/xbrl/') or not parsed.path.endswith('.xml'):continue
@@ -122,14 +141,18 @@ def filings(http,symbol,now,bank_only=False):
         valid.append((published,url))
     valid=sorted(set(valid),reverse=True)
     if not valid:raise ValueError('No identified official financial filings')
-    documents=[]
-    for published,url in valid[:(2 if bank_only else 8)]:
+    documents=[];bank_snapshot_at=None
+    for published,url in valid[:8]:
+        if bank_only and bank_snapshot_at is not None and published<bank_snapshot_at:break
         r=http.get(url,follow_redirects=False);r.raise_for_status()
         parsed=document(r.content,symbol)
         archive=Path(os.getenv('SCREENING_DB',str(Path(__file__).resolve().parents[2]/'var'/'screening.db'))).parent/'financial-source'
         archive_bytes(archive,r.content,suffix='.xml')
         parsed.update(source=url,sha256=hashlib.sha256(r.content).hexdigest(),published_at=published.isoformat())
         documents.append(parsed)
+        # A standalone disclosure is a snapshot. Do not fill its missing ratios
+        # from an older revision (or let an older broken file erase it).
+        if bank_only and parsed['basis']=='Standalone' and parsed['bank']:bank_snapshot_at=published
     return documents
 
 
@@ -162,14 +185,22 @@ def fetch_bank_metrics(http,symbol,now):
     if not points:raise ValueError('Official standalone bank ratios unavailable')
     end=max(p['period_end'] for p,d in points)
     if not 0<=(now.date()-fiscal_date(end)).days<=200:raise ValueError('Bank ratios are stale')
-    values={};sources=[]
+    # Latest publication wins as one snapshot; equal-time conflicts still fail.
+    def publication(d):
+        return datetime.fromisoformat(d['published_at']) if d.get('published_at') else datetime.min.replace(tzinfo=timezone.utc)
+    latest=max(publication(d) for p,d in points if p['period_end']==end)
+    values={};sources=[];evidence=[]
     for p,d in points:
-        if p['period_end']!=end:continue
+        if p['period_end']!=end or publication(d)!=latest:continue
         if p['metric'] in values and values[p['metric']]!=p['value_pct']:raise ValueError('Conflicting bank ratios')
         values[p['metric']]=p['value_pct'];sources.append(d['source'])
+        identity={k:d[k] for k in ('source','sha256','published_at') if k in d}
+        if identity not in evidence:evidence.append(identity)
     return dict(period_end=end,statement_basis='Standalone',**values,
         complete=all(k in values for k in ('gross_npa_pct','net_npa_pct','capital_adequacy_pct'))
                  and 0<=values['net_npa_pct']<=values['gross_npa_pct']<=100
                  and 0<values['capital_adequacy_pct']<=100,
         source_filings=sorted(set(sources)),contract_version='nse-bank-ratios-v1',
+        collector_version=BANK_COLLECTOR_VERSION,
+        source_evidence=evidence,
         note='Disclosed bank facts only; no bank entry policy is promoted')

@@ -29,7 +29,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config import Settings, settings_from_overrides   # noqa: E402
 from app.db import Database                                 # noqa: E402
-from app.market_data import build_market_data_provider      # noqa: E402
+from app.market_data import build_market_data_provider, UpstoxMarketDataProvider  # noqa: E402
 from app.v2_live import ENABLED_MARKETS                     # noqa: E402
 
 # Only ingest candles for markets the engine actually trades (US parked -> no US
@@ -173,6 +173,24 @@ def _fetch_upsert(provider, db, batch, target=None):
     return {str(s).upper() for s in daily}, n
 
 
+def _seeded_symbols(db, target):
+    """A current snapshot must not prevent initial historical backfill."""
+    import sqlite3
+    with closing(sqlite3.connect(f'file:{db.path}?mode=ro', uri=True, timeout=30)) as con:
+        return {str(r[0]).upper() for r in con.execute(
+            'SELECT DISTINCT symbol FROM candles WHERE source=? AND ts<?',
+            (DAILY_SRC['IN'], str(target)))}
+
+
+def _refresh_completed_snapshot(provider, db, rows, target):
+    from app import completed_daily
+    bars, receipt = asyncio.run(completed_daily.fetch(provider, rows, target))
+    items = list(bars.items())
+    for start in range(0, len(items), 40):
+        db.upsert_candles(dict(items[start:start+40]))
+    return receipt
+
+
 def _session_records(target):
     import httpx
     from app.screening.providers import fetch_cash_session
@@ -231,7 +249,31 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
 
     before = _source_max_ts(db, market)
     fresh = _fresh_symbols(db, market, target)
-    todo = [r for r in rows if str(r.get("symbol", "")).upper() not in fresh]
+    snapshot_receipt = None
+    deferred_reason = None
+    needs_bootstrap = set()
+    if market == 'IN' and isinstance(provider, UpstoxMarketDataProvider):
+        # Historical data excludes/late-publishes today's bar. The dated OHLC
+        # batch supplies ONLY completed source bars, never today's partial bar.
+        seeded = _seeded_symbols(db, target)
+        needs_bootstrap = {str(r['symbol']).upper() for r in rows}-seeded
+        missing_rows = [r for r in rows if str(r['symbol']).upper() not in fresh]
+        if missing_rows:
+            snapshot_receipt = _refresh_completed_snapshot(provider, db, missing_rows, target)
+            candles_done += snapshot_receipt['returned']
+            fresh = _fresh_symbols(db, market, target)
+            print(json.dumps(dict(completed_daily_snapshot=snapshot_receipt), sort_keys=True), flush=True)
+            statuses = {e.get('http_status') for e in snapshot_receipt.get('errors', [])}
+            if statuses & {401, 403, 429}:
+                # A broader historical retry cannot repair failed credentials
+                # or an exhausted API quota. Retain partial bars and retry at
+                # the next scheduled run, with the actual gap still visible.
+                deferred_reason = ('upstox_rate_limited' if 429 in statuses
+                                   else 'upstox_authentication_or_access_failed')
+    todo = [r for r in rows if str(r.get("symbol", "")).upper() not in fresh
+            or str(r.get('symbol', '')).upper() in needs_bootstrap]
+    if deferred_reason:
+        todo = []
     print(f"[{market}] target={target} stored={before} universe={len(rows)} "
           f"already-fresh={len(rows)-len(todo)} to-fetch={len(todo)}", flush=True)
     covered = set()
@@ -294,6 +336,8 @@ def ingest(market, prov, db, settings, limit=0, fetch_batch=40, pause=2.0, max_p
     return dict(market=market,status='complete' if not missing and not missing_held else 'partial',
                 target=target,requested=len(requested),fresh=len(actual_fresh),missing=len(requested-actual_fresh),
                 missing_held=len(missing_held),candles_written=candles_done,
+                completed_daily_snapshot=snapshot_receipt,
+                deferred_reason=deferred_reason,
                 scope='current verified ingestion identities; source quarantine is separate',universe_requested=universe_requested,
                 quarantined=[dict(symbol=s,reason=blocked[s]) for s in sorted(blocked)],
                 no_reported_trade=sorted(no_reported_trade),unresolved=len(missing),session_report=report_status,
