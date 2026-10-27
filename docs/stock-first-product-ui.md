@@ -1,5 +1,39 @@
 # Stock-first product UI
 
+## Premium workspace refresh — 27 October 2026
+
+The approved premium design is implemented in `app/product_assets/premium.css`
+and the existing product renderer. It uses locally bundled, SIL-licensed Inter
+(including rupee glyphs), neutral light/dark surfaces,
+compact top navigation, account balances and a two-column research list/plan
+workspace. Mobile retains top navigation and places the selected plan immediately
+after the research rows, before explanatory material. Account, broker, subscription,
+Markets and administration remain accessible through the profile menu.
+
+The Opportunities summary reads the authenticated personal overview, including
+cash remaining after pending reservations. Missing or failed account reads display
+unknown values or Retry; they do not become zero balances. Rows display conditional
+entry zones, not invented live quotes. Selection follows search/sector/view filters,
+and preserves the original publication's levels. An owned approved plan displays
+its own frozen levels, size and model before invoking the existing order review.
+Research publications cannot acquire approval through the selected-plan panel.
+
+This is a presentation change. Strategy parameters, execution endpoints, portfolio
+epochs, broker settings and the registered experiment remain unchanged. Local
+fixture checks are not a production deployment or profitability evidence.
+
+Verification: full unittest suite 2,695 run / 2,562 passed / 133 skipped;
+research/UI function runner 108 passed. Final focused checks revalidate the
+selected-plan ownership, source levels, account-summary failure states and page
+startup. The initial sandbox run could not bind two localhost fixture servers;
+the permitted full run passed. Browser checks exercised the actual assembled SPA
+using disposable account data: save/search/filter, approval review, pending order,
+later fill, owned protection and recorded target exit. Light/dark appearances,
+320px layouts, source-level detail and profile navigation were checked. The local
+preview uses the same self-hosted font files as production code.
+
+The original design below describes the previous presentation.
+
 The authenticated app opens on one full-width stock feed. Desktop uses a top
 navigation bar; mobile uses Ideas, Portfolio, Orders, Saved and Account along the
 bottom. Markets remains available from the desktop navigation and account menu.

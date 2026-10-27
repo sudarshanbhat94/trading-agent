@@ -16,9 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 def create_app():
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi import Request, APIRouter
+    from fastapi.staticfiles import StaticFiles
     from scripts.rehearse_approved_ui import fixture_app
     from app import v2_web, books
     app = fixture_app()
+    app.mount('/static', StaticFiles(directory=Path(__file__).resolve().parents[1]/'app'/'static'), name='static')
     fixture = app.state.fixture
     routes = APIRouter()
     for route in v2_web.router.routes:

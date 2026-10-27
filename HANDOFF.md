@@ -1,3 +1,15 @@
+## Premium product UI — 27 October 2026, local implementation
+
+User-approved premium workspace replaces the green feed styling with neutral
+light/dark surfaces, Inter, compact top navigation, owned balances and a selected
+trade-plan panel. Account summary uses available cash after reservations and
+rejects another owner's cached data. Research panels retain conditional levels;
+owned approved panels use frozen execution levels/model and the existing review.
+Mobile puts selected-plan details before explanatory notes. Watchlist, tracking,
+Portfolio, Orders, Markets and profile access remain. Presentation only; no
+production deployment, trade, strategy, broker-setting or epoch change.
+Verification is recorded in `docs/stock-first-product-ui.md`.
+
 ## Stock-first product UI — 12 October 2026
 
 Presentation-only redesign; trading behaviour, paper epochs, broker settings and

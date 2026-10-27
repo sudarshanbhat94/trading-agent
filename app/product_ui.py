@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 _ASSETS = Path(__file__).with_name('product_assets')
-CSS = (_ASSETS / 'workspace.css').read_text()
+CSS = (_ASSETS / 'workspace.css').read_text() + '\n' + (_ASSETS / 'premium.css').read_text()
 JS = (_ASSETS / 'workspace.js').read_text()
 
 
@@ -19,16 +19,16 @@ def _link(page, label, path):
 
 def apply_shell(html):
     links = [
-        ('ideas', 'Ideas', 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8L9 16h6l.6-2.2A6 6 0 0 0 12 3z'),
+        ('ideas', 'Opportunities', 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8L9 16h6l.6-2.2A6 6 0 0 0 12 3z'),
+        ('watch', 'Watchlist', 'M6 3h12v18l-6-4-6 4z'),
         ('positions', 'Portfolio', 'M3 6h18v14H3zM8 6V3h8v3M3 11h18'),
         ('orders', 'Orders', 'M4 6h16M4 12h16M4 18h10'),
-        ('watch', 'Saved', 'M6 3h12v18l-6-4-6 4z'),
         ('indices', 'Markets', 'M3 19h18M5 15l5-6 4 3 6-8'),
     ]
     navigation = ''.join(_link(*row) for row in links)
     header = ('<header class="product-header"><div class="product-header-inner">'
               '<button class="product-brand" onclick="go(\'ideas\')" aria-label="OpenStocks ideas">'
-              'OpenStocks<span>.</span></button><nav class="product-nav" aria-label="Main navigation">'
+              '<span class="product-brand-mark" aria-hidden="true"></span>OpenStocks</button><nav class="product-nav" aria-label="Main navigation">'
               + navigation + '</nav><div id="productUtilities" class="product-utilities"></div>'
               '</div></header>')
     html, count = re.subn(r'<nav class=side id=side>.*?</nav>', lambda _: header,
@@ -43,4 +43,5 @@ def apply_shell(html):
                          html, count=1, flags=re.S)
     if count != 1:
         raise ValueError('Product mobile navigation anchor missing')
-    return html
+    return html.replace('</head>', '<link rel="preload" href="/static/fonts/inter-latin-variable.woff2" '
+                        'as="font" type="font/woff2" crossorigin></head>', 1)

@@ -160,6 +160,66 @@ console.log(JSON.stringify({html:productPosition({symbol:'TEST',market:'IN',qty:
         self.assertNotIn('class=product-progress', out['html'])
         self.assertIn('current mark unavailable', out['html'])
 
+    def test_selected_research_panel_cannot_create_a_buy_approval(self):
+        row = plan('RESEARCH')
+        row['why'] = '<img src=x onerror=bad()>'
+        out = self.run_js(f'''
+const html=productPlanPanel({json.dumps(row)},{{price_asof:'2026-10-26'}});
+console.log(JSON.stringify({{html}}));''')
+        self.assertIn('Conditional entry zone', out['html'])
+        self.assertIn('2026-10-26', out['html'])
+        self.assertIn('₹96', out['html'])
+        self.assertIn('&lt;img', out['html'])
+        self.assertNotIn('<img', out['html'])
+        self.assertNotIn('reviewApprovedPaper', out['html'])
+
+    def test_selected_approved_panel_uses_owned_frozen_levels_instead_of_research(self):
+        row = plan()
+        out = self.run_js(f'''
+const research={json.dumps(row)};
+APPROVED_PAPER_PLANS={{a:{{id:'a',status:'approved',plan:{{symbol:'TEST',user_id:2,market:'IN',quantity:1,entry_low:91,entry_high:92,stop:87,target:107}}}}}};
+const own=productPlanPanel(research,{{}});
+APPROVED_PAPER_PLANS.a.plan.user_id=3;
+const other=productPlanPanel(research,{{}});
+console.log(JSON.stringify({{own,other}}));''')
+        for text in ('Frozen approved entry zone', '₹91', '₹92', '₹87', '₹107', 'reviewApprovedPaper'):
+            self.assertIn(text, out['own'])
+        self.assertNotIn('₹96', out['own'])
+        self.assertNotIn('reviewApprovedPaper', out['other'])
+        self.assertNotIn('₹87', out['other'])
+
+    def test_idea_selection_follows_filter_and_never_leaks_previous_owner(self):
+        out = self.run_js(f'''
+IDEAS.stock_plans.research_candidates=[{json.dumps(plan('FIRST'))},{json.dumps(plan('SECOND'))}];
+PRODUCT.selectionOwner=ME.id;PRODUCT.selectedIdea='SECOND';
+const selected=productSelectedIdea(IDEAS.stock_plans).symbol;
+IDEA_UI.search='FIRST';const filtered=productSelectedIdea(IDEAS.stock_plans).symbol;
+IDEA_UI.search='';ME={{id:3}};PRODUCT.selectedIdea='SECOND';
+const nextOwner=productSelectedIdea(IDEAS.stock_plans).symbol;
+console.log(JSON.stringify({{selected,filtered,nextOwner}}));''')
+        self.assertEqual(out, dict(selected='SECOND', filtered='FIRST', nextOwner='FIRST'))
+
+    def test_summary_uses_available_cash_and_unknown_or_other_owner_never_becomes_zero_book(self):
+        out = self.run_js('''
+MINE={equity:10000,cash:10000,available_cash:7500,positions:2};PRODUCT.overviewOwner=2;
+const own=productOpportunitySummary({risk_cap:150});
+ME={id:3};const other=productOpportunitySummary(null);
+console.log(JSON.stringify({own,other}));''')
+        self.assertIn('₹7,500', out['own'])
+        self.assertIn('Open positions</small><b>2', out['own'])
+        self.assertNotIn('₹10,000', out['other'])
+        self.assertIn('Open positions</small><b>—', out['other'])
+
+    def test_failed_overview_replaces_stale_summary_with_retry(self):
+        out = self.run_js('''
+MINE={equity:10000,cash:10000,positions:0};PRODUCT.overviewOwner=2;
+api=()=>Promise.resolve({ok:false,j:{detail:'Unavailable'}});await loadHome();
+console.log(JSON.stringify({html:nodes.productIdeasAccount.innerHTML,owner:PRODUCT.overviewOwner}));''')
+        self.assertIn('Account summary unavailable', out['html'])
+        self.assertIn('Retry', out['html'])
+        self.assertNotIn('₹10,000', out['html'])
+        self.assertIsNone(out['owner'])
+
 
 if __name__ == '__main__':
     unittest.main()
