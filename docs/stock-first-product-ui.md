@@ -1,5 +1,20 @@
 # Stock-first product UI
 
+## Product workspace revision — 27 October 2026, local preview
+
+Following feedback on the sparse layout, the local revision uses a single-row
+desktop navigation, a distinct account balance band, legible stock cards with
+conditional entry/stop/target levels and a connected trade-plan card. The plan
+action appears near its entry zone. Mobile keeps all navigation accessible and
+Review plan scrolls to the selected plan. Search now includes company names;
+filtered counts are derived from displayed publications rather than an optional
+API count. Original levels, approval ownership and execution controls are retained.
+
+The preview includes three explicitly synthetic companies to exercise populated
+layouts; it does not add production ideas, approvals or trades. Browser checks
+covered selection, saving, owned frozen-plan review, and 320/390px layouts without
+horizontal document overflow. This revision is local and has not been deployed.
+
 ## Premium workspace refresh — 27 October 2026
 
 The approved premium design is implemented in `app/product_assets/premium.css`

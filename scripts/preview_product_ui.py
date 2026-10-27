@@ -30,12 +30,29 @@ def create_app():
     saved = set()
     now = datetime.now(timezone.utc)
     day = now.date().isoformat()
-    research = dict(symbol='TEST', state='RESEARCH WATCH', sector='Technology', rank=1,
+    research = dict(symbol='TEST', name='Example Technologies', state='RESEARCH WATCH', sector='Technology', rank=1,
                     entry_low=100, entry_high=102, stop=96, t1=108, t2=112, t3=116,
                     qty=2, estimated_stop_loss=48, evidence={},
                     why='Synthetic layout fixture: strong relative trend with dated participation evidence.',
                     entry_blocker='Waiting for a confirmed rebound within the published range.',
                     invalidation='A close below the recorded stop invalidates this scenario.')
+    # Explicitly synthetic names and prices exercise a populated product layout.
+    # Only TEST has the fixture's approved-order contract; these add no approvals.
+    research_rows = [research, dict(research, symbol='DEMO2', name='Example Industries',
+                    sector='Industrials', rank=2, entry_low=250, entry_high=254,
+                    stop=239, t1=279, t2=291, t3=303, qty=1, estimated_stop_loss=82,
+                    entry_blocker='Waiting for volume confirmation at the entry zone.'),
+                    dict(research, symbol='DEMO3', name='Example Consumer',
+                    sector='Consumer', rank=3, entry_low=450, entry_high=456,
+                    stop=430, t1=498, t2=520, t3=542, qty=1, estimated_stop_loss=98,
+                    entry_blocker='Waiting for a controlled pullback into the entry zone.')]
+
+    def tracking_fixture():
+        summary={k:0 for k in ('published','zone_touched','t1','t2','t3','stopped',
+                               'resolved','waiting','invalidated','expired')}
+        return dict(status='ok', health=dict(market_open=True, polled_at=now.isoformat()),
+                    summary=summary, rows=[], total=0, offset=0, limit=20,
+                    note='Synthetic preview has no observation history or performance evidence.')
 
     @app.get('/product', response_class=HTMLResponse)
     def product():
@@ -61,33 +78,39 @@ def create_app():
             value=sum(p['shares']*p['entry_price'] for p in positions)
         mine=dict(budget=10000, cash=cash, equity=cash+value, realised=0, holdings=positions, positions=len(positions))
         return dict(mine=mine, markets=[dict(mine, market='IN')], regime_state=dict(IN='ON'),
-                    stock_screen=dict(screened_count=1, evidence_passes=0, status='current', universe_count=1, price_asof=day),
+                    stock_screen=dict(screened_count=3, evidence_passes=0, status='current', universe_count=3, price_asof=day),
                     paper_pipeline=dict(status='ok', worker='isolated fixture', completed=0, exits=0, orders={}),
                     execution_data=dict(rules=True, session='Synthetic fixture', reason='Disposable source evidence'),
                     research_watch=dict(status='current', rows=[], price_asof=day))
 
     @app.get('/v2/api/ideas')
     def ideas():
-        return dict(stock_plans=dict(ideas=[], research_candidates=[research], watchlisted=sorted(saved),
+        return dict(stock_plans=dict(ideas=[], count=0, research_candidates=research_rows, watchlisted=sorted(saved),
                     cash=10000, risk_cap=150, price_asof=day, market_open=True,
-                    discovery_health=dict(screened=1, generated_at=now.isoformat(), rejection_counts=[]),
-                    tracking=dict(summary=dict(published=0), ideas=[])))
+                    discovery_health=dict(screened=3, generated_at=now.isoformat(), rejection_counts=[]),
+                    tracking=tracking_fixture()))
 
     @app.get('/v2/api/stock/{symbol}')
     def stock(symbol: str):
-        if symbol!='TEST':return JSONResponse(dict(error='Fixture only contains TEST'), status_code=404)
-        return dict(symbol=symbol, live=100, candles=[[99+i*.01,101+i*.01,98+i*.01,100+i*.01,1000000] for i in range(90)],
+        row=next((r for r in research_rows if r['symbol']==symbol),None)
+        if not row:return JSONResponse(dict(error='Unknown fixture symbol'), status_code=404)
+        px=row['entry_low']
+        return dict(symbol=symbol, live=px, candles=[[px-1+i*.01,px+1+i*.01,px-2+i*.01,px+i*.01,1000000] for i in range(90)],
                     dates=[(now-timedelta(days=90-i)).date().isoformat() for i in range(90)], news=[])
 
     @app.get('/v2/api/watchlist')
     def watchlist():
-        return dict(watch=[dict(symbol=s,market='IN',ccy='₹',price=100,chg=0,folder='',tags=['Synthetic fixture']) for s in sorted(saved)],alerts=[])
+        return dict(watch=[dict(symbol=r['symbol'],market='IN',ccy='₹',price=r['entry_low'],chg=0,folder='',tags=['Synthetic fixture']) for r in research_rows if r['symbol'] in saved],alerts=[])
+
+    @app.get('/v2/api/idea-tracking')
+    def idea_tracking():
+        return tracking_fixture()
 
     @app.post('/v2/api/watchlist')
     async def add_watch(request: Request):
         data=await request.json()
-        if data.get('symbol')!='TEST':return JSONResponse(dict(error='Fixture only'),status_code=400)
-        saved.add('TEST');return dict(ok=True)
+        if data.get('symbol') not in {r['symbol'] for r in research_rows}:return JSONResponse(dict(error='Fixture only'),status_code=400)
+        saved.add(data['symbol']);return dict(ok=True)
 
     @app.delete('/v2/api/watchlist/{symbol}')
     def remove_watch(symbol: str):

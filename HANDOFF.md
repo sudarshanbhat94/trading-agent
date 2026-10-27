@@ -1,3 +1,13 @@
+## Product workspace revision — 27 October 2026, local only
+
+User rejected the sparse premium layout. Local changes add a more legible
+account band, stock cards showing conditional entry/stop/target, and a connected
+plan card with the review action near its entry zone. Company-name search and
+filtered counts are corrected. Mobile Review plan scrolls to its selected panel.
+Synthetic preview companies are confined to the disposable preview script.
+No strategy, book, approval, broker or production change in this revision.
+See `docs/stock-first-product-ui.md`; preview remains localhost port 64192.
+
 ## Premium product UI — 27 October 2026, local implementation
 
 User-approved premium workspace replaces the green feed styling with neutral
