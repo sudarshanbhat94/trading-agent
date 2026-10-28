@@ -35,6 +35,9 @@ losses can exceed an estimated stop loss.
 - Automation diagnostics rank only confirmed, fundable candidates and retain
   their required cash/risk. Catalogue, reservation and later-fill checks remain
   mandatory. No candidate acquires order approval from affordability alone.
+  The supplied settings are kept intact: rerunning their initializer would
+  reconstruct nested sleeve settings and discard tighter limits. Disabled,
+  zero/exhausted-slot and lower-exposure contexts remain binding.
 - The actual product UI shows required cash/risk on a conditional plan and a
   disclosure for otherwise-qualifying stocks that cannot fit. ₹1,500 minimum
   ticket and ₹150 effective allowance are explicitly separate. Unfunded rows
@@ -63,11 +66,11 @@ and eligibility can change; API and execution recompute account checks.
 
 ## Verification
 
-23 funding function fixtures and four renderer tests cover expensive-leader
+27 funding function fixtures and four renderer tests cover expensive-leader
 fallback, cash/risk/slot/minimum-ticket explanations, pending account/epoch
 isolation, custom settings, zero read-side writes, unmodified fingerprints and
 registered protocol, confirmation separation and HTML escaping. The full suite
-ran 2,762 checks: 2,629 passed, 133 skipped, no failures/errors. All 131 function
+ran 2,762 checks: 2,629 passed, 133 skipped, no failures/errors. All 135 function
 fixtures and the isolated paper lifecycle rehearsal passed. A synthetic browser
 rehearsal verified expanded reasons on desktop and 390px mobile without horizontal
 overflow. These checks do not establish strategy profitability or broker readiness.

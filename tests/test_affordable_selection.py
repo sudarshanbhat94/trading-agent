@@ -198,6 +198,41 @@ def test_personal_shortlist_respects_stricter_custom_settings(overrides,expected
     assert facts['risk_budget']==expected_risk and facts['minimum_ticket']==expected_ticket
 
 
+@pytest.mark.parametrize('overrides,held,reason', [
+    ({'enabled':False},0,'sleeve disabled'),
+    ({'max_positions':0},0,'sleeve full (0/0)'),
+    ({'max_positions':2},2,'sleeve full (2/2)'),
+    ({'risk_share':.1},0,'below Rs 1500 minimum'),
+])
+def test_nested_sleeve_overrides_survive_shortlisting_without_reconstruction_or_mutation(
+        monkeypatch,overrides,held,reason):
+    # Reconstructing SleeveSettings would silently restore these permissive
+    # environment defaults instead of preserving the supplied nested config.
+    monkeypatch.setenv('SLEEVE_QUALITY_MOMENTUM','true')
+    monkeypatch.setenv('SHARE_QUALITY_MOMENTUM','0.30')
+    settings=copy.deepcopy(SLEEVES)
+    settings.capital=50000  # Funding still belongs to this account's Rs 10,000.
+    settings.quality_momentum=replace(settings.quality_momentum,**overrides)
+    original_config=settings.quality_momentum
+    before=asdict(settings)
+    account=book()
+    if held:
+        account.open_positions=held
+        account.per_sleeve_positions={'quality_momentum':held}
+    result=plans.shortlist(screen(1),account,now=NOW,settings=settings)
+    assert result['ideas']==[]
+    refusal=result['funding_rejections'][0]
+    assert reason in refusal['reason']
+    assert result['capital']==10000 and result['risk_cap']==150
+    if 'risk_share' in overrides:
+        facts=refusal['funding']
+        assert facts['sleeve_notional_remaining']==1000
+        assert facts['max_quantity']==1 and facts['max_notional']==768
+        assert any(b['code']=='minimum_ticket' for b in facts['blockers'])
+    assert settings.quality_momentum is original_config
+    assert asdict(settings)==before
+
+
 def automation_context(settings=SLEEVES,quotes=None):
     return SimpleNamespace(observed_at=NOW,paper_epoch=NOW.isoformat(),book=book(),
         equity_screen=screen(1),live=quotes or {},tails={},asof='2026-09-30',

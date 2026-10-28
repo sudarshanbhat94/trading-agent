@@ -6,7 +6,7 @@ quality, confirmation, stop or target parameter changed. Effective loss allowanc
 is ₹150; ₹1,500 is the existing minimum ticket. Quality/funding ranks, required
 cash and itemised funding refusals are visible through the actual API/UI.
 See `docs/affordable-selection.md`; forward fingerprints/protocol stay intact.
-Local tests: 2,762 run / 2,629 passed / 133 skipped, 131 function fixtures and
+Local tests: 2,762 run / 2,629 passed / 133 skipped, 135 function fixtures and
 isolated lifecycle rehearsal passed. Follow private exact-commit rollout receipts
 for deployment status. Affordability alone grants no execution approval.
 

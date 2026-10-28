@@ -5,7 +5,6 @@ Price targets are risk multiples, not forecasts of where prices will go.
 All quantities are independent alternatives, using the existing paper allocator.
 """
 import math
-from dataclasses import replace
 from datetime import datetime, timezone
 
 from ..sleeves.base import Candidate
@@ -69,7 +68,9 @@ def _net(entry, target, qty):
 def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _stage='entry', settings=None):
     now = now or datetime.now(timezone.utc)
     settings = settings or SLEEVES
-    allocator = RiskManager(replace(settings,capital=book.capital))
+    # Sizing already uses book.capital. dataclasses.replace() would rerun
+    # SleeveSettings.__post_init__ and erase context-specific sleeve limits.
+    allocator = RiskManager(settings)
     marks = fresh_quotes(quotes or {},now)
     rows, rejected, seen, qualified = [], [], set(), []
     for row in screen.get("equities",[]):
