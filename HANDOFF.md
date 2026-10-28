@@ -1,3 +1,21 @@
+## Paper automation proof and monitoring — 29 October 2026
+
+Verification/observation only; deployed trading logic, books, risk, publications,
+registered protocol and broker permissions are unchanged. New standalone
+`scripts/verify_paper_automation.py` exercises the real stock production pass,
+durable house/owned delivery, automatic stop AND target monitors, later bid
+fills, restart, absent/stale/wrong-identity depth refusal and after-cost ledger
+reconciliation in temporary Rs 10,000 books. Broker/network calls are forbidden.
+Synthetic stop net -Rs 127.04 / target net +Rs 214.31; neither is alpha evidence.
+`scripts/observe_paper_automation.py` reads actual account/epoch events and
+accounting with SQLite mode=ro. Dedicated read-only heartbeat
+`openstocks-paper-execution` is ACTIVE, weekdays 09:45–15:45 IST hourly; preserves
+the separate idea-performance monitor and stays quiet on unchanged observations.
+Private connection/checkpoint/proof receipts are ignored under var/. Initial
+production observation: clean Rs 10,000 book, running worker, zero qualifying
+signal confirmations in the preceding 24h and no actual fills. A qualifying
+production lifecycle remains to be observed. See docs/paper-automation-verification.md.
+
 ## Dated execution funnel — 29 October 2026
 
 Read-only `execution_funnel` overview field and visible Opportunities funnel:
