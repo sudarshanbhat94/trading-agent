@@ -18,10 +18,14 @@ def create_app():
     from fastapi import Request, APIRouter
     from fastapi.staticfiles import StaticFiles
     from scripts.rehearse_approved_ui import fixture_app
-    from app import v2_web, books
+    from app import v2_web, books, execution_funnel
+    from app.screening import tracking
     app = fixture_app()
     app.mount('/static', StaticFiles(directory=Path(__file__).resolve().parents[1]/'app'/'static'), name='static')
     fixture = app.state.fixture
+    journal_path=Path(fixture.path).parent/'funnel-preview.db'
+    with tracking.connect(journal_path):
+        pass
     routes = APIRouter()
     for route in v2_web.router.routes:
         if route.path == '/v2/api/orders':
@@ -76,8 +80,9 @@ def create_app():
         with sqlite3.connect(fixture.path) as con:
             cash=books.cash(con, 2); positions=books.positions(con, 2)
             value=sum(p['shares']*p['entry_price'] for p in positions)
+            funnel=execution_funnel.report(con,2,dict(status='current',screened_count=3,generated_at=now.isoformat(),price_asof=day),{},journal_path=journal_path)
         mine=dict(budget=10000, cash=cash, equity=cash+value, realised=0, holdings=positions, positions=len(positions))
-        return dict(mine=mine, markets=[dict(mine, market='IN')], regime_state=dict(IN='ON'),
+        return dict(execution_funnel=funnel, mine=mine, markets=[dict(mine, market='IN')], regime_state=dict(IN='ON'),
                     stock_screen=dict(screened_count=3, evidence_passes=0, status='current', universe_count=3, price_asof=day),
                     paper_pipeline=dict(status='ok', worker='isolated fixture', completed=0, exits=0, orders={}),
                     execution_data=dict(rules=True, session='Synthetic fixture', reason='Disposable source evidence'),

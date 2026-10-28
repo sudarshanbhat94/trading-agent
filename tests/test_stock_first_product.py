@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import unittest
 
-from app import product_ui, v2_web
+from app import product_ui, v2_web, workspace_ui
 
 
 def plan(symbol='TEST', research=True):
@@ -32,7 +32,8 @@ function renderIdeaTracking(){return ''};function loadTradingReadiness(){};funct
 function wsWatch(){return ''};function ideaStatus(){return ['Waiting for entry']};
 const nodes={};const document={getElementById(id){return nodes[id]||(nodes[id]={innerHTML:'',classList:{add(){}},style:{}})},querySelectorAll(){return []}};
 '''
-        script = harness + product_ui.JS + '\nPRODUCT.ideaOwner=ME.id;\n(async()=>{' + body + r'''
+        funnel_js = 'function wsFunnel('+workspace_ui.JS.split('function wsFunnel(',1)[1].split('function wsPipeline(',1)[0]
+        script = harness + funnel_js + product_ui.JS + '\nPRODUCT.ideaOwner=ME.id;\n(async()=>{' + body + r'''
 })().catch(e=>{console.error(e);process.exit(1)});
 '''
         result = subprocess.run(['node', '-e', script], capture_output=True, text=True, timeout=15)
@@ -214,8 +215,9 @@ console.log(JSON.stringify({own,other}));''')
         out = self.run_js('''
 MINE={equity:10000,cash:10000,positions:0};PRODUCT.overviewOwner=2;
 api=()=>Promise.resolve({ok:false,j:{detail:'Unavailable'}});await loadHome();
-console.log(JSON.stringify({html:nodes.productIdeasAccount.innerHTML,owner:PRODUCT.overviewOwner}));''')
+console.log(JSON.stringify({html:nodes.productIdeasAccount.innerHTML,owner:PRODUCT.overviewOwner,funnel:nodes.productFunnel.innerHTML}));''')
         self.assertIn('Account summary unavailable', out['html'])
+        self.assertIn('Date unavailable', out['funnel'])
         self.assertIn('Retry', out['html'])
         self.assertNotIn('₹10,000', out['html'])
         self.assertIsNone(out['owner'])
@@ -223,3 +225,14 @@ console.log(JSON.stringify({html:nodes.productIdeasAccount.innerHTML,owner:PRODU
 
 if __name__ == '__main__':
     unittest.main()
+
+    def test_funnel_is_visible_but_another_accounts_cached_counts_are_not(self):
+        out=self.run_js("""
+DESK_DATA={execution_funnel:{user_id:3,session_date:'2026-10-29',stages:[{key:'filled',count:777,label:'Filled',status:'observed'}]}};
+productDiagnostics();const foreign=nodes.productFunnel.innerHTML;
+DESK_DATA.execution_funnel.user_id=2;productDiagnostics();
+console.log(JSON.stringify({foreign,own:nodes.productFunnel.innerHTML}));
+""")
+        self.assertNotIn('777',out['foreign'])
+        self.assertIn('777',out['own'])
+        self.assertIn('From screen to exit',out['own'])

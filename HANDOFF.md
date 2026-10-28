@@ -1,3 +1,15 @@
+## Dated execution funnel — 29 October 2026
+
+Read-only `execution_funnel` overview field and visible Opportunities funnel:
+screened → confirmed → fundable → ordered → filled → exited. IST date/source
+timestamps and blockers distinguish latest screening/confirmation snapshots
+from owned daily immutable order events. Account/epoch fencing, overlapping
+publication deduplication, unknown/stale states and existing NSE exit intents
+are covered. No strategy, risk, order, schema, epoch or broker changes.
+See `docs/execution-funnel.md`. Full suite: 2,770 run, 2,637 passed, 133 skipped;
+135 function fixtures passed. Desktop/mobile disposable preview verified.
+Use private rollout receipts for deployed state; tests do not establish alpha.
+
 ## Affordable stock alternatives — 28 October 2026
 
 **TRADING BEHAVIOUR CHANGED:** research previews now include pending account/epoch

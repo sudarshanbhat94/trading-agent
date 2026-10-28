@@ -590,8 +590,16 @@ def api_overview(user: dict = Depends(require_session)):
     stock_screen = equity_screen_status(evidence)
     with closing(_ro(V2_DB)) as status_con:
         pipeline = paper_status(status_con, int(user.get('id') or 0))
+        from .execution_funnel import report as funnel_report
+        from .screening import automation
+        try:
+            journal_path = automation.default_path()
+        except (ValueError, OSError):
+            journal_path = None
+        funnel = funnel_report(status_con, int(user.get('id') or 0), stock_screen,
+                               live.get('IN') or {}, journal_path=journal_path)
     return JSONResponse(dict(markets=markets, options=opts, real=real, mine=mine,
-                             research_watch=research_watch(evidence), paper_pipeline=pipeline,
+                             research_watch=research_watch(evidence), paper_pipeline=pipeline, execution_funnel=funnel,
                              execution_data=execution_data_status(),
                              market_data=market_data_status(MAIN_DB),
                              stock_screen=stock_screen, execution_scope=paper_execution_scope(),

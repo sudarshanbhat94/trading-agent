@@ -17,3 +17,16 @@ button,input,select{font:inherit}button,a{touch-action:manipulation}button:focus
 .product-funding-facts div{min-width:0}.product-funding-facts dt{font-size:11px;color:var(--mut)}
 .product-funding-facts dd{margin:5px 0 0;font-weight:600}
 @media(max-width:480px){.product-funding-budget{gap:10px 16px}.product-funding-row{padding:12px}.product-funding-facts{gap:10px}}
+
+/* Dated funnel is visible above diagnostics, without enabling execution. */
+.product-funnel{margin:20px 0}.product-funnel h2{font-size:18px;margin:4px 0}
+.product-funnel-stages{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));padding:0;list-style:none;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.product-funnel-stages li{display:flex;flex-direction:column;gap:7px;padding:16px 12px;min-width:0;background:var(--panel,var(--bg));overflow-wrap:anywhere}
+.product-funnel-stages span{font-size:12px;font-weight:600}.product-funnel-stages strong{font-size:26px;font-variant-numeric:tabular-nums}
+.product-funnel-stages small,.product-funnel-stages time{font-size:10px;color:var(--mut);line-height:1.5}
+.product-funnel-blockers{font-size:12px;line-height:1.6}.product-funnel-blockers>div{padding:12px 0;border-top:1px solid var(--line)}
+.product-funnel-blockers p{margin:6px 0;color:var(--mut);overflow-wrap:anywhere}.product-funnel-blockers summary{cursor:pointer}
+@media(max-width:800px){.product-funnel-stages{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:400px){.product-funnel-stages{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.product-funnel>.ws-head{display:flex;align-items:center;justify-content:space-between;gap:12px}.product-funnel .ws-kicker{font-size:11px;color:var(--mut)}.product-funnel .ws-pill{font-size:11px;color:var(--mut)}
