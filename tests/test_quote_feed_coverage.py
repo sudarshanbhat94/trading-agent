@@ -353,5 +353,31 @@ class QuoteFeedCoverageTest(unittest.TestCase):
         self.assertEqual(got['fresh_symbols'], [])
 
 
+class QuoteFeedCadenceTest(unittest.TestCase):
+    def test_slow_legacy_override_is_bounded_without_relaxing_source_age(self):
+        with redirect_stdout(io.StringIO()) as output:
+            interval = feed._full_interval(300)
+        self.assertLessEqual(interval * 2, feed.QUOTE_MAX_AGE_SECONDS)
+        self.assertIn('freshness budget', output.getvalue())
+        self.assertEqual(feed.QUOTE_MAX_AGE_SECONDS, 120)
+        self.assertEqual(feed._full_interval(30), 30)
+
+    def test_invalid_intervals_refuse(self):
+        for value in (0, -1, 'nan', 'inf', '-inf', 'invalid'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                feed._full_interval(value)
+
+    def test_worker_cannot_sleep_for_obsolete_300_second_override(self):
+        stop = RuntimeError('fixture stop after first scheduled poll')
+        with patch.object(feed, '_build', return_value=(Mock(), {}, {}, {})), \
+                patch.object(feed, '_poll') as poll, \
+                patch.object(feed.time, 'monotonic', side_effect=[0, 0, 5]), \
+                patch.object(feed.time, 'sleep', side_effect=stop) as sleep, \
+                redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'fixture stop'):
+            feed._full_worker(300)
+        poll.assert_called_once()
+        sleep.assert_called_once_with(55)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,10 +1,14 @@
 ## Data refresh repair — 28 October 2026
 
-**TRADING BEHAVIOUR CHANGED locally through corrected data inputs and refresh timing.**
+**TRADING BEHAVIOUR CHANGED through corrected data inputs and refresh timing.**
 Completed source-dated daily snapshots avoid replaying old history; quote watches
 include automation publications and refresh the broad universe; financial collection
 repairs pagination, valid XML size, standalone revisions and retry starvation.
 No selection/risk parameter, paper epoch, broker setting or forward protocol changes.
+Initial repair deployed as `062f198`; the production candle job now resolves the
+completed session with all 497 enabled Nifty 500 names current. A real-session
+follow-up reproduced a 300s deployed quote cadence against the 120s freshness gate;
+source unit/defaults and a runtime 60s bound close this separate defect.
 See `docs/data-refresh-repair.md`. Read-only source replay recovered 2,615 dated bars
 in 27 requests; unresolved identities and financial facts remain explicit. Deployment
 and post-fix actual market-hour verification require their own dated receipts.

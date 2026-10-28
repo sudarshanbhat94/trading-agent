@@ -187,6 +187,22 @@ _coverage_warnings: set = set()
 COVERAGE_ARCHIVE_INTERVAL = 60
 COVERAGE_ARCHIVE_DAYS = 14
 COVERAGE_ARCHIVE_MAX_BYTES = 2 * 1024 * 1024
+QUOTE_MAX_AGE_SECONDS = 120
+MAX_FULL_INTERVAL = QUOTE_MAX_AGE_SECONDS / 2
+
+
+def _full_interval(value):
+    """Leave room for broker batches inside the existing freshness contract.
+
+    A deployed 300s override caused repeated gaps against a 120s reader gate.
+    Bound cadence at runtime too: a stale systemd override cannot restore it.
+    """
+    value = float(value)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError('Positive finite full quote interval required')
+    if value > MAX_FULL_INTERVAL:
+        print(f'full quote interval {value:g}s exceeds freshness budget; using {MAX_FULL_INTERVAL:g}s', flush=True)
+    return min(value, MAX_FULL_INTERVAL)
 
 # The hot lane always keeps this small liquid base fresh (every `interval`s) even
 # when the book is EMPTY — otherwise latest_quotes only refreshes on the slow full
@@ -243,7 +259,7 @@ def _quote_coverage(market, rows, quotes, now):
             if (at.tzinfo is not None and math.isfinite(q.price) and q.price > 0
                     and (q.source == 'upstox-live' if market == 'IN'
                          else q.source.startswith('alpaca-') and q.source.endswith('-live'))
-                    and 0 <= (now - at).total_seconds() <= 120
+                    and 0 <= (now - at).total_seconds() <= QUOTE_MAX_AGE_SECONDS
                     and market_regions.market_session_for_region(market, at).get('is_open')):
                 fresh.add(symbol)
         except (AttributeError, TypeError, ValueError):
@@ -387,6 +403,7 @@ def _poll(db, providers, rows_for, label, benchmarks=False):
 
 
 def _full_worker(interval):
+    interval = _full_interval(interval)
     db, providers, rows, _symmap = _build()
     print(f"full worker up @ {interval}s universe={ {m: len(rows.get(m, [])) for m in providers} }", flush=True)
     last_refresh = time.monotonic()
@@ -630,8 +647,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--loop", action="store_true")
     ap.add_argument("--once", action="store_true")
-    ap.add_argument("--interval", type=float, default=1.0)        # hot (held) cadence
-    ap.add_argument("--full-interval", type=float, default=15.0)  # whole-universe cadence
+    ap.add_argument("--interval", type=float, default=8.0)  # hot publications/held cadence
+    ap.add_argument("--full-interval", type=_full_interval, default=MAX_FULL_INTERVAL)
     ap.add_argument("--nfo-interval", type=float, default=20.0)      # ATM watch window
     ap.add_argument("--nfo-hot-interval", type=float, default=1.0)   # contracts we HOLD
     ap.add_argument("--no-nfo", action="store_true")

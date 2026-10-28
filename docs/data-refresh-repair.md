@@ -18,6 +18,11 @@ forward experiment are unchanged. Data availability is not strategy validation.
   now contribute hot watches; the broad universe refreshes every minute. One
   bounded missing-symbol retry retains successful first responses. Returned,
   fresh, missing and stale quotes remain distinct; source timestamps are intact.
+  Market-hour inspection also reproduced a deployed 300-second broad cadence
+  against the existing 120-second freshness gate. The service now uses 8-second
+  hot and 60-second broad polling; the worker clamps slower legacy overrides to
+  60 seconds. This leaves headroom for broker batches without weakening the
+  freshness gate. Missing identities and stale source trades remain explicit.
 - Financial filing pagination was treated as a fatal incomplete index, valid
   integrated XBRL exceeded the XML bound, and failed bank requests repeatedly
   consumed the first alphabetical slots. Bounded pagination, an 8 MiB safe XML
@@ -67,8 +72,8 @@ Official source contract:
 
 ## Acceptance
 
-Local verification: 126 focused data/report checks passed; the complete suite
-ran 2,755 checks (2,622 passed, 133 skipped), with no failures or errors. All 108
+Local verification: 126 initial focused data/report checks and 39 cadence/coverage checks passed; the complete suite
+ran 2,758 checks (2,625 passed, 133 skipped), with no failures or errors. All 108
 function fixtures, isolated execution rehearsal and repository secret hygiene
 passed. The rehearsal used disposable fixture books and submitted no real orders.
 
