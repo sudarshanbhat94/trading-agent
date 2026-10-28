@@ -53,7 +53,11 @@ def account_state(con, uid, quotes, now):
                        "AND market='IN' AND date>=?",(uid,epoch[:10])).fetchone()[0]
     book = BookState(stats["budget"],stats["cash"],deployed,len(positions),counts,
         stats["equity"],max(peak or 0.,stats["budget"],stats["equity"]),day_pnl,notionals,risk,strategic)
-    return book, ("Held-position quote or stop unavailable" if missing else "")
+    from ..paper_exchange import integrity_reason, reserved_state
+    issue = integrity_reason(con, allow_filling=False)
+    if not issue:
+        book = reserved_state(con, uid, epoch, book)
+    return book, ("Held-position quote or stop unavailable" if missing else issue)
 
 
 def _net(entry, target, qty):
@@ -62,11 +66,12 @@ def _net(entry, target, qty):
     return sell-buy-round_trip(buy,sell,"D")
 
 
-def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _stage='entry'):
+def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _stage='entry', settings=None):
     now = now or datetime.now(timezone.utc)
-    allocator = RiskManager(replace(SLEEVES,capital=book.capital))
+    settings = settings or SLEEVES
+    allocator = RiskManager(replace(settings,capital=book.capital))
     marks = fresh_quotes(quotes or {},now)
-    rows, rejected, seen = [], [], set()
+    rows, rejected, seen, qualified = [], [], set(), []
     for row in screen.get("equities",[]):
         if row.get("symbol") in seen:
             continue
@@ -81,6 +86,7 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
         if _stage == 'watch' and not reject_reason(row, screen, now):
             # It belongs in Entry plans already, not twice in the same desk.
             continue
+        qualified.append(row)
         m = row.get("metrics") or {}
         try:
             close = float(m["price"])
@@ -101,7 +107,10 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
             rejected.append(dict(symbol=row.get("symbol"),reason="Entry and stop cannot be calculated"))
             continue
         if not allocation.ok:
-            rejected.append(dict(symbol=row["symbol"],reason=allocation.reason))
+            rejected.append(dict(symbol=row["symbol"], sector=row["sector"], score=float(row["score"]),
+                reason=allocation.reason, rejection_stage='funding', qualification=_stage,
+                entry_high=upper, stop=stop, funding=allocation.funding,
+                actionable=False, execution_ready=False))
             continue
         qty = allocation.shares
         quote = marks.get(row["symbol"])
@@ -115,11 +124,15 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
         returns = [round(_net(upper,t,qty),2) for t in targets]
         if any(value <= 0 for value in returns):
             rejected.append(dict(symbol=row["symbol"],
-                reason="First target is not profitable after fees and slippage at this quantity"))
+                reason="First target is not profitable after fees and slippage at this quantity",
+                sector=row['sector'],score=float(row['score']),rejection_stage='economics',qualification=_stage,
+                entry_high=upper,stop=stop,funding=allocation.funding,actionable=False,execution_ready=False))
             continue
         if _net(upper,targets[2],qty) < allocation.risk_amount*SELECTION_POLICY["min_net_r_at_final_target"]:
             rejected.append(dict(symbol=row["symbol"],
-                reason="Final-target net reward is below the estimated stop loss after fees and slippage"))
+                reason="Final-target net reward is below the estimated stop loss after fees and slippage",
+                sector=row['sector'],score=float(row['score']),rejection_stage='economics',qualification=_stage,
+                entry_high=upper,stop=stop,funding=allocation.funding,actionable=False,execution_ready=False))
             continue
         if state in ("INVALIDATED", "BELOW ENTRY ZONE"):
             rejected.append(dict(symbol=row["symbol"],reason="Fresh price invalidates this entry plan"))
@@ -127,6 +140,8 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
         rows.append(dict(symbol=row["symbol"],sector=row["sector"],score=float(row["score"]),
             entry_low=lower,entry_high=upper,stop=stop,t1=targets[0],t2=targets[1],t3=targets[2],
             qty=qty,notional=round(qty*upper,2),estimated_stop_loss=round(allocation.risk_amount,2),
+            cash_required=round(allocation.cash_required,2), funding=allocation.funding,
+            funding_status='fundable_conditional', execution_ready=False,
             estimated_net_at_targets=returns,
             net_r_at_targets=[round(p/allocation.risk_amount,2) for p in returns],
             price_asof=screen.get("price_asof"),quote_price=current,
@@ -148,6 +163,12 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
                 execution='Research candidate only; cannot submit an order or authorise automation',
                 buy_condition='Wait for all entry participation and setup checks, then a new frozen plan and observed rebound confirmation')
     rows.sort(key=lambda r:(-r["score"],r["symbol"]))
+    quality_rank = {r['symbol']:i for i,r in enumerate(sorted(qualified,
+        key=lambda r:(-float(r['score']),r['symbol'])),1)}
+    funding_rejections = sorted((r for r in rejected if r.get('rejection_stage') in ('funding','economics')),
+                               key=lambda r:(-r['score'],r['symbol']))
+    for row in funding_rejections:row['quality_rank']=quality_rank[row['symbol']]
+    fundable_count = len(rows)
     selected, sectors = [], set()
     maximum = min(max(limit,0),SELECTION_POLICY["max_ideas"])
     for row in rows:
@@ -158,12 +179,20 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _s
         else:
             selected.append(row);sectors.add(row["sector"])
     rows = selected
-    for i,row in enumerate(rows,1):row["rank"]=i
+    for i,row in enumerate(rows,1):
+        row.update(rank=i, funding_rank=i, quality_rank=quality_rank[row['symbol']])
     return dict(ideas=rows,count=len(rows),requested=0,max_ideas=maximum,selection_policy=dict(SELECTION_POLICY),capital=book.capital,cash=book.cash,
-        risk_cap=round(max(0.,min(book.capital*SLEEVES.risk_per_trade,
-            book.capital*SLEEVES.daily_loss_limit+min(book.day_pnl,0.)-book.open_risk+book.strategic_open_risk,
-            book.capital*SLEEVES.max_drawdown-book.open_risk)),2),
-        max_positions=SLEEVES.max_positions_total,book_error=book_error,
+        risk_cap=round(max(0.,min(book.capital*settings.risk_per_trade,
+            book.capital*settings.daily_loss_limit+min(book.day_pnl,0.)-book.open_risk+book.strategic_open_risk,
+            book.capital*settings.max_drawdown-book.open_risk)),2),
+        max_positions=settings.max_positions_total,book_error=book_error,
+        funding_rejections=funding_rejections,
+        funding_summary=dict(version='account-funding-v1',qualified=len(qualified),fundable=fundable_count,
+            unfunded=len(funding_rejections),minimum_ticket=settings.min_ticket,
+            sleeve_position_limit=settings.quality_momentum.max_positions,
+            sleeve_positions_committed=book.per_sleeve_positions.get('quality_momentum',0),
+            ranking='Existing quality score among fundable alternatives; one per sector. These alternatives are not cumulative orders.',
+            qualification=_stage,execution_ready=False),
         rejected=rejected,discovery_health=discovery_health(screen,rejected,now),
         generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
         note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Automatic paper entries require confirmed trial plans; independent validation remains required before live use.")

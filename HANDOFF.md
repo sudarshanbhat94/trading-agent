@@ -1,3 +1,15 @@
+## Affordable stock alternatives — 28 October 2026
+
+**TRADING BEHAVIOUR CHANGED:** research previews now include pending account/epoch
+commitments, and automation plans use the engine context risk settings. No risk,
+quality, confirmation, stop or target parameter changed. Effective loss allowance
+is ₹150; ₹1,500 is the existing minimum ticket. Quality/funding ranks, required
+cash and itemised funding refusals are visible through the actual API/UI.
+See `docs/affordable-selection.md`; forward fingerprints/protocol stay intact.
+Local tests: 2,762 run / 2,629 passed / 133 skipped, 131 function fixtures and
+isolated lifecycle rehearsal passed. Follow private exact-commit rollout receipts
+for deployment status. Affordability alone grants no execution approval.
+
 ## Data refresh repair — 28 October 2026
 
 **TRADING BEHAVIOUR CHANGED through corrected data inputs and refresh timing.**

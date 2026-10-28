@@ -194,7 +194,7 @@ class SelectivePaperSleeve(Sleeve):
                       if json.loads(r[3]).get('status') not in tracking.TERMINAL}
         finally:
             con.close()
-        shortlist = plans.shortlist(screen, ctx.book, ctx.live, now) if dec.active else dict(ideas=[], rejected=[])
+        shortlist = plans.shortlist(screen, ctx.book, ctx.live, now, settings=ctx.settings) if dec.active else dict(ideas=[], rejected=[])
         publications = [dict(p, automation_epoch=ctx.paper_epoch, automation_model_version=MODEL_VERSION)
                         for p in shortlist['ideas'] if p['symbol'] not in active]
         if publications:
@@ -206,7 +206,7 @@ class SelectivePaperSleeve(Sleeve):
         con = tracking.connect(path)
         try:
             rows = _rows(con, ctx.paper_epoch)
-            eligible = {}
+            eligible, funding = {}, {}
             for pid, fingerprint, encoded, stored, prev in rows:
                 plan, state = json.loads(encoded), json.loads(stored)
                 if state.get('status') in tracking.TERMINAL:
@@ -226,12 +226,21 @@ class SelectivePaperSleeve(Sleeve):
                 confirmation.record_assessment(con, pid, result, previous)
                 if result['eligible'] and symbol not in eligible:
                     eligible[symbol] = candidate
+                    funding[symbol] = dict(symbol=symbol, quantity=allocation.shares,
+                        cash_required=round(allocation.cash_required,2),
+                        estimated_stop_loss=round(allocation.risk_amount,2),
+                        funding=allocation.funding, execution_ready=False,
+                        note='Confirmed and fundable alternative; order contract and reservation checks still required')
                 else:
                     dec.reject(symbol, result['reason'])
             con.commit()
             dec.candidates = sorted(eligible.values(), key=lambda c: (-c.score, c.symbol))[:3]
             dec.diagnostics = dict(model_version=MODEL_VERSION, validation='paper trial; returns unvalidated',
-                publications=len(rows), new_publications=len(publications), confirmed_candidates=len(dec.candidates))
+                publications=len(rows), new_publications=len(publications), confirmed_candidates=len(dec.candidates),
+                funding_summary=shortlist.get('funding_summary',{}),
+                funding_rejections=shortlist.get('funding_rejections',[]),
+                confirmed_fundable_alternatives=[dict(funding[c.symbol],rank=i)
+                    for i,c in enumerate(dec.candidates,1)])
             dec.note = (f'{len(dec.candidates)} confirmed stock plan(s); account allocation and later exchange fill required'
                         if dec.candidates else 'No confirmed stock entry: waiting for observed pullback and next-session rebound checks')
             if not dec.active:

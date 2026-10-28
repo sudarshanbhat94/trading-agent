@@ -2580,7 +2580,10 @@ def _stock_plans(screen, market, user, publish=False):
     try:
         book, error = preview.account_state(con, int(user["id"]), quotes, now)
         result = preview.shortlist(screen, book, quotes, now, error)
-        result['research_candidates'] = preview.research_candidates(screen, book, quotes, now, error)
+        watch = preview.shortlist(screen, book, quotes, now, error, _stage='watch')
+        result['research_candidates'] = watch['ideas']
+        result['research_funding_summary'] = watch['funding_summary']
+        result['funding_rejections'] += watch['funding_rejections']
         try:
             result["watchlisted"] = [r[0] for r in con.execute(
                 "SELECT symbol FROM user_watchlist WHERE user_id=? AND market='IN'",

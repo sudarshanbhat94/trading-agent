@@ -86,6 +86,14 @@ def create_app():
     @app.get('/v2/api/ideas')
     def ideas():
         return dict(stock_plans=dict(ideas=[], count=0, research_candidates=research_rows, watchlisted=sorted(saved),
+                    funding_summary=dict(version='account-funding-v1',minimum_ticket=1500,
+                        sleeve_position_limit=1,sleeve_positions_committed=0),
+                    funding_rejections=[dict(symbol='SYNTHETIC-LARGE',qualification='watch',quality_rank=1,
+                        reason='One share exceeds the remaining sleeve allocation and after-cost risk allowance.',
+                        actionable=False,execution_ready=False,funding=dict(cash_available=10000,
+                            one_share_cash_required=5540,one_share_stop_loss=280,risk_budget=150,
+                            sleeve_notional_remaining=3000,minimum_ticket=1500,
+                            blockers=[dict(reason='One share needs Rs 5500; remaining sleeve allocation is Rs 3000.')]))],
                     cash=10000, risk_cap=150, price_asof=day, market_open=True,
                     discovery_health=dict(screened=3, generated_at=now.isoformat(), rejection_counts=[]),
                     tracking=tracking_fixture()))
