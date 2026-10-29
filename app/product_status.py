@@ -5,6 +5,21 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 
+def owned_book_snapshot(con, user_id, quotes, now=None, market='IN'):
+    """Unknown held marks cannot become a flat-at-entry equity estimate."""
+    from . import books
+    from .sleeves.feeds import fresh_quotes
+    now = now or datetime.now(timezone.utc)
+    marks = fresh_quotes(quotes or {}, now)
+    result = books.stats(con, user_id, market, marks)
+    missing = [p['symbol'] for p in books.positions(con, user_id, market) if p['symbol'] not in marks]
+    result.update(valuation_complete=not missing, missing_marks=missing, snapshot_at=now.isoformat())
+    if missing:
+        for key in ('equity', 'deployed', 'deploy_pct', 'unrealised', 'overall_pnl'):
+            result[key] = None
+    return result
+
+
 def market_data_status(path):
     """Last ingestion receipts, without opening a write transaction."""
     result=dict(status='unavailable',candles=None,identities=None)

@@ -1,5 +1,6 @@
 """Dated actual index levels for research. Index points are never cash shares."""
 from datetime import datetime, timedelta, timezone
+from contextlib import closing
 import math
 import os
 from pathlib import Path
@@ -62,7 +63,7 @@ def load(now=None, path=None):
     now = now or datetime.now(timezone.utc)
     path = path or os.getenv('SCREENING_DB',str(Path(__file__).resolve().parents[1]/'var'/'screening.db'))
     try:
-        with sqlite3.connect(f'file:{path}?mode=ro',uri=True,timeout=5) as con:
+        with closing(sqlite3.connect(Path(path).resolve().as_uri()+'?mode=ro',uri=True,timeout=5)) as con:
             return frames(con,now)
     except (sqlite3.Error,OSError): return {}
 

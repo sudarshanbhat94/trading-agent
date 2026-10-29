@@ -107,14 +107,11 @@ class ExitTermsTest(unittest.TestCase):
         self.assertNotIn("₹", html)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
     def test_both_percentages_are_shown(self) -> None:
         """The confusion this fixes: a -35% stop rendering as -47.4% once the
         position was up 23%. Distance-from-here and the terms the trade was
         opened on are different questions; showing only one reads as an error."""
-        html = _run("exitTerms", OPTION)
+        html = _run(OPTION)
         self.assertIn("-35.0% from entry", html)
         self.assertIn("47.4% away", html)
         self.assertIn("+60.0% from entry", html)
@@ -123,12 +120,16 @@ if __name__ == "__main__":
     def test_the_configured_terms_come_first(self) -> None:
         """What the settings configure is the primary number; how far away it
         happens to be right now is context."""
-        html = _run("exitTerms", OPTION)
+        html = _run(OPTION)
         self.assertLess(html.index("from entry"), html.index("away"))
 
     def test_the_away_figure_is_unsigned_so_it_cannot_be_misread(self) -> None:
         """It is a distance, not a return. A signed one sitting beside a signed
         from-entry figure is what made two numbers look contradictory."""
-        html = _run("exitTerms", OPTION)
+        html = _run(OPTION)
         self.assertNotIn("-47.4% away", html)
         self.assertNotIn("+29.5% away", html)
+
+
+if __name__ == "__main__":
+    unittest.main()

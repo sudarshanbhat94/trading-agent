@@ -400,7 +400,15 @@ class SelectivePaperAutomationTest(unittest.TestCase):
             with patch.object(_Clock, 'now', return_value=ctx.observed_at):
                 from app import entry_contracts
                 with entry_contracts.using(self.f.catalogue, ctx.observed_at):
+                    with patch.object(entry_contracts,'normalise_long_levels',side_effect=ValueError('Fixture: tick rules unavailable')):
+                        v2_live.sleeve_pass('IN')
+                    blocked=v2_live.sleeve_view('IN')
+                    self.assertEqual(blocked['state'],'ENTRY BLOCKED')
+                    self.assertEqual(blocked['execution']['reserved'],0)
+                    self.assertIn('tick rules unavailable',blocked['reason'])
+                    self.assertEqual(paper_exchange.pending(self.con,0),[])
                     v2_live.sleeve_pass('IN')
+                    self.assertEqual(v2_live.sleeve_view('IN')['state'],'ORDER PENDING')
             self.assertEqual(self.con.execute('SELECT COUNT(*) FROM v2_positions').fetchone()[0], 0)
             intents = paper_exchange.pending(self.con, 0)
             self.assertEqual(len(intents), 1)

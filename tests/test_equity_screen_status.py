@@ -11,6 +11,18 @@ from tests.test_stock_plans import screen, NOW
 
 
 class EquityScreenStatusTest(unittest.TestCase):
+    def test_coverage_counts_observed_exclusions_without_inventing_reference_checks(self):
+        data=screen(2);data['universe_count']=500
+        data['exclusions']={'THIN':'Insufficient liquidity','SHORT':'Insufficient history'}
+        got=equity_screen_status(data,NOW)
+        self.assertEqual((got['evaluated_count'],got['screened_count'],got['excluded_before_scoring']),(4,2,2))
+        self.assertEqual(sum(r['count'] for r in got['exclusion_reasons']),2)
+        for excluded in (None,{'BAD':None},{data['equities'][0]['symbol']:'duplicate'}):
+            data['exclusions']=excluded
+            self.assertIsNone(equity_screen_status(data,NOW)['evaluated_count'])
+        data.pop('exclusions')
+        self.assertIsNone(equity_screen_status(data,NOW)['evaluated_count'])
+
     def test_all_individual_stock_rows_are_counted_without_an_index_candidate(self):
         data = screen(5); data['universe_count'] = 500
         before = copy.deepcopy(data)

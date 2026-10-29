@@ -8,6 +8,7 @@ from __future__ import annotations
 from contextlib import closing
 
 import logging
+import math
 import os
 import sqlite3
 import json
@@ -146,22 +147,20 @@ def _live_map(market, symbols=None):
     only those rows — the per-second stream uses this so it never scans the whole
     quote table just to value a handful of held positions."""
     try:
-        con = _ro(MAIN_DB)
-        if symbols is not None:
-            syms = [s for s in symbols]
-            if not syms:
-                con.close()
-                return {}
-            q = ("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
-                 % ",".join("?" * len(syms)))
-            rows = con.execute(q, [LIVE_SOURCE[market], *syms]).fetchall()
-        else:
-            rows = con.execute("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=?",
-                               (LIVE_SOURCE[market],)).fetchall()
-        from . import executable_quotes
-        try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
-        except (sqlite3.Error,ValueError,TypeError):execution = {}
-        con.close()
+        with closing(_ro(MAIN_DB)) as con:
+            if symbols is not None:
+                syms = [s for s in symbols]
+                if not syms:
+                    return {}
+                q = ("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+                     % ",".join("?" * len(syms)))
+                rows = con.execute(q, [LIVE_SOURCE[market], *syms]).fetchall()
+            else:
+                rows = con.execute("SELECT symbol,price,open,high,low,close,ts FROM latest_quotes WHERE source=?",
+                                   (LIVE_SOURCE[market],)).fetchall()
+            from . import executable_quotes
+            try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
+            except (sqlite3.Error,ValueError,TypeError):execution = {}
     except Exception:
         return {}
     out = {}
@@ -170,9 +169,9 @@ def _live_map(market, symbols=None):
             price = float(p)
         except (TypeError, ValueError):
             continue
-        if price > 0:
+        if math.isfinite(price) and price > 0:
             out[sym] = dict(price=price, open=_n(o, price), high=_n(h, price),
-                            low=_n(l, price), prev=_n(c, price), ts=ts)
+                            low=_n(l, price), prev=_n(c, price), ts=ts, source=LIVE_SOURCE[market])
             if sym in execution: out[sym]['execution'] = execution[sym]
     return out
 
@@ -180,8 +179,8 @@ def _live_map(market, symbols=None):
 def _n(v, d):
     try:
         x = float(v)
-        return x if x > 0 else d
-    except (TypeError, ValueError):
+        return x if not isinstance(v, bool) and math.isfinite(x) and x > 0 else d
+    except (TypeError, ValueError, OverflowError):
         return d
 
 
@@ -566,20 +565,21 @@ def api_overview(user: dict = Depends(require_session)):
         if _pl.allows(plan, "paper_book"):
             rw = _ro(V2_DB)             # read path
             try:
-                mine = books.stats(rw, int(user.get("id") or 0), "IN", live.get("IN"))
+                from .product_status import owned_book_snapshot
+                mine = owned_book_snapshot(rw, int(user.get("id") or 0), live.get("IN"))
                 mine["ccy"] = "₹"
                 # the curve, so a personal book can draw one like the others
                 ser = books.equity_series(rw, int(user.get("id") or 0), "IN")
                 mine["series"] = [round(v) for _d, v in ser]
                 mine["series_start"] = ser[0][0] if ser else None
-                mine["holdings"] = [
-                    dict(p, live=round(float((live.get("IN") or {}).get(p["symbol"], {})
-                                             .get("price") or p["entry_price"]), 2))
-                    for p in books.positions(rw, int(user.get("id") or 0), "IN")]
-                for h in mine["holdings"]:
-                    h["pnl"] = round((h["live"] - h["entry_price"]) * h["shares"], 2)
-                    h["pnl_pct"] = (round((h["live"] / h["entry_price"] - 1) * 100, 2)
-                                    if h["entry_price"] else 0.0)
+                mine["holdings"] = []
+                for p in books.positions(rw, int(user.get("id") or 0), "IN"):
+                    quote = (live.get("IN") or {}).get(p["symbol"], {})
+                    mark = None if p["symbol"] in mine["missing_marks"] else round(float(quote["price"]), 2)
+                    mine["holdings"].append(dict(p, live=mark,
+                        pnl=round((mark-p["entry_price"])*p["shares"], 2) if mark is not None else None,
+                        pnl_pct=round((mark/p["entry_price"]-1)*100, 2) if mark is not None and p["entry_price"] else None,
+                        quote_at=quote.get('ts'), quote_status='fresh' if mark is not None else 'last_quote' if quote else 'entry_only'))
             finally:
                 rw.close()
     except Exception:
@@ -3310,8 +3310,8 @@ def _my_positions(uid, market="IN"):
                 today = opened.astimezone(IST).date() == now.date() if opened.utcoffset() is not None else False
             except ValueError:
                 today = str(p['entry_date'])[:10] == now.date().isoformat()
-            px = float((live.get(p["symbol"]) or {}).get("price") or p["entry_price"])
-            val = px * p["shares"]
+            px = float(fresh[p["symbol"]]["price"]) if p["symbol"] in fresh else None
+            val = px * p["shares"] if px is not None else None
             out.append(dict(id=p["id"], symbol=p["symbol"], market=market, ccy="₹",
                             strategy=p["strategy"],
                             # WHICH SLEEVE opened this and in WHAT REGIME. Falls
@@ -3322,10 +3322,10 @@ def _my_positions(uid, market="IN"):
                             instrument_id=p.get('instrument_id'),plan_id=p.get('plan_id'),model_version=p.get('model_version'),
                             regime=(p.get("regime") or "-"),
                             entry=round(p["entry_price"], 2),
-                            live=round(px, 2), qty=p["shares"], value=round(val, 2),
+                            live=round(px, 2) if px is not None else None, qty=p["shares"], value=round(val, 2) if val is not None else None,
                             pnl=round((px / p["entry_price"] - 1) * 100, 2)
-                            if p["entry_price"] else 0.0,
-                            pnl_amt=round((px - p["entry_price"]) * p["shares"], 2),
+                            if px is not None and p["entry_price"] else None,
+                            pnl_amt=round((px - p["entry_price"]) * p["shares"], 2) if px is not None else None,
                             stop=p["stop"], target=p["target"], trail=False,
                             headroom=None, since=p["entry_date"], today=today,
                             quote_at=quote.get('ts'),
@@ -3547,8 +3547,21 @@ def api_portfolio(market: str = "IN", scope: str = "mine", user: dict = Depends(
                 "WHERE user_id=? AND market=? AND COALESCE(book_epoch,?)=?",(uid,market,books.LEGACY_EPOCH,epoch)))
             cash=books.cash(v2,uid,market)
             payload=pf.build(positions,curve,trades,budget,cash=cash)
-            curve.append((datetime.now(IST).isoformat(),payload['equity']))
+            from .product_status import owned_book_snapshot
+            snapshot=owned_book_snapshot(v2,uid,live,market=market)
+            payload.update(valuation_complete=snapshot['valuation_complete'],missing_marks=snapshot['missing_marks'],
+                           snapshot_at=snapshot['snapshot_at'],cash=snapshot['cash'],equity=snapshot['equity'])
+            if snapshot['valuation_complete']:
+                curve.append((snapshot['snapshot_at'],snapshot['equity']))
+            else:
+                payload['deployed']=None
+                payload['concentration']={key:len(positions) if key=='n_positions' else None for key in payload['concentration']}
+                for allocation in payload['allocations']:
+                    allocation['pct_of_equity']=None
+                    if allocation['symbol'] in snapshot['missing_marks']:
+                        allocation.update(value=None,unrealised_pct=None)
             payload.update(drawdown=pf.drawdown(curve),market=market,ccy='₹' if market=='IN' else '$',scope='mine',epoch=epoch)
+            if not snapshot['valuation_complete']:payload['drawdown']['current_drawdown_pct']=None
             v2.close()
             return JSONResponse(payload)
         row = v2.execute("SELECT budget FROM v2_book WHERE market=?", (market,)).fetchone()
@@ -6708,6 +6721,7 @@ function esc(x){if(x==null)return '';return String(x).replace(/&/g,'&amp;').repl
 function pfTile(label,value,tone){return '<div class=card><div class=mut style="font-size:11px">'+esc(label)+'</div><div style="font-size:17px;font-weight:600'+(tone?';color:'+tone:'')+'">'+esc(value)+'</div></div>';}
 function pfHtml(d){
  if(!d||d.error)return '<div class=mut style="font-size:13px">allocation data unavailable</div>';
+ if(d.valuation_complete===false)return '<p class=mut>Current allocation and drawdown await fresh prices for '+esc((d.missing_marks||[]).join(', '))+'. Cash and recorded trades remain available.</p>';
  var s=d.ccy||'₹',c=d.concentration||{},dd=d.drawdown||{};
  var conc=c.largest_pct>=30?'var(--dn)':(c.largest_pct>=20?'var(--warn)':'var(--up)');
  var h='<div class=grid>';

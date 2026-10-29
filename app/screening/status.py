@@ -9,6 +9,7 @@ import math
 
 from .selection import reject_reason, number
 from .financials import valid_income_history
+from .health import universe_coverage
 
 
 def equity_screen_status(screen, now=None):
@@ -24,6 +25,7 @@ def equity_screen_status(screen, now=None):
         return result
     symbols = {r["symbol"] for r in rows}
     result.update(universe_count=screen.get("universe_count"), screened_count=len(symbols),
+                  **universe_coverage(screen),
                   generated_at=screen.get("generated_at"), price_asof=screen.get("price_asof"))
     if screen.get("stale") or screen.get("price_stale"):
         result.update(status="stale", note="Last stock screen is stale; its counts are historical.")

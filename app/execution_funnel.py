@@ -30,7 +30,7 @@ def report(con, user_id, screen, quotes, *, journal_path, now=None):
     result = dict(version='paper-funnel-v1', generated_at=now.isoformat(),
                   session_date=start.date().isoformat(), timezone='Asia/Kolkata',
                   user_id=int(user_id), epoch=None, stages=list(stages.values()),
-                  note='Screened: latest unique NSE stock evidence. Confirmed: latest active stock-model assessments today (shared strategy). '
+                  note='Screened: observed NSE universe checks, including pre-score exclusions; retained liquid stocks are scored separately. Confirmed: latest active stock-model assessments today (shared strategy). '
                        'Fundable: those confirmed stocks sized independently for your account now, not approvals. '
                        'Ordered/filled/exited: distinct owned paper orders recorded today, including manual orders. '
                        'Different populations and times; these are not conversion rates. Research touches are never fills.')
@@ -40,9 +40,13 @@ def report(con, user_id, screen, quotes, *, journal_path, now=None):
     s = stages['screened']
     s['as_of'] = screen.get('generated_at')
     if screen.get('screened_count') is not None:
-        s.update(count=screen['screened_count'], status=screen.get('status', 'unavailable'))
+        evaluated = screen.get('evaluated_count')
+        s.update(count=evaluated if evaluated is not None else screen['screened_count'],
+                 status=screen.get('status', 'unavailable'), liquid_count=screen['screened_count'],
+                 excluded_before_scoring=screen.get('excluded_before_scoring'))
         s['price_asof'] = screen.get('price_asof')
         s['blockers'] = list(screen.get('rejections') or [])
+        s['blockers'] += list(screen.get('exclusion_reasons') or [])
     else:
         block(s, 'Stock screening receipt unavailable')
 
@@ -139,6 +143,9 @@ def report(con, user_id, screen, quotes, *, journal_path, now=None):
         stage['blockers'] = [dict(reason=r, count=n) for r, n in failures.most_common(8)]
         if missing:
             block(stage, 'Active stocks lack an assessment today', missing)
+        historical = sum((now-at).total_seconds() > 120 for at in stamps)
+        if historical:
+            block(stage, 'Latest assessments are historical; current eligibility is unknown', historical)
         if not latest:
             block(stage, 'No stock plans have reached the automation confirmation journal in this strategy epoch', 0)
         book, error = plans.account_state(con, int(user_id), quotes, now)
@@ -164,13 +171,15 @@ def report(con, user_id, screen, quotes, *, journal_path, now=None):
             except (KeyError, ValueError, TypeError):
                 stale += 1
         stage = stages['fundable']
-        stage.update(count=None if missing or stale else funded, observed_count=funded,
-                     as_of=now.isoformat(), status='partial' if missing or stale else 'observed')
+        stage.update(count=None if missing or stale or historical else funded, observed_count=funded,
+                     as_of=now.isoformat(), status='partial' if missing or stale or historical else 'observed')
         stage['blockers'] = [dict(reason=r, count=n) for r, n in refused.most_common(8)]
         if missing:
             block(stage, 'Confirmation coverage incomplete; funding count unavailable', missing)
         if stale:
             block(stage, 'Current confirmation and fresh account quote required; historical checks confer no approval', stale)
+        elif historical:
+            block(stage, 'Current assessment required before reporting account funding capacity', historical)
         if error:
             stage.update(count=None, status='unavailable')
             block(stage, error)

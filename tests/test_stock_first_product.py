@@ -161,6 +161,15 @@ console.log(JSON.stringify({html:productPosition({symbol:'TEST',market:'IN',qty:
         self.assertNotIn('class=product-progress', out['html'])
         self.assertIn('current mark unavailable', out['html'])
 
+    def test_missing_price_cannot_render_flat_profit_or_total_in_actual_workspace(self):
+        out=self.run_js('''
+POS=[{symbol:'TEST',market:'IN',qty:1,entry:100,live:100,pnl_amt:0,stop:96,target:110,quote_status:'entry_only'}];
+renderPos();MINE={equity:null,cash:8000,positions:1,valuation_complete:false,missing_marks:['TEST']};PRODUCT.overviewOwner=2;
+console.log(JSON.stringify({html:nodes.poslist.innerHTML,total:nodes.postot.textContent,summary:productOpportunitySummary(null)}));''')
+        self.assertIn('awaiting current prices',out['total'])
+        self.assertIn('Current mark</small><b>—',out['html'])
+        self.assertIn('valuation awaits fresh prices for 1 holdings',out['summary'])
+
     def test_selected_research_panel_cannot_create_a_buy_approval(self):
         row = plan('RESEARCH')
         row['why'] = '<img src=x onerror=bad()>'
@@ -223,9 +232,6 @@ console.log(JSON.stringify({html:nodes.productIdeasAccount.innerHTML,owner:PRODU
         self.assertIsNone(out['owner'])
 
 
-if __name__ == '__main__':
-    unittest.main()
-
     def test_funnel_is_visible_but_another_accounts_cached_counts_are_not(self):
         out=self.run_js("""
 DESK_DATA={execution_funnel:{user_id:3,session_date:'2026-10-29',stages:[{key:'filled',count:777,label:'Filled',status:'observed'}]}};
@@ -236,3 +242,7 @@ console.log(JSON.stringify({foreign,own:nodes.productFunnel.innerHTML}));
         self.assertNotIn('777',out['foreign'])
         self.assertIn('777',out['own'])
         self.assertIn('From screen to exit',out['own'])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -5,6 +5,21 @@ from zoneinfo import ZoneInfo
 from .financials import valid_income_history
 
 
+def universe_coverage(screen):
+    """Count observed checks, including rejected identities, never assumed coverage."""
+    symbols = {r.get('symbol') for r in screen.get('equities', []) if r.get('symbol')}
+    excluded = screen.get('exclusions')
+    if not isinstance(excluded, dict) or any(not isinstance(k, str) or not k or
+            not isinstance(v, str) or not v for k, v in excluded.items()) or symbols & set(excluded):
+        return dict(evaluated_count=None, liquid_count=len(symbols), excluded_before_scoring=None,
+                    exclusion_reasons=[], coverage_note='Pre-score exclusion coverage is unavailable or inconsistent')
+    reasons = Counter(excluded.values())
+    return dict(evaluated_count=len(symbols | set(excluded)), liquid_count=len(symbols),
+                excluded_before_scoring=len(excluded),
+                exclusion_reasons=[dict(reason=r, count=n) for r, n in reasons.most_common(10)],
+                coverage_note='Universe checks include rejected history, liquidity and identity checks; only retained stocks receive full scoring')
+
+
 def discovery_health(screen, rejected, now):
     rows = {r.get('symbol'): r for r in screen.get('equities', []) if r.get('symbol')}
     decision_day = now.astimezone(ZoneInfo('Asia/Kolkata')).date().isoformat()
@@ -23,6 +38,7 @@ def discovery_health(screen, rejected, now):
     incomplete = len(rows) - history_ready
     stale = screen.get('status') != 'ok' or screen.get('stale') or screen.get('price_stale')
     return dict(status='stale' if stale else 'incomplete' if incomplete else 'complete',
+                **universe_coverage(screen),
                 screened=len(rows), earnings_history_ready=history_ready,
                 earnings_history_missing=incomplete,
                 rejection_counts=[dict(reason=reason, count=count)

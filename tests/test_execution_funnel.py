@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import subprocess
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 
 from app import books, execution_funnel, paper_exchange, approved_execution, workspace_ui
@@ -76,6 +77,19 @@ class ExecutionFunnelTest(unittest.TestCase):
         self.assertEqual(result['fundable']['count'],0)
         self.assertTrue(result['fundable']['blockers'])
 
+    def test_actual_web_quote_reader_satisfies_funnel_provenance_contract(self):
+        from app import v2_web
+        self.publication()
+        quotes=sqlite3.connect(':memory:')
+        quotes.execute('CREATE TABLE latest_quotes(symbol,price,open,high,low,close,ts,source)')
+        quotes.execute('INSERT INTO latest_quotes VALUES(?,?,?,?,?,?,?,?)',
+                       ('TEST',100,100,100,100,100,self.now.isoformat(),'upstox-live'))
+        with patch.object(v2_web,'_ro',return_value=quotes):observed=v2_web._live_map('IN')
+        result=self.read(quotes=observed)
+        self.assertEqual(result['confirmed']['count'],1)
+        self.assertEqual(result['fundable']['count'],1)
+        self.assertEqual(result['filled']['count'],0)
+
     def test_overlapping_versions_legacy_epochs_and_terminal_plans_are_not_independent(self):
         self.publication();self.publication(passes=False)
         self.publication(symbol='OLD',epoch='old')
@@ -92,6 +106,14 @@ class ExecutionFunnelTest(unittest.TestCase):
         self.assertEqual(result['confirmed']['count'],1)
         self.assertEqual(result['confirmed']['status'],'historical')
         self.assertIsNone(result['fundable']['count'])
+
+    def test_stale_negative_assessment_is_not_current_zero_funding(self):
+        self.publication(passes=False)
+        result=self.read(now=self.now+timedelta(minutes=3))
+        self.assertEqual(result['confirmed']['count'],0)
+        self.assertEqual(result['confirmed']['status'],'historical')
+        self.assertIsNone(result['fundable']['count'])
+        self.assertEqual(result['fundable']['status'],'partial')
 
     def test_paper_submit_later_fill_exit_counts_and_account_isolation(self):
         order=approved_execution.submit(self.con,self.f.catalogue,2,self.f.plan_id,'funnel-fixture',

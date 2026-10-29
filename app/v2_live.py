@@ -1,14 +1,14 @@
-"""v2 live engine - one shared capital pool per market, both strategies.
+"""Production paper engine with a shared capital pool per market.
 
-Budget is a TOTAL per market (US $20,000, India ₹1,00,000), shared across the
-swing + gap strategies - NOT per trade, NOT per book. Positions are sized from
-that single pool; cash is deducted on buy and returned on exit. Runs as a
-background thread inside opentrade.service, only during real market hours.
+The active NSE paper book defaults to ₹10,000. New stock entries pass the
+selective sleeve allocator, instrument contracts and durable paper exchange;
+owned positions retain exit management independently of new-entry eligibility.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sys
 import sqlite3
@@ -925,7 +925,7 @@ _SLEEVE_VIEW_FILE = os.environ.get(
     "SLEEVE_VIEW_FILE", os.path.join(os.path.dirname(V2_DB), "sleeve_view.json"))
 
 
-def _remember_sleeve_view(market, result, asof, today_s):
+def _remember_sleeve_view(market, result, asof, today_s, execution=None):
     """Keep the last production decision readable by the Ideas page.
 
     A zero-candidate pass is a real decision, not missing data. The previous
@@ -944,9 +944,19 @@ def _remember_sleeve_view(market, result, asof, today_s):
     primary = next((d for d in decisions if d["sleeve"] == "quality_momentum"),
                    decisions[0] if decisions else None)
     count = len(result.allocations)
-    if count:
-        reason = f"{count} funded paper entr{'ies' if count != 1 else 'y'} cleared every gate"
-        state = "ACTIONABLE"
+    if result.halt_reason:
+        reason = result.halt_reason
+        state = "STAND ASIDE"
+    elif execution and execution.get('reserved'):
+        reason = f"{execution['reserved']} paper order(s) reserved; awaiting a later exchange fill"
+        state = "ORDER PENDING"
+    elif execution and execution.get('rejected'):
+        refusal = execution['rejected'][0]
+        reason = f"{refusal['symbol']}: {refusal['reason']}"
+        state = "ENTRY BLOCKED"
+    elif count:
+        reason = f"{count} candidate(s) passed sizing; execution contract and reservation checks remain"
+        state = "CHECKING EXECUTION"
     elif result.risk_rejections:
         symbol, why = result.risk_rejections[0]
         reason = f"{symbol}: {why}"
@@ -956,9 +966,6 @@ def _remember_sleeve_view(market, result, asof, today_s):
         state = "STAND ASIDE"
     elif primary and primary["rejected"]:
         reason = primary["rejected"][0]["reason"]
-        state = "STAND ASIDE"
-    elif result.halt_reason:
-        reason = result.halt_reason
         state = "STAND ASIDE"
     else:
         reason = "no production candidate cleared every gate"
@@ -973,6 +980,8 @@ def _remember_sleeve_view(market, result, asof, today_s):
         regime_source=result.regime.source, market_context=result.regime.diagnostics,
         market_model_version=market_model_version,
         asof=str(asof)[:10], cycle_date=today_s, candidate_count=count,
+        observed_at=datetime.now(timezone.utc).isoformat(),
+        execution=execution or dict(proposed=count, reserved=0, rejected=[], status='not_evaluated'),
         risk_rejections=[dict(symbol=s, reason=r) for s, r in result.risk_rejections[:5]],
         execution_halted=bool(result.halt_reason), halt_reason=result.halt_reason,
         cadence="stocks and actual indices: each production screening cycle", decisions=decisions,
@@ -1257,8 +1266,8 @@ def clear_of_the_day_low(lq, floor=KNIFE_MIN_RANGE_POS):
 def _f(v, d):
     try:
         x = float(v)
-        return x if x > 0 else d
-    except (TypeError, ValueError):
+        return x if not isinstance(v, bool) and math.isfinite(x) and x > 0 else d
+    except (TypeError, ValueError, OverflowError):
         return d
 
 
@@ -1324,28 +1333,28 @@ def _news_state(mcon, symbol):
 
 
 def _live(market, symbols=None):
-    con = _ro(MAIN_DB)
-    if symbols is not None:
-        syms = list(symbols)
-        if not syms:
-            con.close();return {}
-        rows = con.execute(
-            "SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
-            % ",".join("?" * len(syms)), (LIVE_SOURCE[market], *syms)).fetchall()
-    else:
-        rows = con.execute("SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=?",
-                           (LIVE_SOURCE[market],)).fetchall()
-    from . import executable_quotes
-    try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
-    except (sqlite3.Error,ValueError,TypeError):execution = {}
-    con.close()
+    from contextlib import closing
+    with closing(_ro(MAIN_DB)) as con:
+        if symbols is not None:
+            syms = list(symbols)
+            if not syms:
+                return {}
+            rows = con.execute(
+                "SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=? AND symbol IN (%s)"
+                % ",".join("?" * len(syms)), (LIVE_SOURCE[market], *syms)).fetchall()
+        else:
+            rows = con.execute("SELECT symbol,price,open,high,low,close,volume,ts FROM latest_quotes WHERE source=?",
+                               (LIVE_SOURCE[market],)).fetchall()
+        from . import executable_quotes
+        try:execution = executable_quotes.read(con, [r[0] for r in rows]) if market == 'IN' else {}
+        except (sqlite3.Error,ValueError,TypeError):execution = {}
     out = {}
     for sym, p, o, h, l, c, v, ts in rows:
         try:
             price = float(p)
         except (TypeError, ValueError):
             continue
-        if price > 0:
+        if math.isfinite(price) and price > 0:
             out[sym] = dict(price=price, open=_f(o, price), high=_f(h, price), low=_f(l, price), vol=_f(v, 0), ts=ts,
                             source=LIVE_SOURCE[market])
             if sym in execution: out[sym]['execution'] = execution[sym]
@@ -4575,16 +4584,19 @@ def sleeve_pass(market):
 
         fills = 0
         queued_count = 0
+        execution_rejections = []
         filled_allocs = []
         for alloc in result.allocations:
             c = alloc.candidate
             if c.symbol in held:
+                execution_rejections.append(dict(symbol=c.symbol, reason='Stock already held; no duplicate entry'))
                 continue
             if c.instrument != "EQ":
                 # FUT/OPT_SPREAD plans are produced and logged, but this book
                 # routes equity only. Stated rather than silently dropped.
                 _LOG.info("sleeves: %s/%s is %s — not routed by the equity book",
                           c.sleeve, c.symbol, c.instrument)
+                execution_rejections.append(dict(symbol=c.symbol, reason=f'{c.instrument} is not routed by the equity paper book'))
                 continue
             from .entry_contracts import normalise_long_levels
             from dataclasses import replace
@@ -4592,6 +4604,7 @@ def sleeve_pass(market):
                 tick_stop,tick_target=normalise_long_levels(c.symbol,c.entry,c.stop,c.target)
             except ValueError as exc:
                 _LOG.info('sleeves: canonical execution levels refuse %s: %s',c.symbol,exc)
+                execution_rejections.append(dict(symbol=c.symbol, reason=str(exc)))
                 continue
             if (tick_stop,tick_target)!=(c.stop,c.target):
                 c=replace(c,stop=tick_stop,target=tick_target,why=dict(c.why,execution_rounding=dict(original_stop=c.stop,
@@ -4602,12 +4615,19 @@ def sleeve_pass(market):
                 with entry_contracts.open_catalogue() as (catalogue, now):
                     queued = paper_exchange.enqueue_house(v2, catalogue, alloc, live,
                                                            regime=result.regime.state, now=now)
-                queued_count += 1
-                _LOG.info('paper proposal %s/%s: %s, %d requested; no fill yet', c.sleeve, c.symbol,
-                          queued['status'], queued['requested_qty'])
+                if queued['status'] == 'pending':
+                    queued_count += 1
+                else:
+                    execution_rejections.append(dict(symbol=c.symbol, reason='Existing paper order is '+str(queued['status'])+'; no new request'))
+                _LOG.info('paper proposal %s/%s: %s, %d requested', c.sleeve, c.symbol,
+                          queued['status'], queued.get('requested_qty', queued.get('qty', 0)))
             except ValueError as exc:
                 _LOG.info('paper proposal refused %s/%s: %s', c.sleeve, c.symbol, exc)
+                execution_rejections.append(dict(symbol=c.symbol, reason=str(exc)))
         v2.commit()
+        _remember_sleeve_view(market, result, asof, today_s,
+            execution=dict(proposed=len(result.allocations), reserved=queued_count,
+                           rejected=execution_rejections, status='checked'))
         try:
             _publish_sleeve_ideas(v2, market, result, today_s, live, filled_allocs)
         except Exception:
@@ -4626,11 +4646,11 @@ _SLEEVE_ENGINE = None
 def _sleeve_index_bars(symbol):
     """Daily index bars for the index sleeve, from the local index series."""
     try:
-        con = _ro(MAIN_DB)
-        rows = con.execute(
-            "SELECT ts,open,high,low,close FROM index_bars WHERE symbol=?"
-            " ORDER BY ts", (symbol,)).fetchall()
-        con.close()
+        from contextlib import closing
+        with closing(_ro(MAIN_DB)) as con:
+            rows = con.execute(
+                "SELECT ts,open,high,low,close FROM index_bars WHERE symbol=?"
+                " ORDER BY ts", (symbol,)).fetchall()
         if len(rows) < 30:
             return None
         df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close"])
@@ -4668,11 +4688,11 @@ def _sleeve_options_view(symbol):
 
 def _sleeve_option_chain(symbol):
     try:
-        con = _ro(MAIN_DB)
-        rows = con.execute(
-            "SELECT strike,option_type,price,lot_size,expiry,ts FROM nfo_quotes"
-            " WHERE underlying=?", (symbol,)).fetchall()
-        con.close()
+        from contextlib import closing
+        with closing(_ro(MAIN_DB)) as con:
+            rows = con.execute(
+                "SELECT strike,option_type,price,lot_size,expiry,ts FROM nfo_quotes"
+                " WHERE underlying=?", (symbol,)).fetchall()
         from .sleeves.feeds import fresh_quotes
         today = datetime.now(IST).date().isoformat()
         return [dict(strike=r[0], opt_type=r[1], close=r[2], lot_size=r[3], expiry=r[4])

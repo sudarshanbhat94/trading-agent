@@ -784,7 +784,7 @@ class IdeasComeFromSleevesTest(ContractStorageCase):
             v2_live._sleeve_views.clear()  # prove a service restart can reload it
             view = v2_live.sleeve_view("IN")
         self.assertEqual(view["state"], "STAND ASIDE")
-        self.assertEqual(view["reason"], "regime OFF blocks Nifty exposure")
+        self.assertEqual(view["reason"], "drawdown halt")
         self.assertEqual(view["regime"], "OFF")
         self.assertTrue(view["execution_halted"])
 
