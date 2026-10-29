@@ -589,8 +589,8 @@ def snapshot_equity(con, user_id, market, live, day=None):
 
 def equity_series(con, user_id, market="IN", limit=90):
     rows = con.execute("SELECT date,equity FROM user_equity WHERE user_id=? AND market=?"
-                       " ORDER BY date DESC LIMIT ?",
-                       (int(user_id), market, int(limit))).fetchall()
+                       " AND date>=? ORDER BY date DESC LIMIT ?",
+                       (int(user_id), market, epoch_of(con,user_id,market)[:10], int(limit))).fetchall()
     return [(r[0], float(r[1])) for r in rows][::-1]
 
 

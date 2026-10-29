@@ -1,3 +1,16 @@
+## Paper capital increase — 29 October 2026
+
+**TRADING BEHAVIOUR CHANGED:** user authorises Rs 100,000 NSE paper capital
+for Sudarshan and the shared strategy book. Use app.paper_capital.allocate only
+for reconciled empty/untraded books, with no unresolved intents, under writer
+stop and snapshot/copy rehearsal. New accounting epochs and immutable receipts
+preserve history and prevent funding counting as P&L; other users/defaults,
+Upstox and registered forward protocol stay unchanged. Actual book capital
+scales existing limits: Rs 1,500 daily tactical allowance, Rs 30,000 stock sleeve
+notional; entry gates unchanged. Full local suite 2,810 run / 2,677 passed /
+133 skipped. See docs/paper-capital-allocation.md and private rollout receipts;
+do not claim a production trade or profitable model from extra capital.
+
 ## Runtime bug repairs — 29 October 2026
 
 **TRADING BEHAVIOUR CHANGED:** runtime quote boundaries reject nonfinite prices

@@ -27,19 +27,10 @@ MAIN_DB = os.environ.get("OPENSTOCKS_DB", "/opt/opentrade/var/trading_agent.db")
 V2_DB = os.environ.get("V2_PAPER_DB", "/opt/opentrade/var/v2_paper.db")
 IST = timezone(timedelta(hours=5, minutes=30))
 LIVE_SOURCE = {"IN": "upstox-live", "US": "alpaca-iex-live"}
-# TOTAL paper capital per market. FIXED AT Rs 10,000 by operator instruction
-# (2026-08-15) — do not raise it.
-#
-# Every sizing decision in this file must fit inside it. The whole multi-sleeve
-# system shares this one book: sleeve allocations in app/sleeves/risk.py are
-# fractions of THIS number, not additions to it.
-#
-# What this size implies, stated once as engineering fact rather than opinion:
-# flat charges (Rs 20/order brokerage, DP fee on delivery sells) do not scale
-# down with the ticket, so a Rs 2,500 position pays roughly 1.6% round trip on
-# delivery versus 0.27% intraday. Sizing and the minimum-edge filters below are
-# calibrated to that, and the options overlay computes its own affordability
-# (one NFO lot exceeds the entire book, so it will correctly size to zero).
+# Creation defaults only. Existing production capital comes from v2_book;
+# an explicit operator allocation may differ (Sudarshan/house: Rs 100,000).
+# Never overwrite an existing allocation or another user's book on startup.
+# Sleeve risk and exposure fractions are applied to the actual BookState capital.
 BUDGET = {"IN": 10000.0, "US": 20000.0}
 # Markets the engine actually trades. US is parked while we stabilise India first
 # (add "US" back here to re-enable it — all US config/code below stays intact).
