@@ -1,4 +1,305 @@
+## Entry pipeline repair — 29 October 2026, evening
+
+**TRADING BEHAVIOUR CHANGED:** fix completed-index rollover and use paper
+workflow selective-paper-v4-observe-first. Today's equity screen lost all 354
+benchmark comparisons because index parsing/fetching always stopped yesterday.
+Shared 16:00 cutoff plus source-dated completed intraday daily candles restores
+alignment without partial-bar/lookahead substitution. Private source replay:
+354 benchmark failures to zero; eight fundable research candidates, one selected
+(PERSISTENT); zero strict entries. Automation now creates distinct frozen watch
+contracts before participation arrives, retaining research-origin identity;
+all final entry/risk/contract/fill gates stay unchanged. Earlier publications,
+Rs 100,000 allocation/epoch and registered experiment must remain unchanged.
+Full local suite 2,813 run / 2,680 passed / 133 skipped, 135 function fixtures and
+synthetic production stop/target proof passed. See docs/entry-pipeline-repair-2026-10-29.md
+and private exact-commit rollout receipts. No forced production trade or profit
+claim; the original-zone timing question still needs independent forward data.
+
+## Paper capital increase — 29 October 2026
+
+**TRADING BEHAVIOUR CHANGED:** user authorises Rs 100,000 NSE paper capital
+for Sudarshan and the shared strategy book. Use app.paper_capital.allocate only
+for reconciled empty/untraded books, with no unresolved intents, under writer
+stop and snapshot/copy rehearsal. New accounting epochs and immutable receipts
+preserve history and prevent funding counting as P&L; other users/defaults,
+Upstox and registered forward protocol stay unchanged. Actual book capital
+scales existing limits: Rs 1,500 daily tactical allowance, Rs 30,000 stock sleeve
+notional; entry gates unchanged. Full local suite 2,810 run / 2,677 passed /
+133 skipped. See docs/paper-capital-allocation.md and private rollout receipts;
+do not claim a production trade or profitable model from extra capital.
+
+## Runtime bug repairs — 29 October 2026
+
+**TRADING BEHAVIOUR CHANGED:** runtime quote boundaries reject nonfinite prices
+and sanitize invalid OHLC/volume. No strategy/risk parameter or model promotion.
+Fixes preserve web quote provenance for actual funnel funding; close failed read
+handles; distinguish sizing, contract refusal and pending orders; mark stale
+negative assessments unknown; expose pre-score universe exclusions; and prevent
+missing marks appearing as flat owned P&L/equity. Four previously undiscovered UI
+tests restored with a discovery guard. Full local suite 2,804 run / 2,671 passed /
+133 skipped, 135 function fixtures and isolated stop/target production-path proofs
+passed. Actual SPA desktop/390px preview verified; authenticated production UI
+still requires a valid login. See docs/runtime-bug-repair-2026-10-29.md and private
+exact-commit rollout receipts. No reset, forced trade or protocol change.
+No confirmed production entry; original-zone timing redesign, incomplete bank
+facts and independent profitability evidence remain unresolved. Do not call the
+complete release plan finished or promise profits from these repairs.
+
+## Paper automation proof and monitoring — 29 October 2026
+
+Verification/observation only; deployed trading logic, books, risk, publications,
+registered protocol and broker permissions are unchanged. New standalone
+`scripts/verify_paper_automation.py` exercises the real stock production pass,
+durable house/owned delivery, automatic stop AND target monitors, later bid
+fills, restart, absent/stale/wrong-identity depth refusal and after-cost ledger
+reconciliation in temporary Rs 10,000 books. Broker/network calls are forbidden.
+Synthetic stop net -Rs 127.04 / target net +Rs 214.31; neither is alpha evidence.
+`scripts/observe_paper_automation.py` reads actual account/epoch events and
+accounting with SQLite mode=ro. Dedicated read-only heartbeat
+`openstocks-paper-execution` is ACTIVE, weekdays 09:45–15:45 IST hourly; preserves
+the separate idea-performance monitor and stays quiet on unchanged observations.
+Private connection/checkpoint/proof receipts are ignored under var/. Initial
+production observation: clean Rs 10,000 book, running worker, zero qualifying
+signal confirmations in the preceding 24h and no actual fills. A qualifying
+production lifecycle remains to be observed. See docs/paper-automation-verification.md.
+
+## Dated execution funnel — 29 October 2026
+
+Read-only `execution_funnel` overview field and visible Opportunities funnel:
+screened → confirmed → fundable → ordered → filled → exited. IST date/source
+timestamps and blockers distinguish latest screening/confirmation snapshots
+from owned daily immutable order events. Account/epoch fencing, overlapping
+publication deduplication, unknown/stale states and existing NSE exit intents
+are covered. No strategy, risk, order, schema, epoch or broker changes.
+See `docs/execution-funnel.md`. Full suite: 2,770 run, 2,637 passed, 133 skipped;
+135 function fixtures passed. Desktop/mobile disposable preview verified.
+Use private rollout receipts for deployed state; tests do not establish alpha.
+
+## Affordable stock alternatives — 28 October 2026
+
+**TRADING BEHAVIOUR CHANGED:** research previews now include pending account/epoch
+commitments, and automation plans use the engine context risk settings. No risk,
+quality, confirmation, stop or target parameter changed. Effective loss allowance
+is ₹150; ₹1,500 is the existing minimum ticket. Quality/funding ranks, required
+cash and itemised funding refusals are visible through the actual API/UI.
+See `docs/affordable-selection.md`; forward fingerprints/protocol stay intact.
+Local tests: 2,762 run / 2,629 passed / 133 skipped, 135 function fixtures and
+isolated lifecycle rehearsal passed. Follow private exact-commit rollout receipts
+for deployment status. Affordability alone grants no execution approval.
+
+## Data refresh repair — 28 October 2026
+
+**TRADING BEHAVIOUR CHANGED through corrected data inputs and refresh timing.**
+Completed source-dated daily snapshots avoid replaying old history; quote watches
+include automation publications and refresh the broad universe; financial collection
+repairs pagination, valid XML size, standalone revisions and retry starvation.
+No selection/risk parameter, paper epoch, broker setting or forward protocol changes.
+Initial repair deployed as `062f198`; the production candle job now resolves the
+completed session with all 497 enabled Nifty 500 names current. A real-session
+follow-up reproduced a 300s deployed quote cadence against the 120s freshness gate;
+source unit/defaults and a runtime 60s bound close this separate defect.
+See `docs/data-refresh-repair.md`. Read-only source replay recovered 2,615 dated bars
+in 27 requests; unresolved identities and financial facts remain explicit. Deployment
+and post-fix actual market-hour verification require their own dated receipts.
+
+## Product workspace revision — 27 October 2026, local only
+
+User rejected the sparse premium layout. Local changes add a more legible
+account band, stock cards showing conditional entry/stop/target, and a connected
+plan card with the review action near its entry zone. Company-name search and
+filtered counts are corrected. Mobile Review plan scrolls to its selected panel.
+Synthetic preview companies are confined to the disposable preview script.
+No strategy, book, approval, broker or production change in this revision.
+See `docs/stock-first-product-ui.md`; preview remains localhost port 64192.
+
+## Premium product UI — 27 October 2026, local implementation
+
+User-approved premium workspace replaces the green feed styling with neutral
+light/dark surfaces, Inter, compact top navigation, owned balances and a selected
+trade-plan panel. Account summary uses available cash after reservations and
+rejects another owner's cached data. Research panels retain conditional levels;
+owned approved panels use frozen execution levels/model and the existing review.
+Mobile puts selected-plan details before explanatory notes. Watchlist, tracking,
+Portfolio, Orders, Markets and profile access remain. Presentation only; no
+production deployment, trade, strategy, broker-setting or epoch change.
+Verification is recorded in `docs/stock-first-product-ui.md`.
+
+## Stock-first product UI — 12 October 2026
+
+Presentation-only redesign; trading behaviour, paper epochs, broker settings and
+registered forward protocol are unchanged. The actual SPA replaces the sidebar
+and dashboard with a stock feed, separate stock detail, owned Portfolio/Orders,
+Saved stocks, desktop top navigation and mobile bottom navigation. Diagnostics
+are disclosures; research does not acquire execution approval. Approved order
+review uses its frozen levels and the existing risk/idempotency/fill lifecycle.
+Account, scope and request identity fence late UI responses. Read failures are
+not empty books. See `docs/stock-first-product-ui.md` and the private deployment
+receipt for exact shipped-build and browser verification evidence.
+
+## Stock-specific paper entry — 12 October 2026, deployed and verified
+
+**TRADING BEHAVIOUR CHANGED; deployed as `5b4ef16` under standing authorization.** `selective-paper-v3`
+removes the blanket index-trend veto for individual paper stocks. The measured
+trend and actual regime tags remain in history. Unknown market data, strict
+stock selection/confirmation, fresh executable quotes, costs and account risk
+still gate entries. Live/index route permissions are not promoted. The original
+registered research protocol, ₹10,000 epoch and legacy publications are intact.
+
+Ideas adds distinct research candidates with conditional levels, explicit entry
+blockers and watchlisting, without buy approval or outcome/fill claims. Current
+dated production evidence reproduced two affordable candidates, VBL and COFORGE,
+and zero strict entry plans. These observations are time-sensitive, not returns.
+Local final suite: 2,678 run / 2,545 pass / 133 skip, plus 108 UI/research functions.
+Synthetic actual production-pass, defensive house/subscriber fills, stop exit,
+cash/inventory reconciliation and old-protocol isolation passed. See
+`docs/stock-specific-paper-entry.md`. Encrypted backup and original-row preservation
+passed. Authenticated browser verified the clean ₹10,000 book and VBL/COFORGE
+conditional research. The production cycle assessed 364 stocks with zero qualifying
+entries; these observations do not demonstrate profitability.
+
+## Current production — data-source repair, 11 October 2026
+
+**TRADING BEHAVIOUR CHANGED through corrected data inputs; deployed under standing human authorization.**
+Production code is `343d4e0` (initial data repair `60bdd48`). Two exact-build CI
+runs passed Python 3.12/3.14 and dependency checks. The final initial local suite
+ran 2,667 checks / 2,534 pass / 133 skip plus 107 research/UI functions; the alias
+follow-up passed focused checks and exact-build CI. Do not describe skipped checks
+or passing infrastructure tests as profitability or live certification.
+
+A coordinated quiesced encrypted backup passed authenticated restore-digest
+verification; original paper/account rows were unchanged before writers resumed.
+Post-resume checks preserved all immutable financial/account tables, book epochs,
+settings, broker files and forward protocol. Only worker leases and risk-observation
+session/timestamps changed during normal runtime. Sudarshan remains ₹10,000
+capital/cash/equity, zero positions, pending orders, trades and realised P&L;
+peak equity remains ₹10,000. No new broker order was submitted.
+
+Actual production collection repaired 16 changed equity keys, archived 4,620 old
+market rows and added five verified EQ constituents. EQ/D1 aliases resolve through
+independent NSE ISIN/series evidence. Daily collection targets October 9: 2,609
+current bars / 2,619 verified ingestion identities, ten names with no reported
+trading in the dated full NSE report, zero unresolved bars in that scope. There
+are still 48 separate source quarantines across the broader ingestion/reference
+universe; overall data status is explicitly partial, not a green certification.
+The next pre-open retry is 08:10 IST. Production writers/timers resumed.
+
+The refreshed screen retains all 501 constituents: 364 meet price/liquidity/history
+screening prerequisites, 127 fail liquidity/price floors, four require identity
+review and six lack sufficient valid history. Zero buy plans qualify. Of screened
+rows, 316 lack a controlled setup; financial-sector rules/evidence remain blocked,
+three BE-series names have unavailable delivery, and two lack enough sector peers.
+The official Nestlé FY2026 fallback is now captured in production; only two
+comparable annual periods exist, so the three-year strategy requirement still
+rejects it. No strategy threshold, regime gate or broker setting was changed.
+
+Public website returns 200 and serves the new data-health renderer. The shipped
+renderer passed on actual production book/receipt values. Authenticated visual
+verification is blocked by the existing browser's expired session (sign-in shown);
+do not claim browser-visible owned balances were verified in this pass.
+See `docs/market-data-repair.md`. Private evidence:
+`var/deployment-343d4e0-2026-10-11.json` and
+`var/data-repair-production-render.html`. The dated notes below are prior states.
+
+## Current production — paper workspace and execution repairs, 10 October 2026
+
+**TRADING BEHAVIOUR CHANGED; deployed with standing human authorization.**
+Production code is `6c70059`, with execution/source commits `463e3ff` and `a7a83ba`.
+Quote provenance, fast pending/origin reassessment, independent subscriber risk,
+managed cash-leg paise accounting and epoch-scoped owned portfolio/history are
+repaired. Home/Ideas/Portfolio/Orders use the new workspace. Portfolio defaults
+to all holdings. Sourced NSE session and paper-only cash-contract timers run.
+
+Exact-build CI passed Python 3.12/3.14 and dependencies. Final functional suite:
+2,647 run / 2,514 pass / 133 skip; 106 UI/research functions and the final 11 UI
+checks passed. Synthetic entry/fill/stop/target/restart/ledger checks passed;
+these are not profitability evidence. Encrypted restore verification and original
+book/account row preservation passed. Broker settings, epochs and forward protocol
+are unchanged; no broker order was submitted. Actual browser Home/Ideas/Portfolio/
+Orders passed; mobile requested 390px, Chrome observed 433px without overflow.
+
+Sudarshan capital/cash/equity remain ₹10,000, zero positions/trades/realised P&L.
+Production worker and both source jobs are healthy. 501 constituents, 363 screened,
+493 matched instrument contracts, nine restriction/action blocks, eight quarantined
+identities. Current research coverage: prices 363, earnings 362, delivery 360,
+news checks 363. No plan qualifies; OFF still blocks new long risk. A first actual
+open-session paper fill and independent stock-model profitability are unproven.
+Keep missing evidence blocked; never claim profitable or commercial certification.
+See `docs/paper-workspace.md`; private evidence:
+`var/deployment-6c70059-2026-10-10.json` and `var/workspace-production-6c70059.jpg`.
+The dated notes below describe earlier deployment states.
+
+## Current production — actual index context and retired cash-fund removal
+
+**TRADING BEHAVIOUR CHANGED; deployed with human authorization on 8 October 2026.**
+Production code is `21e9b55`; the stock model v4/paper intent v2 use actual Upstox
+index daily history and eligible individual-stock breadth. The retired fund route
+is excluded from discovery and new orders; history and owned exits are preserved.
+See `docs/actual-index-context.md`.
+
+Exact-build CI passed all three checks. Local verification: 2,623 unittest checks
+(2,490 passed, 133 skipped) plus 106 UI/research checks. A coordinated quiesced
+backup passed authenticated encrypted restore verification; all pre-existing paper
+and selected account values, book epochs, settings and the forward protocol were
+preserved. Original writers and timers resumed. No broker order was submitted.
+
+A normal production cycle on 8 October used `actual-index-breadth-v1` and
+`selective-paper-v2`: Nifty completed close 22,603.05 versus its 50-session mean
+23,796.13, eligible-stock breadth 28.7%, regime OFF, zero new entries. The refreshed
+screen covers 364 liquid stocks; earnings history is ready for 363. No research
+plan qualifies; 298 lack a controlled setup, with other quality/evidence failures.
+Actual browser Home/Ideas/Indices display no retired fund, personal capital/cash/
+equity ₹10,000, zero positions and realised P&L. Desktop and mobile checks show no
+horizontal overflow (mobile requested 390px; Chrome observed 433px).
+
+**Remaining limits:** OFF still pauses new long risk; reviewed instrument/session
+execution evidence is incomplete, one earnings source remains unavailable, and
+independent profitability/live certification are not established. Do not claim a
+profitable or fully tradable commercial release. The ₹10,000 epoch and registered
+experiment remain intact. Private verification: `var/deployment-21e9b55-2026-10-08.json`.
+The dated notes below describe prior milestones, not current deployment status.
+
+## Sourced-session paper safety — 7 October 2026
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** F58/F59 reproduce paper closed-session fills and rounded source ordering. New immutable current session cache/original calendar guards quote and fill time, preserves pending owned protection when status is unavailable/closed/conflicting/expired, and tolerates entry catalogue outages while cached source evidence remains valid. Exact aware source/effective times prevent sub-millisecond future or superseded selection. Trading schema v5. Final source: 2,463 run / 2,330 passed / 133 skips; 102 functions and 42 focused checks passed. Keep production book/strategy/protocol unchanged; this is not the completed commercial release.
+
+## Durable paper exchange — 7 October 2026
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** New house/manual/approved/subscriber paper entries reserve risk and await a strictly later fresh executable ask; owned new exits retain inventory until a later bid. Best-level capacity is shared per snapshot/side. The actual production helper evaluates protection before entry catalogue checks; outage/restart/rollback/cancel/ownership are tested. New shared login reservations survive workers/restarts, and security changes revoke all sessions atomically. See `docs/paper-exchange-lifecycle.md` and `reports/paper-exchange-implementation-2026-10-07.md`.
+
+Final frozen-source suite: 2,463 run / 2,330 passed / 133 skipped / zero failures/errors; 102 additional functions. Isolated real-handler/shared-component browser lifecycle passed, 390px without horizontal overflow; synthetic profit is not strategy evidence. Actual corrected candidate startup on guarded production copies preserved all checked values/timestamps, epoch/protocol and ₹10,000 balances; outbound HTTP/workers disabled. Browser cancellation remained terminal after later depth. Read-only production remains older `2b300b4`, ₹10,000 cash/equity, zero positions/realised/trades, original epoch/protocol; active services and OFF based on October 6. Production quote capture/catalogue, independent stock validation, native broker/actual settlement/additional assets, full product/operations certification, relevant sessions and commercial permissions remain unfinished. No deployment/order/reset/model promotion was authorized or performed.
+
+## Paper runtime preparation — 2026-10-07
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** Quote and daily feeds retain disabled held names; partial exposure schemas no longer discard the available watch; daily jobs require actual closed-session coverage and report partial/failure nonzero. Expired same-identity daily imports cannot borrow earlier valid rules. `scripts/rehearse_paper_upgrade.py` migrates only private guarded copies and verifies original paper/account values, capital/epoch/protocol. A hash-pinned isolated OCI runtime migrated actual database copies and booted the actual app with network/workers disabled; unauthenticated positions refused 401. Original production is unchanged. See `docs/paper-candidate-rollout.md`. Full sourced execution coverage, independent stock validation and broker/commercial release gates remain open; never describe this as a profitable or live-certified platform.
+
+## Next-session readiness recheck — 2026-10-07
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** Bounded official BOD discovery uses a separate provider and real publication dates; no guessed exchange rules. Owned API/CLI/UI preflight checks selected NSE cash instruments, current regime, quotes, worker, book risk and cash/inventory ledger. Lazy sleeve exports fix a reproduced concurrent cold-import failure. Strategy thresholds, allowlist, ₹10,000 epoch and forward protocol remain intact.
+
+Final suite 2,392 run / 2,259 pass / 133 skip / no failures or errors; separate functions 102 pass. Private production-copy migration preserves all historical values/rows and active balances. Production remains older `2b300b4`, clean ₹10,000, services active, OFF decision. The independent stock cohort has 10 publications/9 stocks, zero shadow fills or completed outcomes. Full commercial/live programme remains incomplete/NO-GO. See `docs/next-session-readiness.md`; do not call BOD discovery execution coverage or promote research to manufacture trades.
+
 # OpenStocks handoff — 2026-09-23
+
+## Discovery repair — 8 October 2026
+
+**TRADING BEHAVIOUR CHANGED through evidence-refresh timing.** Cold/incompatible
+financial caches receive a paced, bounded catch-up with current-setup priority,
+failed-request cooldown and source-throttling stop. Source capture times and
+historical evidence remain immutable. Ideas now reports dated earnings-history
+coverage and counted rejections, separating missing data from failed setups.
+No entry thresholds, regime rules, portfolio epochs or registered forward
+protocol are changed. Passing research can appear during OFF; execution keeps
+the existing independent gates. See `docs/idea-discovery.md`. Deployment status
+must be read from the private rollout checkpoint and actual served build.
+
+## Release-plan continuation — 7 October 2026
+
+**TRADING BEHAVIOUR CHANGED locally; not deployed.** All entry writers enforce sourced dated canonical NSE cash contracts and regime/risk gates. Manual paper requests freeze immutable owned plans and use the approved pipeline; retry/concurrency/rollback are tested. Actual Upstox trade-ID ledger posts gross cash/assessment/settlement/reversal history; final actual net/margin remain unavailable. Reviewed native policy can cancel partial remainders once and activate new canonical terminal fills only. No passing policy/release record was created.
+
+Also delivered: normalized evidence importer/quarantine, Angel One transport (orchestration/native/live uncertified), immutable PIT facts, atomic manual subscription receipt/access/status (new reproduced Critical F54), owned incident acknowledgement, origin/proxy boundary, versioned atomic critical migrations, authenticated streaming disabled restore, exact dependency locks/SBOM/zero-active-known-advisory scan. Production raw connectors/full net margin ledger/all-adapter convergence/full product/ops/security/additional routes remain engineering work. See `reports/release-plan-implementation-2026-10-06.md` and current A–G `reports/release-audit-2026-10-06/REPORT.md`. Full programme incomplete/NO-GO, no independent profitable stock model.
+
+Final verification is in `verification.json`: 2,375 run / 2,242 pass / 133 skips, 102 research/UI functions, isolated paper rehearsals and selected-handler mobile component proof. Tests use temporary runtime paths and block external HTTP; retained storage fixtures explicitly inject external contract/native evidence, new integration tests use actual synthetic catalogue/risk/ledger code. Read-only deployed snapshot dated 6 October remains build `2b300b4`, user2 ₹10,000 cash/equity, zero positions, unchanged epoch/protocol. No production writes/deployment/real orders/reset/model promotion.
+
 
 ## Current-state audit refresh — 2026-10-06
 
@@ -51,3 +352,7 @@ The repo is public: never commit credentials, host addresses, keys, or account t
 Final frozen-source unittest 2,321 run / 2,188 passed / 133 skipped / zero failures/errors; research/UI runner 102 passed; isolated real-handler paper and component browser checks passed desktop/390px. Read-only deployed build remains 2b300b4, clean ₹10,000 cash/equity, zero positions; unchanged epoch. No deployment, real trade, reset, credential change or model promotion. See `reports/release-plan-implementation-2026-10-06.md` and `docs/recovery-and-approved-paper.md` for limitations and commands.
 
 The full commercial release plan remains **incomplete/NO-GO**. Remaining engineering includes official contract ingestion/canonical migration; all-adapter actual fill/fee/margin/settlement accounting; automatic certified native coverage and real broker recovery; Angel One/additional assets; full production product/billing/accessibility; operational/security/restore certification. Independent stock validation, real relevant paper sessions and legal/broker/data permissions remain external acceptance. Never equate fixtures, declared backup roles, a review-reference string or the recorded-evidence evaluator with independent proof.
+
+7 October continued recheck: F60–F68 locally repaired; protection/amendment/stream/accounting/capability work is in `reports/broker-protection-review-2026-10-07.md` and `docs/broker-protection-recovery.md`. Source remains on the review branch, production unchanged. Use `unittest discover -s tests -t .` so test isolation precedes app config. Schema v6 is additive; no live policy was activated. Follow current verification/PR exact-commit CI evidence and preserve all remaining programme gates.
+
+F69 was additionally reproduced against `984d36a` and repaired: locked reconciliation comparisons plus owned-state-bound readiness prevent stale broker funds permission after fills/commitments or closed round trips. Six regressions fail on that parent and pass now; final local suite 2,502 run / 2,369 pass / 133 skip, 102 function fixtures and isolated paper rehearsal passed. Production stays unchanged; follow the current PR exact-head CI and remaining programme gates.

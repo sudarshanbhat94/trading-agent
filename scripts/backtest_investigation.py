@@ -229,7 +229,7 @@ def run(market, mode, M, mdf, extend=False, maxpos=MAXPOS, sweep=False, mom=Fals
                     n += 1; wins += px > pos[sym]["entry"]
                     del pos[sym]
         # cash equitization: idle cash above a one-slot reserve earns the index
-        # return instead of zero (paper equivalent of sweeping into NIFTYBEES/VOO).
+        # return instead of zero (paper equivalent of sweeping into an index fund).
         # REGIME-GATED: only while the market is trending up — in OFF/NEUTRAL the
         # cash IS the defense (an always-on sweep turned IN -7% into -20%).
         if sweep and last_state == "STRONG":

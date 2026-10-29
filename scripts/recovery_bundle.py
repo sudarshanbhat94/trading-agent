@@ -11,15 +11,19 @@ def main():
     p.add_argument('action',choices=['create','restore']);p.add_argument('--key-file',type=Path,required=True)
     p.add_argument('--bundle',type=Path,required=True);p.add_argument('--manifest',type=Path)
     p.add_argument('--destination',type=Path);p.add_argument('--broker-key-file',type=Path)
+    p.add_argument('--format',choices=['v1','v2'],default='v2',help='v2 streams large databases; v1 restores older Fernet bundles')
     a=p.parse_args();key=private_key(a.key_file)
+    if a.format=='v2':
+        from app.recovery_stream import create as create_stream,restore as restore_stream
     if a.action=='create':
         if not a.manifest:p.error('create requires --manifest')
         spec=json.loads(a.manifest.read_text())
-        result=create(spec['sources'],a.bundle,key,source_commit=spec['source_commit'],
-                      quiescence_reference=spec['quiescence_reference'],require_complete=True)
+        result=(create_stream(spec['sources'],a.bundle,key,source_commit=spec['source_commit'],quiescence_reference=spec['quiescence_reference'])
+                if a.format=='v2' else create(spec['sources'],a.bundle,key,source_commit=spec['source_commit'],
+                      quiescence_reference=spec['quiescence_reference'],require_complete=True))
     else:
         if not a.destination:p.error('restore requires --destination')
-        result=restore(a.bundle,a.destination,key,
+        result=(restore_stream if a.format=='v2' else restore)(a.bundle,a.destination,key,
                        broker_escrow_key=private_key(a.broker_key_file) if a.broker_key_file else None)
     print(json.dumps(result));return 0
 

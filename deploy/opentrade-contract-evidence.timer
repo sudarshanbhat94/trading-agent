@@ -1,0 +1,10 @@
+[Unit]
+Description=Reviewable instrument evidence import before NSE session
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:30:00 Asia/Kolkata
+Persistent=true
+Unit=opentrade-contract-evidence.service
+
+[Install]
+WantedBy=timers.target

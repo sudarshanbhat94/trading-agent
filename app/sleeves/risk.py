@@ -73,6 +73,7 @@ class Allocation:
     risk_amount: float
     reason: str = "ok"
     cash_required: float = 0.0
+    funding: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -174,17 +175,54 @@ class RiskManager:
                     or shares * cand.entry * (1 + SLIPPAGE) + entry_charge(
                         shares * cand.entry * (1 + SLIPPAGE), cand.product) > book.cash + 1e-9):
                 shares -= 1
+        # These facts come from the same constraints and final whole-share
+        # quantity used above. Explaining a refusal must not create a second
+        # allocator or loosen a stop, fee assumption, or account limit.
+        def cash_for(qty):
+            value = qty * cand.entry * (1 + SLIPPAGE)
+            return value + (entry_charge(value, cand.product) if cand.instrument == 'EQ' else 0)
+
+        def loss_for(qty):
+            return (stop_loss_including_costs(cand.entry, cand.stop, qty, cand.product)
+                    if cand.instrument == 'EQ' else qty * rps)
+
+        minimum_qty = max(1, math.ceil(self.s.min_ticket / cand.entry))
+        limits = [('cash', cash_for(1), book.cash, 'cash including entry charges'),
+                  ('stop_risk', loss_for(1), risk_budget, 'after-cost stop-risk allowance'),
+                  ('position_allocation', cand.entry, by_slot * cand.entry, 'position allocation'),
+                  ('sleeve_allocation', cand.entry, sleeve_room, 'remaining sleeve allocation'),
+                  ('deployment', cand.entry, by_deployment * cand.entry, 'remaining deployment allowance')]
+        blockers = [dict(code=code, required=round(required, 2), available=round(available, 2),
+                         reason=f'One share needs Rs {required:.2f}; {label} is Rs {available:.2f}')
+                    for code, required, available, label in limits if required > available + 1e-9]
+        funding = dict(version='account-funding-v1', cash_available=round(book.cash, 2),
+            risk_budget=round(risk_budget, 2), position_notional_limit=round(by_slot * cand.entry, 2),
+            sleeve_notional_remaining=round(sleeve_room, 2),
+            deployment_remaining=round(by_deployment * cand.entry, 2),
+            minimum_ticket=round(self.s.min_ticket, 2), minimum_ticket_qty=minimum_qty,
+            one_share_cash_required=round(cash_for(1), 2),
+            one_share_stop_loss=round(loss_for(1), 2),
+            minimum_ticket_cash_required=round(cash_for(minimum_qty), 2),
+            minimum_ticket_stop_loss=round(loss_for(minimum_qty), 2),
+            max_quantity=shares, max_notional=round(shares * cand.entry, 2),
+            cash_required=round(cash_for(shares), 2) if shares else 0.,
+            estimated_stop_loss=round(loss_for(shares), 2) if shares else 0., blockers=blockers)
         if shares < 1:
             return Allocation(cand, 0, 0.0, 0.0,
                               f"sizes to <1 share after stop, fees and slippage "
-                              f"(risk Rs {risk_budget:.0f}, price Rs {cand.entry:.2f})")
+                              f"(risk Rs {risk_budget:.0f}, price Rs {cand.entry:.2f}). "
+                              + '; '.join(b['reason'] for b in blockers), funding=funding)
 
         notional = shares * cand.entry
         if notional < self.s.min_ticket:
+            funding['blockers'].append(dict(code='minimum_ticket', required=self.s.min_ticket,
+                available=round(notional, 2), reason=f'Maximum funded ticket Rs {notional:.2f} is below '
+                    f'Rs {self.s.min_ticket:.2f}; {minimum_qty} shares need cash Rs '
+                    f'{cash_for(minimum_qty):.2f} and stop risk Rs {loss_for(minimum_qty):.2f}'))
             return Allocation(cand, 0, notional, 0.0,
                               f"ticket Rs {notional:.0f} below Rs "
                               f"{self.s.min_ticket:.0f} minimum — flat charges "
-                              f"would dominate")
+                              f"would dominate", funding=funding)
 
         # the move on offer must beat the round trip by a sensible margin
         if cand.target and cand.sleeve != "manual":
@@ -194,14 +232,16 @@ class RiskManager:
                 sell = shares * cand.target * (1 - SLIPPAGE)
                 edge = (sell - buy - round_trip(buy, sell, cand.product)) / buy * 100
             if edge < self.s.min_edge_pct:
+                funding['blockers'].append(dict(code='net_edge', required=self.s.min_edge_pct,
+                    available=round(edge, 2), reason='After-cost target return is below the existing minimum'))
                 return Allocation(cand, 0, notional, 0.0,
                                   f"target offers {edge:.1f}% < {self.s.min_edge_pct:.1f}% "
-                                  f"minimum edge")
+                                  f"minimum edge", funding=funding)
 
         loss = (stop_loss_including_costs(cand.entry, cand.stop, shares, cand.product)
                 if cand.instrument == "EQ" else shares * rps)
         required = notional * (1 + SLIPPAGE) + entry_charge(notional * (1 + SLIPPAGE), cand.product)
-        return Allocation(cand, shares, notional, loss, cash_required=required)
+        return Allocation(cand, shares, notional, loss, cash_required=required, funding=funding)
 
     # -- the pass ---------------------------------------------------------
     def allocate(self, candidates: list[Candidate], book: BookState) -> list[Allocation]:

@@ -16,7 +16,7 @@ def main():
         result=dict(go=False,decision='NO-GO',failures=['Valid reviewed evidence file unavailable'])
     dirty=subprocess.check_output(['git','status','--porcelain','--untracked-files=all','--',
                                   'app','scripts','tests','deploy','.github','requirements.txt',
-                                  'requirements-dev.txt','Dockerfile'],text=True).strip()
+                                  'requirements-dev.txt','requirements.lock','requirements-dev.lock','Dockerfile'],text=True).strip()
     if dirty:
         result.update(go=False,decision='NO-GO',certified_scopes=[])
         result['failures'].append('release source contains uncommitted changes')

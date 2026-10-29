@@ -8,6 +8,8 @@ Description=Refresh OpenTrade daily candles after each market close
 OnCalendar=Mon..Fri 10:30 UTC
 OnCalendar=Mon..Fri 18:40 UTC
 OnCalendar=Mon..Fri 20:30 UTC
+# Reconcile overnight listings/ISIN changes and backfill before the next open.
+OnCalendar=Mon..Fri 02:40 UTC
 Persistent=true
 
 [Install]

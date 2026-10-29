@@ -1,6 +1,6 @@
 """Timestamped inputs at the production boundary, independent of strategy rules."""
 import math
-from datetime import datetime, timezone
+from datetime import datetime
 
 
 def fresh_quotes(quotes, now, max_age_seconds=120):
@@ -8,11 +8,11 @@ def fresh_quotes(quotes, now, max_age_seconds=120):
     for symbol, quote in quotes.items():
         try:
             ts = datetime.fromisoformat(str(quote["ts"]).replace("Z", "+00:00"))
-            if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=timezone.utc)
+            if ts.tzinfo is None or isinstance(quote['price'], bool):
+                continue
             age = (now - ts).total_seconds()
             price = float(quote["price"])
-            if -5 <= age <= max_age_seconds and math.isfinite(price) and price > 0:
+            if 0 <= age <= max_age_seconds and math.isfinite(price) and price > 0:
                 out[symbol] = quote
         except (KeyError, TypeError, ValueError):
             continue

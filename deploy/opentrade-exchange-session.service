@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenStocks sourced NSE cash session status
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/opentrade
+EnvironmentFile=/opt/opentrade/.env
+ExecStart=/opt/opentrade/.venv/bin/python scripts/refresh_exchange_session.py --db /opt/opentrade/var/trading_agent.db --market-db /opt/opentrade/var/trading_agent.db --archive /opt/opentrade/var/exchange-session-source
+TimeoutStartSec=40s
+Nice=10

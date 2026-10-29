@@ -4,26 +4,31 @@
   "production_build": "2b300b4",
   "production_repaired": false,
   "full_unittest": {
-    "run": 2321,
-    "passed": 2188,
+    "run": 2578,
+    "passed": 2445,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 129.423,
-    "note": "Final frozen-source run after authorization fixtures, paid-route mapping, native recovery and worker fencing fixes."
+    "seconds": 20.106,
+    "note": "Final financial-history/cached API/decision-time source; disposable databases, dotenv disabled and external sockets blocked"
   },
   "additional_checks": {
     "retired_entry_controls": 2,
-    "function_fixtures": 102,
+    "function_fixtures": 103,
     "wire_mock": 13,
     "paper_rehearsal": "passed",
     "final_ledger_performance_api_controls": 16,
     "approved_paper_rehearsal": "4 passed; isolated",
     "approved_order_api": "3 passed",
     "account_ui": "4 passed",
-    "native_stop_fault_tests": "11 passed",
-    "journal_observations": "3 passed"
+    "native_stop_fault_tests": "Extended obligation/quantity/cancel/trigger/takeover/restart/identity tests pass; actual broker certification still open.",
+    "journal_observations": "3 passed",
+    "paper_exchange_simulation": "nse-top-depth-next-event-aon-v1",
+    "catalogue_outage_protection": "production-cycle test passed",
+    "persistent_login_guard": "6 invariant tests passed",
+    "runtime_setting_preservation": "No-op preserves all rows; genuine single-key change changes one row",
+    "secret_hygiene": "4 staged-public-source checks passed"
   },
   "initial_full_run": {
     "run": 2268,
@@ -34,18 +39,23 @@
   },
   "browser": {
     "scope": "isolated actual Tracking component functions",
-    "data": "synthetic",
+    "data": "synthetic account/session/calendar/quotes; selected real production API handlers",
     "viewport_mobile": {
       "width": 390,
       "height": 844,
       "horizontal_overflow": false
     },
     "production_journeys_certified": false,
-    "approved_paper_scope": "actual account UI components + selected production handlers; synthetic session/book/calendar/quotes",
+    "approved_paper_scope": "Actual shared account/order components and selected real handlers; disposable synthetic session/calendar/full-depth quotes; pending then later fill then later-bid exit",
     "approved_paper_mobile_width": 390,
     "approved_paper_horizontal_overflow": false,
     "actual_paper_fixture_close": true,
-    "full_production_journeys_certified": false
+    "full_production_journeys_certified": false,
+    "current_mobile_proof": "ui-evidence/exchange-lifecycle-mobile-2026-10-07.png",
+    "cancelled_buy_stays_cancelled_after_later_depth": true,
+    "cancelled_fixture_cash_equity": 10000,
+    "cancelled_fixture_positions": 0,
+    "cancellation_proof": "ui-evidence/exchange-cancel-desktop-2026-10-07.png"
   },
   "real_orders": 0,
   "production_resets": 0,
@@ -53,14 +63,14 @@
   "profitability_established": false,
   "commercial_readiness": "NO-GO",
   "previous_milestone_full_unittest": {
-    "run": 2279,
-    "passed": 2146,
+    "run": 2511,
+    "passed": 2378,
     "skipped": 133,
     "failures": 0,
     "errors": 0,
     "exit_code": 0,
-    "seconds": 123.313,
-    "note": "Final broad run with localhost mock binding allowed. Two legacy-control tests and explicit currency/current-snapshot labels were subsequently added; 16 focused ledger/performance/API/control checks passed. No strategy parameters changed."
+    "seconds": 19.932,
+    "note": "Frozen source after provider-time, exact-depth, conflict and provider-to-paper regressions; package-aware external HTTP isolation."
   },
   "resumed_initial_full_run": {
     "run": 2311,
@@ -72,13 +82,529 @@
   },
   "paper_snapshot": {
     "budget": 10000,
-    "cash": 10000,
-    "equity": 10000,
+    "cash": 10000.0,
+    "equity": 10000.0,
     "positions": 0,
     "realised": 0,
     "epoch": "2026-09-22T13:34:11.273061+00:00",
     "read_only": true,
-    "peak_drawdown_keys": "unavailable in queried deployed report"
+    "peak_drawdown_keys": "unavailable in queried deployed report",
+    "protocol_sha256": "1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2",
+    "observed_date": "2026-10-07",
+    "checked_at": "2026-10-07T04:13:02.585047+00:00",
+    "build": "2b300b4e7de90157362f104bf3654de7cde6215e",
+    "capital": 10000.0,
+    "closed_trades": 0,
+    "house_positions": 0,
+    "regime": null,
+    "production_modified": false
   },
-  "entire_release_plan_complete": false
+  "entire_release_plan_complete": false,
+  "working_parent": "a1042df84d1fbb020f0ed8cc24e7b6d4ffcc2f5b",
+  "refreshed_at": "2026-10-07T09:56:32.194158+00:00",
+  "this_turn_initial_full_run": {
+    "run": 2353,
+    "failures": 3,
+    "errors": 1,
+    "exit_code": 1,
+    "note": "Sandbox loopback bind refused; missing legacy catalogue fixtures; actual no-fixed-target sentinel incorrectly refused. Repaired before final run."
+  },
+  "this_turn_before_final_run": {
+    "run": 2375,
+    "failures": 2,
+    "errors": 0,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "Old manual-route source assertion and UTC date fixture after IST midnight; both corrected without changing risk/strategy rules."
+  },
+  "functions": {
+    "passed": 102,
+    "exit_code": 0,
+    "seconds": 0.91
+  },
+  "dependencies": {
+    "locked_packages": 39,
+    "active_known_osv_advisories": 0,
+    "patched_distinct_vulnerabilities": 4,
+    "anyio": "4.14.2",
+    "starlette": "1.3.1",
+    "linux_python312_hash_wheel_dry_run": "passed",
+    "actual_linux_ci_result": "pending exact pushed build"
+  },
+  "test_isolation": {
+    "temporary_runtime": true,
+    "external_http_blocked": true,
+    "initial_defect": "Initial focused test imported runtime defaults before isolated overrides; touched local synthetic accounts and attempted failed notification HTTP; interrupted and fixed. No production mutation or confirmed delivered message."
+  },
+  "billing_atomicity": {
+    "historical_parent": "8abd708ecc37c3b581997cc3268940ee602e6046",
+    "historical_reproduced": true,
+    "current_repaired": true,
+    "fixture": "billing-safety-reproduction.json"
+  },
+  "source_edited_during_final_run": false,
+  "previous_same_turn_frozen_run": {
+    "run": 2375,
+    "passed": 2242,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 17.347,
+    "note": "Frozen-source final run; localhost-only mock broker wire fixtures allowed; temporary databases and blocked external test HTTP."
+  },
+  "previous_full_unittest_ef60987": {
+    "run": 2375,
+    "passed": 2242,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 17.931,
+    "note": "Final source after malformed false/empty request-key refusal; real sourced catalogue/risk integration; temporary databases; external test HTTP blocked; localhost mock broker transport only."
+  },
+  "next_session_initial_full_run": {
+    "run": 2392,
+    "failures": 1,
+    "errors": 2,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "Missing entitlement mapping and new fixture view override not restored; both fixed before final run."
+  },
+  "next_session": {
+    "source_records": 74802,
+    "cash_discovery_contracts": 2685,
+    "execution_evidence_supplied": false,
+    "official_source_day": "2026-10-06",
+    "browser_cold_import_failure_repaired": true,
+    "mobile_horizontal_overflow": false,
+    "production_copy_upgrade": {
+      "capital": 10000.0,
+      "cash": 10000.0,
+      "epoch_preserved": true,
+      "equity": 10000.0,
+      "legacy_columns_and_rows_preserved": true,
+      "missing_contract_evidence_refused": true,
+      "open_positions": 0,
+      "preflight_status": "blocked",
+      "production_modified": false,
+      "real_orders": 0,
+      "realised": 0.0,
+      "status": "passed"
+    },
+    "deployed_changes": 0
+  },
+  "forward_experiment": {
+    "publications": 10,
+    "unique_stocks": 9,
+    "confirmed_shadow_fills": 0,
+    "baseline_shadow_fills": 0,
+    "completed_outcomes": 0,
+    "shadow_cash": 10000,
+    "shadow_equity": 10000,
+    "profitability_established": false,
+    "observed_date": "2026-10-07"
+  },
+  "previous_full_unittest_9f526de": {
+    "run": 2392,
+    "passed": 2259,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 18.307,
+    "note": "Frozen source after safety-route entitlement mapping and isolated fixture global restoration; temporary databases and localhost mock transports only."
+  },
+  "paper_candidate_initial_run": {
+    "run": 2398,
+    "skipped": 133,
+    "errors": 1,
+    "failures": 0,
+    "exit_code": 1,
+    "reason": "Sandbox denied localhost HTTP fixture; not an application regression"
+  },
+  "paper_candidate": {
+    "migration": {
+      "account_scope": [
+        "auth_sessions",
+        "runtime_settings",
+        "settings",
+        "subscription_receipts",
+        "subscription_requests",
+        "subscriptions",
+        "user_preferences",
+        "user_settings",
+        "users"
+      ],
+      "checked_at": "2026-10-06T19:54:53.084427+00:00",
+      "coordinated_backup": false,
+      "deployment_authorized": false,
+      "execution_disabled": true,
+      "paper": {
+        "capital": 10000.0,
+        "cash": 10000.0,
+        "epoch": "2026-09-22T13:34:11.273061+00:00",
+        "equity": 10000.0,
+        "open_positions": 0
+      },
+      "paper_scope": "all pre-existing tables/columns/rows",
+      "preserved_tables": {
+        "accounts.db": 2,
+        "paper.db": 18
+      },
+      "production_modified": false,
+      "protocol_sha256": "1264f57f0f6838cc65991cd56bef7d1b7e0b417a99935d516316b86e302802d2",
+      "real_orders": 0,
+      "release_certified": false,
+      "status": "passed"
+    },
+    "boot": {
+      "app_startup": "passed",
+      "unauthenticated_positions_http": 401,
+      "paper": {
+        "capital": 10000.0,
+        "cash": 10000.0,
+        "equity": 10000.0,
+        "positions": 0
+      },
+      "outbound_http_blocked": true,
+      "workers_started": false,
+      "real_orders": 0,
+      "production_modified": false
+    },
+    "production_dependencies_modified": false,
+    "stage_runtime_dependencies_hash_pinned": true,
+    "source_hashes_matched": true,
+    "execution_disabled": true,
+    "production_cutover": false
+  },
+  "runtime_initial_full_run": {
+    "run": 2438,
+    "failures": 10,
+    "errors": 1,
+    "skipped": 133,
+    "exit_code": 1,
+    "note": "Old instant-fill/retired fan-out expectations, missing route mappings and sandbox socket refusal; repaired meaningful fixture expectations and route controls before final run."
+  },
+  "durable_paper_candidate": {
+    "archive_sha256": "34bef65ac88daababcefe05a5717ccab2b5776714e133a1a99f887b4afa5b85e",
+    "source_files_verified": 407,
+    "hash_pinned_oci_runtime": true,
+    "production_copy_migration": {
+      "passed": true,
+      "original_paper_tables": 18,
+      "original_selected_account_tables": 2,
+      "original_values_preserved": true,
+      "epoch_protocol_preserved": true
+    },
+    "boot": {
+      "status": "passed",
+      "actual_app_startup": true,
+      "unauthenticated_positions": 401,
+      "capital": 10000,
+      "cash": 10000,
+      "equity": 10000,
+      "positions": 0,
+      "original_values_preserved": true,
+      "outbound_http_blocked": true,
+      "workers_disabled": true,
+      "production_modified": false,
+      "real_orders": 0
+    },
+    "earlier_failures": [
+      {
+        "kind": "harness",
+        "reason": "Attempted to patch optional requests library absent from pinned runtime; use installed HTTP/socket boundaries instead."
+      },
+      {
+        "kind": "application",
+        "reason": "Actual startup rewrote 234 runtime-setting timestamps with zero changed values; conditional no-op UPSERT repaired, then fresh-copy startup preserved all checked rows."
+      }
+    ],
+    "production_cycle_executed": false,
+    "production_ui_certified": false,
+    "deployed": false,
+    "trading_schema": "v5",
+    "original_calendar_and_sourced_sessions": true,
+    "actual_app_startup": true,
+    "original_values_preserved": true,
+    "source_document_scope": "All 407 app/scripts/tests files match the isolated OCI code archive; documentary follow-up records its observed result separately."
+  },
+  "previous_full_unittest_ed9a03a": {
+    "run": 2453,
+    "passed": 2320,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.221,
+    "note": "Final frozen source after actual OCI startup reproduced no-op configuration timestamp rewriting; invariant repair and full permitted mock suite passed."
+  },
+  "session_boundary_reproduction": {
+    "before_repair_closed_session_fill": true,
+    "after_repair_closed_session_fill": false,
+    "after_repair_owned_positions": 1,
+    "focused_checks": 42,
+    "first_focused_failures": 1,
+    "reason": "Initial sourced-cache repair exposed sub-millisecond source ordering; exact timestamp selector repaired before the final pass.",
+    "production_modified": false
+  },
+  "previous_durable_paper_candidate": {
+    "archive_sha256": "34bef65ac88daababcefe05a5717ccab2b5776714e133a1a99f887b4afa5b85e",
+    "source_files_verified": 407,
+    "hash_pinned_oci_runtime": true,
+    "production_copy_migration": {
+      "passed": true,
+      "original_paper_tables": 18,
+      "original_selected_account_tables": 2,
+      "original_values_preserved": true,
+      "epoch_protocol_preserved": true
+    },
+    "boot": {
+      "status": "passed",
+      "actual_app_startup": true,
+      "unauthenticated_positions": 401,
+      "capital": 10000,
+      "cash": 10000,
+      "equity": 10000,
+      "positions": 0,
+      "original_values_preserved": true,
+      "outbound_http_blocked": true,
+      "workers_disabled": true,
+      "production_modified": false,
+      "real_orders": 0
+    },
+    "earlier_failures": [
+      {
+        "kind": "harness",
+        "reason": "Attempted to patch optional requests library absent from pinned runtime; use installed HTTP/socket boundaries instead."
+      },
+      {
+        "kind": "application",
+        "reason": "Actual startup rewrote 234 runtime-setting timestamps with zero changed values; conditional no-op UPSERT repaired, then fresh-copy startup preserved all checked rows."
+      }
+    ],
+    "production_cycle_executed": false,
+    "production_ui_certified": false,
+    "deployed": false,
+    "trading_schema": "v5",
+    "original_calendar_and_sourced_sessions": true,
+    "actual_app_startup": true,
+    "original_values_preserved": true,
+    "source_document_scope": "All 407 app/scripts/tests files match the isolated OCI code archive; documentary follow-up records its observed result separately."
+  },
+  "previous_native_milestone_full_unittest": {
+    "run": 2463,
+    "passed": 2330,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.592,
+    "note": "Frozen final source after reproduced closed-session exit and source timestamp precision repairs."
+  },
+  "native_protection_review": {
+    "new_regressions": 32,
+    "capability_regression": 1,
+    "completed_child_recovery": "authenticated owner-bound observations; no notification fill inference",
+    "read_only_socket_wire": "actual localhost frames passed; book unchanged; zero submissions",
+    "live_certified": false,
+    "production_deployed": false,
+    "schema": "trading-schema-v6",
+    "report": "../broker-protection-review-2026-10-07.md",
+    "final_oci_source": {
+      "archive_sha256": "7776a04b7bf6e0d5c0f140ae8e945e9a6f0f6aabf902755e9e21278f115104b4",
+      "files": 441,
+      "fresh_v6_copy_migration": "passed",
+      "final_actual_app_boot": "passed; exact final source boot reverified all original values on the fresh migrated v6 copies",
+      "production_modified": false
+    }
+  },
+  "previous_full_unittest_984d36a": {
+    "run": 2496,
+    "passed": 2363,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 19.736,
+    "note": "Frozen final code after capability truth and indistinguishable priced-lot safety repairs; package-aware isolation."
+  },
+  "reconciliation_snapshot_review": {
+    "parent": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "new_checks": 6,
+    "parent_regressions": "failed: 7 assertions across 6 tests (three malformed-evidence subcases)",
+    "focused_checks": 40,
+    "function_fixtures": 102,
+    "live_certified": false,
+    "deployed": false,
+    "production_modified": false,
+    "profitability_evidence": false,
+    "earlier_runner_error": "Guessed pytest paths did not exist; no tests ran. Correct scripts/run_function_tests.py invocation passed 102 fixtures.",
+    "final_oci_source": {
+      "source_files_verified": 442,
+      "archive_sha256": "eabe4bfca5a55ea5e1017b9be26f822cd9a68f0bbaa7f3245adb106501b96f5a",
+      "regression_exit": 0,
+      "boot_exit": 0,
+      "production_modified": false,
+      "real_orders": 0,
+      "boot": {
+        "status": "passed",
+        "actual_app_startup": true,
+        "unauthenticated_positions": 401,
+        "capital": 10000,
+        "cash": 10000,
+        "equity": 10000,
+        "positions": 0,
+        "original_values_preserved": true,
+        "outbound_http_blocked": true,
+        "workers_disabled": true,
+        "production_modified": false,
+        "real_orders": 0
+      }
+    }
+  },
+  "ci_984d36a": {
+    "commit": "984d36a0770950b1280bbcd5a9cbf1992adf0419",
+    "run_url": "https://github.com/sudarshanbhat94/trading-agent/actions/runs/37586662237",
+    "status": "success",
+    "jobs": [
+      "unittest (3.12)",
+      "unittest (3.14)",
+      "dependencies"
+    ]
+  },
+  "previous_full_unittest_de4fb8a": {
+    "run": 2502,
+    "passed": 2369,
+    "skipped": 133,
+    "failures": 0,
+    "errors": 0,
+    "exit_code": 0,
+    "seconds": 21.233,
+    "note": "Frozen runtime source after six exact-parent reconciliation regressions; package-aware isolation."
+  },
+  "executable_depth_review": {
+    "parent": "de4fb8a5ee345a13e1e1f85f1d04a3b65e41031b",
+    "new_checks": 9,
+    "focused_checks": 29,
+    "parent_regressions": {
+      "run": 7,
+      "failures": 4,
+      "errors": 2,
+      "exit_code": 1,
+      "note": "Two millisecond-input subcases error; distinct ordering, conflict, rollback and concurrency assertions fail."
+    },
+    "account_schema": "account-schema-v4",
+    "function_fixtures": 102,
+    "paper_fault_rehearsal": "passed; balanced ledger, zero duplicate/ownership errors/negative cash, zero broker orders",
+    "final_oci_source": {
+      "source_files_verified": 443,
+      "archive_sha256": "e66200cc1affc8f61c3093d48421a5d0a3caf6e40358ec2a49b99cf2ff017f62",
+      "production_modified": false,
+      "real_orders": 0,
+      "regression_exit": 0,
+      "migration_exit": 0,
+      "boot_exit": 0,
+      "boot": {
+        "status": "passed",
+        "actual_app_startup": true,
+        "unauthenticated_positions": 401,
+        "original_values_preserved": true,
+        "outbound_http_blocked": true,
+        "workers_disabled": true,
+        "production_modified": false,
+        "real_orders": 0,
+        "paper_values_preserved": true
+      }
+    },
+    "production_modified": false,
+    "deployed": false,
+    "profitability_evidence": false,
+    "interim_fixture_error": "Provider-to-paper fixture initially put source time after the real observation clock. Fixed the fixture with an explicit deterministic observation clock; production future rejection was retained.",
+    "source_probe": "One current public NSE master request from OCI timed out; no source archive or invented rules imported."
+  },
+  "official_research_capture_20261007": {
+    "source_parent": "2c1a185955af00509d2ebd080a996226c6e0f8c4",
+    "research_behaviour_changed": true,
+    "production_strategy_parameters_changed": false,
+    "exact_parent": {
+      "test_methods": 5,
+      "failed_assertions": 5,
+      "errors": 0
+    },
+    "focused": {
+      "run": 37,
+      "exit_code": 0
+    },
+    "full_suite": {
+      "run": 2537,
+      "passed": 2404,
+      "skipped": 133,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 20.237,
+      "exit_code": 0
+    },
+    "actual_source_acceptance": false,
+    "licensed_fixture_available": false,
+    "source_probe_status": "bounded public-source timeouts; no invented acceptance",
+    "paper_books_and_registered_protocol_modified": false,
+    "execution_enabled": false,
+    "deployed": false,
+    "report": "reports/official-research-review-2026-10-07.md",
+    "function_fixtures": {
+      "passed": 102,
+      "exit_code": 0
+    },
+    "exact_runtime_commit": "424d7b475cebefb83aeed94156cb6c9cd93deaf8",
+    "ci_run": "https://github.com/sudarshanbhat94/trading-agent/actions/runs/37609794425",
+    "ci_status": "success"
+  },
+  "ideas_engine_data_milestone": {
+    "report": "reports/ideas-engine-data-hardening-2026-10-07.md",
+    "hashes": {
+      "app/screening/store.py": "050fc4a9109000a6be59f5bf27c3cb3cc5a3e3ba9383fdd0dc57f5cbe2a1c0e0",
+      "app/screening/screen.py": "8965973187ae47d6f73b5686ec3cb827cdc904aa4d661ce472c5644f68a74937",
+      "app/screening/plans.py": "a774ec51652b67da7a1104c401d14449f398c8bc42a88121694e6a0bf8f38651",
+      "app/sleeves/feeds.py": "971782b23047a554abf041c8adfb856f41d54f4bb94e023aecc869786f49eb8f",
+      "tests/test_screening_data_contract.py": "a579c8575ae492c322ab9d19fb50d3a2e47761e902c4cc78c2a8a0058cd0e407"
+    },
+    "broker_scope": [
+      "upstox"
+    ],
+    "new_regression_methods": 15,
+    "function_fixtures": 102,
+    "paper_rehearsal": "passed; synthetic; no actual broker orders",
+    "production_changed": false,
+    "model_promoted": false
+  },
+  "financial_history_contract": {
+    "parent": "bea2fc629e80a54d72d8fc10affff9fd02ea55ed",
+    "findings": [
+      "F75",
+      "F28"
+    ],
+    "new_unit_methods": 18,
+    "focused_passed": 101,
+    "subtests_passed": 48,
+    "source_hashes": {
+      "app/screening/financials.py": "e929329edfbf410b7a0c821eac3c1c1bb58fdc76c41a55e31b84c5b9cac66ecc",
+      "app/screening/providers.py": "13c5d0287db29e693ae24aaebd2acf6140a64af442f1bf284a342f730f5d6adf",
+      "app/screening/screen.py": "d1b935fe7a20b91fa16979add7ab598fd31b10e4746bce615734e7c6f47ceeeb",
+      "app/screening/store.py": "8709a87c6dbe710a58296d0b246f2373c734c70eb07fdc76cc19042fd0914aa1",
+      "app/screening/selection.py": "bde1360665acbc003c4924162ac65808ac90d5da56b981689c9fbe01511b615c",
+      "app/screening/plans.py": "0a2468af4c4cb44d4b887ee8e98dbc1d0fa8159b5ba7c39f5a2e045fd8f0f271",
+      "app/screening/confirmation.py": "96b41603f36a7bba4d9e12032c41eba56c498e7513fa57821c32885351319acc",
+      "scripts/evidence_screen.py": "34f9ac9abe80bd13e8d6dd636b50dceb3f34adf2a131f41b58b026144350460d",
+      "tests/test_financial_history_contract.py": "a4865e6a55d6763e28ef24c649b35951d59a1c29e8ee813c0929bdeb2ae676fe",
+      "tests/test_stock_plans.py": "1eea1646a0c4ff9eb3899cfd639bd8a47c682faf0f78a95457ca7fbeebe01989"
+    },
+    "source_acceptance": false,
+    "source_probe": "Bounded official raw acquisitions timed out; secondary schema probe failed HTTP; no fabricated receipt",
+    "production_repaired": false,
+    "book_and_protocol_unchanged": true,
+    "revised_boundary_class_passed": 18,
+    "boundary_subtests": 24
+  }
 }

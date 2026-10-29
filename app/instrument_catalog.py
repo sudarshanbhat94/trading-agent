@@ -115,9 +115,13 @@ def ensure_schema(con):
 def import_snapshot(con, instruments, *, provider, source, source_day, observed_at, now=None):
     now = now or datetime.now(timezone.utc)
     observed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
-    if observed.tzinfo is None or observed > now or date.fromisoformat(source_day) > observed.date():
-        raise InstrumentError("source observation is naive or in the future")
     rows = [(spec, str(key)) for spec, key in instruments]
+    # Indian beginning-of-day masters are dated in IST. At 00:30 IST their
+    # calendar day is already tomorrow in UTC; it is not future evidence.
+    source_zone = timezone(timedelta(hours=5, minutes=30)) if rows and all(
+        spec.venue in {'NSE', 'BSE', 'MCX'} for spec, _ in rows) else timezone.utc
+    if observed.tzinfo is None or observed > now or date.fromisoformat(source_day) > observed.astimezone(source_zone).date():
+        raise InstrumentError("source observation is naive or in the future")
     if not rows or not provider or not source or any(not key for _, key in rows):
         raise InstrumentError("empty or unattributed catalogue")
     if len({s.id for s, _ in rows}) != len(rows) or len({key for _, key in rows}) != len(rows):
@@ -139,8 +143,16 @@ def resolve(con, *, instrument_id=None, symbol=None, venue=None, segment=None, p
     snapshot = con.execute("SELECT id,observed_at,source_day FROM instrument_snapshots WHERE provider=? "
                            "AND julianday(observed_at)<=julianday(?) ORDER BY julianday(observed_at) DESC LIMIT 1",
                            (provider, now.isoformat())).fetchone()
-    if not snapshot or now - datetime.fromisoformat(snapshot[1].replace("Z", "+00:00")) > timedelta(hours=25) or \
-            (now.date() - date.fromisoformat(snapshot[2])).days > 1:
+    source_stale = True
+    if snapshot:
+        source_day = date.fromisoformat(snapshot[2])
+        today = now.astimezone(timezone(timedelta(hours=5, minutes=30))).date() if provider in {'upstox','upstox-discovery'} else now.date()
+        if provider == 'upstox':
+            from .nse_cash_contract_feed import previous_session
+            source_stale = source_day not in {today, previous_session(today)}
+        else:
+            source_stale = not 0 <= (today-source_day).days <= 1
+    if not snapshot or now - datetime.fromisoformat(snapshot[1].replace("Z", "+00:00")) > timedelta(hours=25) or source_stale:
         raise InstrumentError("dated instrument catalogue is missing or stale")
     sql, args = "SELECT payload,broker_key FROM instrument_contracts WHERE snapshot_id=?", [snapshot[0]]
     for field, value in (("instrument_id", instrument_id), ("symbol", symbol), ("venue", venue), ("segment", segment)):

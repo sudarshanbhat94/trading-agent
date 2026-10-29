@@ -41,3 +41,17 @@ def authorized(user_id,*,broker='upstox',venue='NSE',segment='NSE_EQ',product='D
         return True,''
     except (OSError,KeyError,ValueError,TypeError,AttributeError):
         return False,'Live execution authorization unavailable'
+
+
+def native_policy(user_id,product='D',now=None):
+    """Separate reviewed automatic coverage, never inferred from a linked token."""
+    allowed,_=authorized(user_id,product=product,model='native-protection',now=now)
+    if not allowed:return None
+    try:
+        evidence=json.loads(Path(os.environ['OPENSTOCKS_LIVE_RELEASE_EVIDENCE']).read_text())
+        policy=evidence['native_activation_policy']
+        if policy.get('activate_new_canonical_fills') is not True or not isinstance(policy.get('reference'),str) or not policy['reference'].strip() or \
+                not isinstance(policy.get('accounts'),list) or any(type(u) is not int for u in policy['accounts']) or user_id not in policy['accounts']:
+            return None
+        return dict(reference=policy['reference'],source_commit=evidence['source_commit'])
+    except (OSError,KeyError,ValueError,TypeError,AttributeError):return None

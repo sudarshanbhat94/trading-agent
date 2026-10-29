@@ -53,6 +53,8 @@ def record(con,kind,identity,payload,*,source,observed_at,effective_from,effecti
         if type(payload.get('open')) is not bool:raise InstrumentError('session status unknown')
         if payload['open'] and not start<=_moment(payload.get('opens_at'))<_moment(payload.get('closes_at'))<=end:
             raise InstrumentError('session times outside effective interval')
+        if 'fresh_until' in payload and not observed < _moment(payload['fresh_until']) <= end:
+            raise InstrumentError('invalid sourced session freshness window')
     text=json.dumps(payload,sort_keys=True,separators=(',',':'),allow_nan=False)
     values=(kind,identity,observed.isoformat(),start.isoformat(),end.isoformat(),source,text)
     evidence_id=hashlib.sha256(json.dumps(values).encode()).hexdigest()
@@ -63,15 +65,22 @@ def record(con,kind,identity,payload,*,source,observed_at,effective_from,effecti
 
 
 def _latest(con,kind,identity,now):
-    rows=con.execute('SELECT id,observed_at,payload FROM execution_contract_evidence WHERE kind=? AND identity=? '
+    # SQLite julianday rounds sub-millisecond source times. Use it only for a
+    # padded candidate search, then compare exact aware timestamps in Python.
+    before,after=now-timedelta(seconds=1),now+timedelta(seconds=1)
+    rows=con.execute('SELECT id,observed_at,payload,effective_from,effective_until FROM execution_contract_evidence WHERE kind=? AND identity=? '
                      'AND julianday(observed_at)<=julianday(?) AND julianday(effective_from)<=julianday(?) '
                      'AND julianday(effective_until)>julianday(?) ORDER BY julianday(observed_at) DESC',
-                     (kind,identity,now.isoformat(),now.isoformat(),now.isoformat())).fetchall()
+                     (kind,identity,after.isoformat(),after.isoformat(),before.isoformat())).fetchall()
+    rows=[r for r in rows if _moment(r[1])<=now and _moment(r[3])<=now<_moment(r[4])]
     if not rows:raise InstrumentError('dated '+kind+' evidence unavailable')
-    latest=_moment(rows[0][1]);tied=[r for r in rows if _moment(r[1])==latest]
+    latest=max(_moment(r[1]) for r in rows);tied=[r for r in rows if _moment(r[1])==latest]
     if len({r[2] for r in tied})!=1:raise InstrumentError('conflicting '+kind+' evidence')
     if kind=='rules' and now-latest>timedelta(hours=25):raise InstrumentError('contract rules are stale')
-    return rows[0][0],json.loads(rows[0][2])
+    payload=json.loads(tied[0][2])
+    if kind=='session' and 'fresh_until' in payload and now>=_moment(payload['fresh_until']):
+        raise InstrumentError('sourced exchange status is stale')
+    return tied[0][0],payload
 
 
 def protection_contract(con,*,instrument_id,quantity,price,provider='upstox',now=None):
@@ -102,4 +111,4 @@ def order_contract(con,*,instrument_id,quantity,price,provider='upstox',now=None
     session_id,session=_latest(con,'session',calendar,now)
     if not session['open'] or not _moment(session['opens_at'])<=now<_moment(session['closes_at']):
         raise InstrumentError('exchange session is closed')
-    return spec,key,dict(evidence,session_id=session_id)
+    return spec,key,dict(evidence,session_id=session_id,calendar=calendar)

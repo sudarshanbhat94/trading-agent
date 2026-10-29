@@ -133,8 +133,8 @@ OPTIONS = dict(options_today=25666.0, options_overall=27300.92, options_budget=1
 
 
 def _ideas():
-    """The sole production idea source: the monthly NIFTYBEES sleeve."""
-    return [dict(symbol="NIFTYBEES", strategy="index_directional",
+    """Illustrative individual-stock idea for layout checks; never production data."""
+    return [dict(symbol="ITC", strategy="quality_momentum",
                  published_date="2026-09-01", rank=1, tier="watch",
                  entry=267.88, atr=3.42, stop=200.91, t1=0, t2=0, t3=0,
                  qty=13, risk_amt=870.61, notional=3482.44,

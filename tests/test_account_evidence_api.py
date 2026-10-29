@@ -3,6 +3,7 @@ import hashlib
 import sqlite3
 import tempfile
 import unittest
+from tests.contract_storage_fixtures import ContractStorageCase
 from pathlib import Path
 from unittest.mock import patch
 from fastapi import FastAPI
@@ -13,7 +14,7 @@ from tests.test_idea_tracking import NOW,plan
 from tests.test_release_safety import quotes
 
 
-class AccountEvidenceAPITest(unittest.TestCase):
+class AccountEvidenceAPITest(ContractStorageCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.paper=self.root/'paper.db';self.tracker=self.root/'ideas.db'

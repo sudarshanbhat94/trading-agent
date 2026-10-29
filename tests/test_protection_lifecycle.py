@@ -31,6 +31,8 @@ class ProtectionLifecycleTest(unittest.TestCase):
             source='synthetic test only',observed_at=self.now.isoformat(),effective_from=self.now.isoformat(),
             effective_until=(self.now+timedelta(days=1)).isoformat())
         self.con.commit()
+        from app import entry_contracts
+        context=entry_contracts.using(self.con,self.now);context.__enter__();self.addCleanup(context.__exit__,None,None,None)
 
     def fill(self,qty=20,side='BUY',oid='entry'):
         order_journal.reconcile(self.con,2,[dict(order_id=oid,tag='intent',instrument_token='NSE_EQ|TEST',transaction_type=side,
@@ -48,6 +50,20 @@ class ProtectionLifecycleTest(unittest.TestCase):
         self.assertFalse(protection.report(self.con,2)['activation_automatic'])
         self.assertFalse(protection.report(self.con,2)['live_certified'])
         self.port.place_stop.assert_not_called()
+
+    def test_reviewed_automatic_coverage_requires_new_canonical_terminal_fill(self):
+        from app import entry_contracts,live_release
+        from app.account_safety import atomic
+        self.fill(5)
+        policy={'reference':'separately reviewed fixture only','source_commit':'a'*40}
+        with patch.object(live_release,'native_policy',return_value=policy):
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),0)  # Legacy/partial inventory is not adopted.
+            with atomic(self.con):entry_contracts.record(self.con,'broker',2,self.entry,{'synthetic':True})
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),0)
+            self.fill(20)
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),1)
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),0)
+            self.assertEqual(self.state(),'required');self.port.place_stop.assert_not_called()
 
     def test_timeout_and_restart_never_repeat_native_submission(self):
         self.fill();protection.request_native(self.con,2,self.entry,authorization_reference='isolated explicit approval')
@@ -79,6 +95,25 @@ class ProtectionLifecycleTest(unittest.TestCase):
         self.assertIn('native protection',result)
         self.fill(20,'SELL','native-exit');self.assertEqual(self.state(),'closed')
         self.assertTrue(protection.prepare_exit(self.con,2,'TEST',self.port))
+
+    def test_reviewed_partial_entry_cancels_once_and_waits_for_terminal_fills(self):
+        from app import entry_contracts
+        from app.account_safety import atomic
+        self.fill(7)
+        with atomic(self.con):entry_contracts.record(self.con,'broker',2,self.entry,{'fixture':True})
+        snapshot=dict(order_id='entry',instrument_token='NSE_EQ|TEST',transaction_type='BUY',product='D',filled_quantity=7,average_price=100,status='open')
+        with patch('app.live_release.native_policy',return_value={'reference':'isolated review','source_commit':'a'*40}), \
+                patch.object(broker,'cancel_order',side_effect=TimeoutError('fixture ambiguous cancel')) as cancel, \
+                patch.object(broker,'orders',return_value=[snapshot]):
+            self.assertEqual(protection.settle_partial_entries(self.con,2),1)
+            protection.settle_partial_entries(self.con,2)
+            self.assertEqual(cancel.call_count,1)
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),0)
+            self.assertEqual(self.state(),'app_only');self.assertTrue(protection.blocks_entry(self.con,2))
+            order_journal.reconcile(self.con,2,[dict(snapshot,status='cancelled')])
+            self.assertEqual(protection.activate_reviewed_fills(self.con,2),1)
+            self.assertEqual(self.state(),'required')
+        self.port.place_stop.assert_not_called()
 
     def test_missing_expired_changed_and_duplicate_native_evidence_block(self):
         self.native()

@@ -94,8 +94,8 @@ class BuyButtonTest(unittest.TestCase):
         self.assertIn("dec.reason", block)
         self.assertIn("Paper execution halted", block)
         self.assertNotIn("No ideas published yet today", block)
-        self.assertIn("NIFTYBEES close", block)
-        self.assertIn("200-session gate", block)
+        self.assertIn("Nifty 50 completed close", block)
+        self.assertIn("50-session market trend", block)
         self.assertIn("ideasTrack", block)
 
     def test_expired_session_does_not_leave_a_blank_ideas_page(self) -> None:
@@ -115,7 +115,7 @@ class BuyButtonTest(unittest.TestCase):
             allowance=2, cadence="monthly", capital=10000, source_sleeves=["index_directional", "quality_momentum"],
             decision=dict(state="STAND ASIDE", reason="regime OFF blocks Nifty exposure",
                           regime="OFF", breadth=36.6, asof="2026-09-22",
-                          diagnostics=dict(completed_close=266.64, sma200=277.5),
+                          market_context=dict(completed_close=23300, trend_mean=24000),
                           decisions=[dict(sleeve="quality_momentum", active=False, candidates=0,
                                           note="regime OFF blocks new stock longs",
                                           diagnostics=dict(verified_members=10, passed=1,

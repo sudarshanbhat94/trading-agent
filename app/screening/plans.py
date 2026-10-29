@@ -5,7 +5,6 @@ Price targets are risk multiples, not forecasts of where prices will go.
 All quantities are independent alternatives, using the existing paper allocator.
 """
 import math
-from dataclasses import replace
 from datetime import datetime, timezone
 
 from ..sleeves.base import Candidate
@@ -14,6 +13,8 @@ from ..sleeves.feeds import fresh_quotes
 from ..sleeves.risk import BookState, RiskManager, SLIPPAGE
 from ..costs import round_trip
 from .confirmation import POLICY
+from .selection import MODEL_VERSION, POLICY as SELECTION_POLICY, reject_reason
+from .health import discovery_health
 
 
 def account_state(con, uid, quotes, now):
@@ -51,7 +52,11 @@ def account_state(con, uid, quotes, now):
                        "AND market='IN' AND date>=?",(uid,epoch[:10])).fetchone()[0]
     book = BookState(stats["budget"],stats["cash"],deployed,len(positions),counts,
         stats["equity"],max(peak or 0.,stats["budget"],stats["equity"]),day_pnl,notionals,risk,strategic)
-    return book, ("Held-position quote or stop unavailable" if missing else "")
+    from ..paper_exchange import integrity_reason, reserved_state
+    issue = integrity_reason(con, allow_filling=False)
+    if not issue:
+        book = reserved_state(con, uid, epoch, book)
+    return book, ("Held-position quote or stop unavailable" if missing else issue)
 
 
 def _net(entry, target, qty):
@@ -60,11 +65,14 @@ def _net(entry, target, qty):
     return sell-buy-round_trip(buy,sell,"D")
 
 
-def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
+def shortlist(screen, book, quotes=None, now=None, book_error="", limit=3, *, _stage='entry', settings=None):
     now = now or datetime.now(timezone.utc)
-    allocator = RiskManager(replace(SLEEVES,capital=book.capital))
+    settings = settings or SLEEVES
+    # Sizing already uses book.capital. dataclasses.replace() would rerun
+    # SleeveSettings.__post_init__ and erase context-specific sleeve limits.
+    allocator = RiskManager(settings)
     marks = fresh_quotes(quotes or {},now)
-    rows, rejected, seen = [], [], set()
+    rows, rejected, seen, qualified = [], [], set(), []
     for row in screen.get("equities",[]):
         if row.get("symbol") in seen:
             continue
@@ -72,16 +80,16 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
         if book_error:
             rejected.append(dict(symbol=row.get("symbol"), reason=book_error))
             continue
-        if row.get("flags"):
-            rejected.append(dict(symbol=row["symbol"],reason="; ".join(row["flags"])))
+        reason = reject_reason(row, screen, now, stage=_stage)
+        if reason:
+            rejected.append(dict(symbol=row.get("symbol"),reason=reason))
             continue
+        if _stage == 'watch' and not reject_reason(row, screen, now):
+            # It belongs in Entry plans already, not twice in the same desk.
+            continue
+        qualified.append(row)
         m = row.get("metrics") or {}
         try:
-            if not (m.get("above50") and float(m.get("rs_vs_nifty20_pct") or 0)>0
-                    and float(m.get("return126_pct") or 0)>0
-                    and float(m.get("sector_rs20_pct") or 0)>0):
-                rejected.append(dict(symbol=row["symbol"],reason="Stock or sector momentum confirmation missing"))
-                continue
             close = float(m["price"])
             atr = close*float(m["atr_pct"])/100
             # Wait for a pullback; never prescribe buying the last close or a
@@ -100,7 +108,10 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
             rejected.append(dict(symbol=row.get("symbol"),reason="Entry and stop cannot be calculated"))
             continue
         if not allocation.ok:
-            rejected.append(dict(symbol=row["symbol"],reason=allocation.reason))
+            rejected.append(dict(symbol=row["symbol"], sector=row["sector"], score=float(row["score"]),
+                reason=allocation.reason, rejection_stage='funding', qualification=_stage,
+                entry_high=upper, stop=stop, funding=allocation.funding,
+                actionable=False, execution_ready=False))
             continue
         qty = allocation.shares
         quote = marks.get(row["symbol"])
@@ -114,31 +125,84 @@ def shortlist(screen, book, quotes=None, now=None, book_error="", limit=10):
         returns = [round(_net(upper,t,qty),2) for t in targets]
         if any(value <= 0 for value in returns):
             rejected.append(dict(symbol=row["symbol"],
-                reason="First target is not profitable after fees and slippage at this quantity"))
+                reason="First target is not profitable after fees and slippage at this quantity",
+                sector=row['sector'],score=float(row['score']),rejection_stage='economics',qualification=_stage,
+                entry_high=upper,stop=stop,funding=allocation.funding,actionable=False,execution_ready=False))
             continue
-        rows.append(dict(symbol=row["symbol"],sector=row["sector"],score=row["score"],
+        if _net(upper,targets[2],qty) < allocation.risk_amount*SELECTION_POLICY["min_net_r_at_final_target"]:
+            rejected.append(dict(symbol=row["symbol"],
+                reason="Final-target net reward is below the estimated stop loss after fees and slippage",
+                sector=row['sector'],score=float(row['score']),rejection_stage='economics',qualification=_stage,
+                entry_high=upper,stop=stop,funding=allocation.funding,actionable=False,execution_ready=False))
+            continue
+        if state in ("INVALIDATED", "BELOW ENTRY ZONE"):
+            rejected.append(dict(symbol=row["symbol"],reason="Fresh price invalidates this entry plan"))
+            continue
+        rows.append(dict(symbol=row["symbol"],sector=row["sector"],score=float(row["score"]),
             entry_low=lower,entry_high=upper,stop=stop,t1=targets[0],t2=targets[1],t3=targets[2],
             qty=qty,notional=round(qty*upper,2),estimated_stop_loss=round(allocation.risk_amount,2),
+            cash_required=round(allocation.cash_required,2), funding=allocation.funding,
+            funding_status='fundable_conditional', execution_ready=False,
             estimated_net_at_targets=returns,
             net_r_at_targets=[round(p/allocation.risk_amount,2) for p in returns],
             price_asof=screen.get("price_asof"),quote_price=current,
             quote_at=quote.get("ts") if quote else None,state=state,
-            why=f"20-session strength versus Nifty +{m['rs_vs_nifty20_pct']:.1f}pp; sector +{m['sector_rs20_pct']:.1f}pp; profitable business with delivery evidence",
-            model_version="conditional-pullback-v2",
+            why=f"20-session strength versus Nifty 50 +{float(m['rs_vs_nifty20_pct']):.1f}pp; sector +{float(m['sector_rs20_pct']):.1f}pp; volume {float(m['relative_volume']):.1f}x with delivery above average; quality and after-cost reward checks passed",
+            data_contract_version=screen.get("data_contract_version", "screening-data-v1"),
+            model_version=MODEL_VERSION,selection_policy=dict(SELECTION_POLICY),
             confirmation_policy=dict(POLICY),
             buy_condition=f"After an observed zone touch, require a completed daily rebound (close above open and prior close, in the top 40% of the range, volume at least 1.5x the prior 20-session mean); consider only a fresh next-session quote between Rs {lower:.2f} and Rs {upper:.2f} with market, news and risk checks passed",
             invalidation=f"Cancel if price falls below Rs {stop:.2f}, adverse news appears, or the market/risk gate blocks entry",
             horizon="4–8 weeks; reassess after 40 sessions",
             target_method="T1/T2/T3 = 2/3/4 times price risk from the upper entry price; scenarios, not price forecasts",
-            actionable=False,execution="Conditional paper preview; stock execution remains unpromoted",
+            actionable=False,execution="Conditional research preview; automatic paper entries use a separate confirmed trial plan",
             evidence=row))
+        if _stage == 'watch':
+            rows[-1].update(model_version='stock-research-watch-v1', state='RESEARCH WATCH',
+                entry_blocker=reject_reason(row, screen, now) or 'Rebound confirmation and later executable quote required',
+                why=f"Verified profitable business, positive stock and sector relative strength; volume {float(m['relative_volume']):.1f}x. Entry checks have not passed.",
+                execution='Research candidate only; cannot submit an order or authorise automation',
+                buy_condition='Wait for all entry participation and setup checks, then a new frozen plan and observed rebound confirmation')
     rows.sort(key=lambda r:(-r["score"],r["symbol"]))
-    rows=rows[:min(max(limit,0),10)]
-    for i,row in enumerate(rows,1):row["rank"]=i
-    return dict(ideas=rows,count=len(rows),requested=10,capital=book.capital,cash=book.cash,
-        risk_cap=round(max(0.,min(book.capital*SLEEVES.risk_per_trade,
-            book.capital*SLEEVES.daily_loss_limit+min(book.day_pnl,0.)-book.open_risk+book.strategic_open_risk,
-            book.capital*SLEEVES.max_drawdown-book.open_risk)),2),
-        max_positions=SLEEVES.max_positions_total,book_error=book_error,
-        rejected=rejected,generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
-        note="Ten alternatives, not ten simultaneous purchases. Quantities use your paper account and include estimated stop costs. Entry confirmation and production promotion are still required.")
+    quality_rank = {r['symbol']:i for i,r in enumerate(sorted(qualified,
+        key=lambda r:(-float(r['score']),r['symbol'])),1)}
+    funding_rejections = sorted((r for r in rejected if r.get('rejection_stage') in ('funding','economics')),
+                               key=lambda r:(-r['score'],r['symbol']))
+    for row in funding_rejections:row['quality_rank']=quality_rank[row['symbol']]
+    fundable_count = len(rows)
+    selected, sectors = [], set()
+    maximum = min(max(limit,0),SELECTION_POLICY["max_ideas"])
+    for row in rows:
+        reason = ("A higher-ranked qualifying idea already covers this sector" if row["sector"] in sectors else
+                  "Selective shortlist cap reached; no extra publication" if len(selected)>=maximum else "")
+        if reason:
+            rejected.append(dict(symbol=row["symbol"],reason=reason))
+        else:
+            selected.append(row);sectors.add(row["sector"])
+    rows = selected
+    for i,row in enumerate(rows,1):
+        row.update(rank=i, funding_rank=i, quality_rank=quality_rank[row['symbol']])
+    return dict(ideas=rows,count=len(rows),requested=0,max_ideas=maximum,selection_policy=dict(SELECTION_POLICY),capital=book.capital,cash=book.cash,
+        risk_cap=round(max(0.,min(book.capital*settings.risk_per_trade,
+            book.capital*settings.daily_loss_limit+min(book.day_pnl,0.)-book.open_risk+book.strategic_open_risk,
+            book.capital*settings.max_drawdown-book.open_risk)),2),
+        max_positions=settings.max_positions_total,book_error=book_error,
+        funding_rejections=funding_rejections,
+        funding_summary=dict(version='account-funding-v1',qualified=len(qualified),fundable=fundable_count,
+            unfunded=len(funding_rejections),minimum_ticket=settings.min_ticket,
+            sleeve_position_limit=settings.quality_momentum.max_positions,
+            sleeve_positions_committed=book.per_sleeve_positions.get('quality_momentum',0),
+            ranking='Existing quality score among fundable alternatives; one per sector. These alternatives are not cumulative orders.',
+            qualification=_stage,execution_ready=False),
+        rejected=rejected,discovery_health=discovery_health(screen,rejected,now),
+        generated_at=screen.get("generated_at"),price_asof=screen.get("price_asof"),
+        note="Zero to three qualifying ideas; no daily quota and at most one per sector. Quantities are independent alternatives using your paper account, after estimated stop costs. Automatic paper entries require confirmed trial plans; independent validation remains required before live use.")
+
+
+def research_candidates(screen, book, quotes=None, now=None, book_error=''):
+    """Show strong businesses awaiting a setup without manufacturing buy plans.
+
+    Shares/levels are conditional scenarios under the same account allocator.
+    These rows are never published into the executable/forward plan journals.
+    """
+    return shortlist(screen, book, quotes, now, book_error, _stage='watch')['ideas']

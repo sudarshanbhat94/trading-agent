@@ -104,6 +104,11 @@ def net(plan, entry, exit_price):
 def fingerprint(plan):
     fields = {k:plan[k] for k in ('symbol','price_asof','entry_low','entry_high','stop','t1','t2','t3','qty')}
     fields['version'] = plan.get('model_version', VERSION)
+    # New paper trials are epoch-bound. Existing research identities and the
+    # registered forward protocol retain their exact historical fingerprints.
+    if 'automation_epoch' in plan:
+        fields['automation_epoch'] = plan['automation_epoch']
+        fields['automation_model_version'] = plan['automation_model_version']
     return hashlib.sha256(_json(fields).encode()).hexdigest()
 
 

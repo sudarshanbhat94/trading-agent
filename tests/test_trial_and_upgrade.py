@@ -40,7 +40,7 @@ def _client(tmp):
     from app import main as m, v2_web
     v2_web.V2_DB = v2
     v2_web.PAYMENT_FILE = os.path.join(tmp, "payment.json")
-    return TestClient(m.app), m, v2_web
+    return TestClient(m.app,headers={"Origin":"http://testserver"}), m, v2_web
 
 
 class TrialWindowTest(unittest.TestCase):
@@ -230,11 +230,11 @@ class UpgradeFlowTest(unittest.TestCase):
         self.assertEqual(row["status"], "approved")
         self.assertIn("UTR123456789", row["note"])
 
-    def test_approving_without_a_reference_still_works(self) -> None:
+    def test_approving_without_a_reference_cannot_grant_a_subscription(self) -> None:
         self.client.post("/v2/api/upgrade", json={"plan": "paper"})
         rid = self.mine()[0]["id"]
-        self.main.db.decide_plan_request(rid, True, "admin", "")
-        self.assertEqual(self.main.db.plan_request(rid)["status"], "approved")
+        with self.assertRaises(ValueError):self.main.db.decide_plan_request(rid, True, "admin", "")
+        self.assertEqual(self.main.db.plan_request(rid)["status"], "pending")
 
     def test_the_qr_encodes_the_amount(self) -> None:
         """A static QR makes the subscriber type the price, and a wrong amount
@@ -258,7 +258,7 @@ class UpgradeFlowTest(unittest.TestCase):
         self.main.db.create_user(admin_name, hash_password(self.pw), role="admin", active=True)
         self.client.cookies.clear()
         self.client.post("/api/auth/login", json={"username": admin_name, "password": self.pw})
-        r = self.client.post(f"/v2/api/admin/requests/{rid}", json={"approve": True})
+        r = self.client.post(f"/v2/api/admin/requests/{rid}", json={"approve": True,"payment_ref":"fixture-receipt-"+str(rid)})
         self.assertEqual(r.status_code, 200, r.text)
         fresh = self.main.db.user_by_id(self.user["id"])
         self.assertEqual(plans.normalize(fresh["account_plan"]), "paper")
@@ -436,7 +436,7 @@ class SubscriptionExpiryTest(unittest.TestCase):
 
     def test_approval_sets_a_billing_period(self) -> None:
         r = self.main.db.create_plan_request(self.user["id"], "auto", 999.0)
-        self.main.db.decide_plan_request(r["id"], True, "admin")
+        self.main.db.decide_plan_request(r["id"], True, "admin",'fixture-receipt-'+str(r['id']))
         row = self.main.db.user_by_id(self.user["id"])
         self.assertTrue(row["plan_expires_at"])
         st = plans.subscription_state(row["account_plan"], row["plan_expires_at"])
@@ -446,7 +446,7 @@ class SubscriptionExpiryTest(unittest.TestCase):
         """Paying on time must not throw away what is left."""
         for _ in range(2):
             r = self.main.db.create_plan_request(self.user["id"], "auto", 999.0)
-            self.main.db.decide_plan_request(r["id"], True, "admin")
+            self.main.db.decide_plan_request(r["id"], True, "admin",'fixture-receipt-'+str(r['id']))
         row = self.main.db.user_by_id(self.user["id"])
         st = plans.subscription_state(row["account_plan"], row["plan_expires_at"])
         self.assertEqual(st["days_left"], plans.SUBSCRIPTION_DAYS * 2)
