@@ -16,6 +16,14 @@ INDEX_KEYS = {'NIFTY':'NSE_INDEX|Nifty 50','BANKNIFTY':'NSE_INDEX|Nifty Bank'}
 IST = ZoneInfo('Asia/Kolkata')
 
 
+def completed_cutoff(now):
+    """Match the stock screen's conservative 16:00 IST daily rollover."""
+    if now.utcoffset() is None:
+        raise ValueError('Aware index capture time required')
+    local = now.astimezone(IST)
+    return local.date() - timedelta(days=int(local.hour < 16))
+
+
 def normalize(symbol, data, now):
     if symbol not in INDEX_KEYS or data.get('status') != 'success':
         raise ValueError('identified successful index history required')
@@ -23,8 +31,9 @@ def normalize(symbol, data, now):
     for values in data['data']['candles']:
         stamp = store.timestamp(values[0]).astimezone(IST)
         # Only completed sessions; a source response cannot turn today's partial
-        # bar into yesterday's evidence. Preserve the original source timestamp.
-        if stamp.date() >= now.astimezone(IST).date(): continue
+        # bar into yesterday's evidence. The completed current day is usable
+        # after the SAME rollover as equities, with its source date preserved.
+        if stamp.date() > completed_cutoff(now): continue
         if len(values)<6 or any(isinstance(v,bool) for v in values[1:6]):
             raise ValueError('numeric index OHLC required')
         nums = [float(v) for v in values[1:6]]
@@ -69,18 +78,26 @@ def load(now=None, path=None):
 
 
 def capture(con, asof, errors):
-    """Two read-only vendor requests when completed-session history is due."""
+    """Keep completed indices and stocks aligned, including the close rollover.
+
+    Historical candles exclude today's session. After 16:00 IST, append the
+    vendor's source-dated intraday daily candle; never rename yesterday's bar.
+    """
     import httpx
     from .config import Settings, settings_from_overrides
     from .market_data import normalize_upstox_access_token
     now = datetime.now(timezone.utc)
+    target = str(asof)[:10]
     cached = frames(con,now)
-    due = [s for s in INDEX_KEYS if s not in cached or str(cached[s].index[-1])[:10]!=str(asof)[:10]]
+    if target > completed_cutoff(now).isoformat():
+        errors.append('Actual index history target is not a completed session')
+        return cached
+    due = [s for s in INDEX_KEYS if s not in cached or str(cached[s].index[-1])[:10]!=target]
     if not due: return cached
     import json
     try:
         base = Settings()
-        with sqlite3.connect(base.database_path.resolve().as_uri()+'?mode=ro',uri=True) as main:
+        with closing(sqlite3.connect(base.database_path.resolve().as_uri()+'?mode=ro',uri=True)) as main:
             overrides={}
             for key,value in main.execute('SELECT key,value FROM runtime_settings'):
                 try: overrides[key]=json.loads(value)
@@ -93,13 +110,29 @@ def capture(con, asof, errors):
     if not token:
         errors.append('Actual index history unavailable: configured market-data token missing')
         return cached
-    end = now.astimezone(IST).date()-timedelta(days=1)
+    today = now.astimezone(IST).date()
+    end = min(datetime.fromisoformat(target).date(), today-timedelta(days=1))
     with httpx.Client(timeout=20,headers={'Authorization':'Bearer '+token,'Accept':'application/json'}) as http:
         for symbol in due:
             try:
-                url='https://api.upstox.com/v3/historical-candle/'+quote(INDEX_KEYS[symbol],safe='')+'/days/1/'+str(end)+'/'+str(end-timedelta(days=550))
-                response=http.get(url);response.raise_for_status()
-                payload=normalize(symbol,response.json(),datetime.now(timezone.utc))
+                key=quote(INDEX_KEYS[symbol],safe='')
+                if symbol in cached and str(cached[symbol].index[-1])[:10] == end.isoformat():
+                    candles=[[r['ts'],r['open'],r['high'],r['low'],r['close'],r['volume']]
+                             for r in cached[symbol].to_dict('records')]
+                else:
+                    url='https://api.upstox.com/v3/historical-candle/'+key+'/days/1/'+str(end)+'/'+str(end-timedelta(days=550))
+                    response=http.get(url);response.raise_for_status()
+                    body=response.json()
+                    if body.get('status')!='success':raise ValueError('Historical index response unavailable')
+                    candles=list(body['data']['candles'])
+                if target == today.isoformat():
+                    response=http.get('https://api.upstox.com/v3/historical-candle/intraday/'+key+'/days/1')
+                    response.raise_for_status();body=response.json()
+                    if body.get('status')!='success':raise ValueError('Current completed index response unavailable')
+                    candles += list(body['data']['candles'])
+                payload=normalize(symbol,dict(status='success',data=dict(candles=candles)),datetime.now(timezone.utc))
+                if payload['price_asof'] != target:
+                    raise ValueError('Exact completed index session missing')
                 seen=datetime.now(timezone.utc)
                 store.save(con,symbol,'index_history','Upstox actual index daily candles',payload,seen.isoformat(),seen)
             except (httpx.HTTPError,ValueError,KeyError,TypeError,IndexError) as exc:

@@ -1,3 +1,20 @@
+## Entry pipeline repair — 29 October 2026, evening
+
+**TRADING BEHAVIOUR CHANGED:** fix completed-index rollover and use paper
+workflow selective-paper-v4-observe-first. Today's equity screen lost all 354
+benchmark comparisons because index parsing/fetching always stopped yesterday.
+Shared 16:00 cutoff plus source-dated completed intraday daily candles restores
+alignment without partial-bar/lookahead substitution. Private source replay:
+354 benchmark failures to zero; eight fundable research candidates, one selected
+(PERSISTENT); zero strict entries. Automation now creates distinct frozen watch
+contracts before participation arrives, retaining research-origin identity;
+all final entry/risk/contract/fill gates stay unchanged. Earlier publications,
+Rs 100,000 allocation/epoch and registered experiment must remain unchanged.
+Full local suite 2,813 run / 2,680 passed / 133 skipped, 135 function fixtures and
+synthetic production stop/target proof passed. See docs/entry-pipeline-repair-2026-10-29.md
+and private exact-commit rollout receipts. No forced production trade or profit
+claim; the original-zone timing question still needs independent forward data.
+
 ## Paper capital increase — 29 October 2026
 
 **TRADING BEHAVIOUR CHANGED:** user authorises Rs 100,000 NSE paper capital

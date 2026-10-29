@@ -195,8 +195,23 @@ class SelectivePaperSleeve(Sleeve):
         finally:
             con.close()
         shortlist = plans.shortlist(screen, ctx.book, ctx.live, now, settings=ctx.settings) if dec.active else dict(ideas=[], rejected=[])
-        publications = [dict(p, automation_epoch=ctx.paper_epoch, automation_model_version=MODEL_VERSION)
-                        for p in shortlist['ideas'] if p['symbol'] not in active]
+        watch = plans.shortlist(screen, ctx.book, ctx.live, now, settings=ctx.settings, _stage='watch') if dec.active else dict(ideas=[], rejected=[])
+        # Research admission must precede entry confirmation. All current entry
+        # predicates still run in _assess: publication alone permits no order.
+        publications = []
+        sectors = set()
+        for p in shortlist['ideas'] + watch['ideas']:
+            if p['symbol'] in active or p['sector'] in sectors:
+                continue
+            publications.append(dict(p, model_version=selection.MODEL_VERSION,
+                                     research_origin_model_version=p['model_version'],
+                                     automation_epoch=ctx.paper_epoch, automation_model_version=MODEL_VERSION,
+                                     automation_publication_policy='observe-before-entry-confirmation-v1',
+                                     execution='New frozen automation observation; not an approved order or fill',
+                                     buy_condition='All current entry evidence, observed zone touch, completed rebound, next-session later quote and account/execution checks required'))
+            sectors.add(p['sector'])
+            if len(publications) >= selection.POLICY['max_ideas']:
+                break
         if publications:
             tracking.publish(path, JOURNAL_OWNER, publications, now=now)
         # Submission-time quotes cannot retrospectively touch a new plan.
@@ -237,6 +252,7 @@ class SelectivePaperSleeve(Sleeve):
             dec.candidates = sorted(eligible.values(), key=lambda c: (-c.score, c.symbol))[:3]
             dec.diagnostics = dict(model_version=MODEL_VERSION, validation='paper trial; returns unvalidated',
                 publications=len(rows), new_publications=len(publications), confirmed_candidates=len(dec.candidates),
+                publication_policy='observe-before-entry-confirmation-v1', research_watch_candidates=len(watch['ideas']),
                 funding_summary=shortlist.get('funding_summary',{}),
                 funding_rejections=shortlist.get('funding_rejections',[]),
                 confirmed_fundable_alternatives=[dict(funding[c.symbol],rank=i)

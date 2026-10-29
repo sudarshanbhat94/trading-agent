@@ -108,6 +108,34 @@ class SelectivePaperAutomationTest(unittest.TestCase):
         self.assertEqual(paper_exchange.pending(self.con), [])
         self.assertEqual(ctx.book.cash, 10000)
 
+    def test_research_observation_precedes_participation_without_bypassing_entry_checks(self):
+        ctx=self.context()
+        for key in ('capital','cash','equity','peak_equity'):setattr(ctx.book,key,100000)
+        row=ctx.equity_screen['equities'][0]
+        row['metrics'].update(relative_volume=.7,setup='no controlled entry setup')
+        row['flags']=['no controlled entry setup']
+        initial=self.sleeve.propose(ctx)
+        self.assertEqual(initial.candidates,[])
+        self.assertEqual(initial.diagnostics['new_publications'],1)
+        with closing(sqlite3.connect(self.journal)) as c:
+            frozen=json.loads(c.execute('SELECT payload FROM publications').fetchone()[0])
+        self.assertEqual(frozen['automation_model_version'],automation.MODEL_VERSION)
+        self.assertEqual(frozen['automation_publication_policy'],'observe-before-entry-confirmation-v1')
+        self.assertEqual(frozen['research_origin_model_version'],'stock-research-watch-v1')
+        at=FIRST+timedelta(minutes=1)
+        automation.observe({'TEST':dict(price=95,ts=at.isoformat(),source='upstox-live')},at)
+        waiting=self.context(ENTRY,95,'2026-10-05',self.rebound());waiting.book=ctx.book
+        waiting.equity_screen['equities'][0]['metrics']['relative_volume']=.7
+        self.assertEqual(self.sleeve.propose(waiting).candidates,[])
+        waiting.observed_at+=timedelta(seconds=1)
+        waiting.equity_screen['equities'][0]['metrics']['relative_volume']=2
+        self.assertEqual(self.sleeve.propose(waiting).candidates,[])  # First-known evidence is not a fill.
+        waiting.observed_at+=timedelta(seconds=5);waiting.live['TEST']['ts']=waiting.observed_at.isoformat()
+        self.assertEqual(len(self.sleeve.propose(waiting).candidates),1)
+        with closing(sqlite3.connect(self.journal)) as c:
+            self.assertEqual(json.loads(c.execute('SELECT payload FROM publications').fetchone()[0]),frozen)
+        self.assertEqual(paper_exchange.pending(self.con),[])
+
     def test_defensive_stock_confirmation_fill_subscriber_and_exit_keep_actual_regime(self):
         self.regime = RegimeView('OFF', False, .2, 'OFF', 'Synthetic defensive market')
         ctx, candidate = self.confirmed()
@@ -185,14 +213,13 @@ class SelectivePaperAutomationTest(unittest.TestCase):
                          (automation.MODEL_VERSION, 'quality_momentum', 'ON'))
 
     def test_unavailable_stale_missing_news_bad_quality_weak_volume_and_duplicate_identity_do_not_execute(self):
-        for mode in ('UNAVAILABLE', 'stale', 'news', 'quality', 'volume', 'duplicate', 'outside', 'cash'):
+        for mode in ('UNAVAILABLE', 'stale', 'news', 'quality', 'duplicate', 'outside', 'cash'):
             with self.subTest(mode=mode):
                 ctx = self.context()
                 if mode=='UNAVAILABLE':ctx.regime = RegimeView('UNAVAILABLE', False, .2, 'UNAVAILABLE', 'Fixture')
                 elif mode=='stale':ctx.equity_screen['stale'] = True
                 elif mode=='news':ctx.equity_screen['equities'][0]['flags'] = ['adverse official filing']
                 elif mode=='quality':ctx.equity_screen['equities'][0]['fundamentals']['roe_pct'] = 1
-                elif mode=='volume':ctx.equity_screen['equities'][0]['metrics']['relative_volume'] = .5
                 elif mode=='duplicate':ctx.equity_screen['equities'].append(copy.deepcopy(ctx.equity_screen['equities'][0]))
                 elif mode=='outside':ctx.eligible_symbols = {'OTHER'}
                 elif mode=='cash':ctx.book.cash = 100

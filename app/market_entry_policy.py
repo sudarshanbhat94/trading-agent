@@ -7,7 +7,7 @@ index route retain their separate conservative gates.
 """
 
 VERSION = 'stock-specific-paper-v1'
-STOCK_MODEL_VERSION = 'selective-paper-v3'
+STOCK_MODEL_VERSION = 'selective-paper-v4-observe-first'
 KNOWN_TRENDS = frozenset(('ON', 'NEUTRAL', 'OFF'))
 
 

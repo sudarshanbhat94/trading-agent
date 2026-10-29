@@ -44,6 +44,49 @@ class ActualIndexHistoryTest(unittest.TestCase):
             self.assertIn('settings could not be read',errors[0])
             self.assertFalse((Path(tmp)/'missing.db').exists())
 
+    def test_today_is_excluded_before_stock_rollover_and_accepted_after_it(self):
+        data=response();data['data']['candles'].insert(0,[NOW.date().isoformat()+'T00:00:00+05:30',20200,20210,20190,20205,0])
+        before=NOW.replace(hour=10,minute=29)
+        after=before+timedelta(minutes=1)
+        self.assertEqual(index_history.normalize('NIFTY',data,before)['price_asof'],'2026-10-07')
+        self.assertEqual(index_history.normalize('NIFTY',data,after)['price_asof'],'2026-10-08')
+
+    def test_close_rollover_fetches_exact_today_without_backdating_or_redownloading_history(self):
+        after=NOW.replace(hour=11)
+        class Clock(datetime):
+            @classmethod
+            def now(cls,tz=None):return after.astimezone(tz) if tz else after.replace(tzinfo=None)
+        for symbol in index_history.INDEX_KEYS:
+            data=index_history.normalize(symbol,response(),NOW)
+            store.save(self.con,symbol,'index_history','SYNTHETIC vendor fixture',data,NOW.isoformat(),NOW)
+        self.con.commit()
+        with tempfile.TemporaryDirectory() as tmp:
+            main=Path(tmp)/'main.db'
+            with sqlite3.connect(main) as c:c.execute('CREATE TABLE runtime_settings(key,value)')
+            settings=Mock(database_path=main,upstox_access_token='synthetic-fixture')
+            daily=Mock();daily.json.return_value=dict(status='success',data=dict(candles=[
+                [NOW.date().isoformat()+'T00:00:00+05:30',20200,20210,20190,20205,0]]))
+            http=Mock();http.get.return_value=daily
+            with patch.object(index_history,'datetime',Clock),patch('app.config.Settings',return_value=settings),patch('app.config.settings_from_overrides',return_value=settings),patch('httpx.Client') as client:
+                client.return_value.__enter__.return_value=http
+                errors=[];frames=index_history.capture(self.con,'2026-10-08',errors)
+                self.assertEqual(errors,[])
+                self.assertEqual(http.get.call_count,2)
+                self.assertTrue(all('/intraday/' in c.args[0] for c in http.get.call_args_list))
+                self.assertEqual(set(frames),set(index_history.INDEX_KEYS))
+                self.assertTrue(all(str(f.index[-1])[:10]=='2026-10-08' for f in frames.values()))
+                self.assertTrue(all(str(f.index[-1])[:10]=='2026-10-07' for f in index_history.frames(self.con,NOW).values()))
+                # An empty current response cannot be renamed as today's history.
+                daily.json.return_value=dict(status='success',data=dict(candles=[]))
+                fresh=sqlite3.connect(':memory:');self.addCleanup(fresh.close);store.initialise(fresh)
+                for symbol in index_history.INDEX_KEYS:
+                    store.save(fresh,symbol,'index_history','SYNTHETIC vendor fixture',index_history.normalize(symbol,response(),NOW),NOW.isoformat(),NOW)
+                fresh.commit();errors=[]
+                old=index_history.capture(fresh,'2026-10-08',errors)
+                self.assertEqual(len(errors),2)
+                self.assertTrue(all(str(f.index[-1])[:10]=='2026-10-07' for f in old.values()))
+                self.assertEqual(fresh.execute('SELECT COUNT(*) FROM evidence').fetchone()[0],2)
+
     def test_conflicts_nan_boolean_unknown_short_and_invalid_ohlc_refuse(self):
         bad=[]
         for value in (float('nan'),float('inf'),True,-1):

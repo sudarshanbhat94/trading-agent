@@ -260,13 +260,12 @@ def run(args):
         identity_issues=json.loads(identity_rows[0][0]).get('issues',[]) if identity_rows else []
         quarantined={r['symbol'] for r in identity_issues}
         tails, _ = load_panel(main, "IN", topn=3000, min_bars=127)
-        cutoff = now.astimezone(providers.IST).date()
-        if now.astimezone(providers.IST).hour < 16: cutoff -= timedelta(days=1)
+        from app.index_history import completed_cutoff, capture as capture_index_history
+        cutoff = completed_cutoff(now)
         tails = {s:g.loc[g.index <= pd.Timestamp(cutoff)] for s,g in tails.items()}
         dates = [g.index[-1] for g in tails.values() if not g.empty]
         if not dates: raise ValueError("completed-session prices unavailable")
         asof = max(dates)
-        from app.index_history import capture as capture_index_history
         tails.update(capture_index_history(con,asof,errors))
         sectors = {}
         wanted = []
