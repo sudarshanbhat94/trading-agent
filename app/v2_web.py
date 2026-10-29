@@ -188,9 +188,8 @@ def _panel(market):
     c = _panel_cache.get(market)
     if c and time.time() - c[0] < 900:
         return c[1], c[2]
-    con = _ro(MAIN_DB)
-    syms, mdf = eng.load_panel(con, market, topn=eng.DEFAULTS["topn"])
-    con.close()
+    with closing(_ro(MAIN_DB)) as con:
+        syms, mdf = eng.load_panel(con, market, topn=eng.DEFAULTS["topn"])
     _panel_cache[market] = (time.time(), syms, mdf)
     return syms, mdf
 
@@ -3601,9 +3600,8 @@ def api_admin_jobs(market: str = "IN"):
 
     def _observe(key, db_path, sql, params=()):
         try:
-            con = _ro(db_path)
-            row = con.execute(sql, params).fetchone()
-            con.close()
+            with closing(_ro(db_path)) as con:
+                row = con.execute(sql, params).fetchone()
             observations[key] = {"latest": row[0] if row else None,
                                  "rows": row[1] if row and len(row) > 1 else None}
         except Exception:

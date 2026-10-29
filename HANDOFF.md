@@ -6,7 +6,7 @@ Fixes preserve web quote provenance for actual funnel funding; close failed read
 handles; distinguish sizing, contract refusal and pending orders; mark stale
 negative assessments unknown; expose pre-score universe exclusions; and prevent
 missing marks appearing as flat owned P&L/equity. Four previously undiscovered UI
-tests restored with a discovery guard. Full local suite 2,803 run / 2,670 passed /
+tests restored with a discovery guard. Full local suite 2,804 run / 2,671 passed /
 133 skipped, 135 function fixtures and isolated stop/target production-path proofs
 passed. Actual SPA desktop/390px preview verified; authenticated production UI
 still requires a valid login. See docs/runtime-bug-repair-2026-10-29.md and private

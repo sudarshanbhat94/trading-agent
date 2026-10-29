@@ -1282,9 +1282,9 @@ def _sector_map(market):
         return c[1]
     out = {}
     try:
-        con = _ro(MAIN_DB)
-        rows = con.execute("SELECT symbol, sector FROM universe").fetchall()
-        con.close()
+        from contextlib import closing
+        with closing(_ro(MAIN_DB)) as con:
+            rows = con.execute("SELECT symbol, sector FROM universe").fetchall()
         # catch-all labels ('US Equity' covers 5,212 names) are not sectors —
         # counting them freezes the whole book via the concentration cap. Any
         # label covering >5% of the universe is treated as no-sector.

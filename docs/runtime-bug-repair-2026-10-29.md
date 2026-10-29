@@ -6,7 +6,7 @@
 
 - `app/v2_web.py:_live_map` omitted source metadata required by `execution_funnel.report`: confirmed stocks could remain unassessable for funding. Preserve the actual SQL-filtered source. A real SQLite quote read now traverses the actual funnel with a synthetic confirmed publication; it becomes fundable without an order/fill.
 - Engine/web quote readers accepted positive infinity; OHLC/volume helpers propagated it. Require finite positive numbers; malformed ranges/volume use existing finite fallbacks. Tests cover corrupt rows, boolean values and source isolation.
-- Quote, optional index/options and index-history readers leaked SQLite handles on errors (and index-history success). Close actual connections on every path; tests assert the connection is unusable after the read.
+- Quote, panel, sector, health, optional index/options and index-history readers leaked SQLite handles on errors (and index-history success). Close actual connections on every path; tests assert the connection is unusable after the read.
 - `_remember_sleeve_view` claimed all gates passed before canonical contract checks and reservations. Display proposed/checking, actual refusal or pending reservation separately; risk halts dominate. Replayed terminal intents cannot count as new pending orders or crash logging on absent requested quantity. The real production-pass fixture exercises canonical rejection before a later successful reservation/fill.
 - The funnel treated stale negative assessments as current zero funding. Historical assessments now make current fundability unknown, retaining observed counts and dated refusal evidence.
 - Screening displayed only retained stocks as total coverage, omitting pre-score history/liquidity/identity exclusions. Expose observed checks, scored liquid names and exclusion counts separately. Missing or inconsistent exclusion metadata remains unknown; reference membership is never assumed checked.
@@ -15,7 +15,7 @@
 
 ## Verification
 
-Local full unittest run: 2,803 tests / 2,670 passed / 133 skipped / zero failures. Additional function fixtures: 135 passed. Isolated production stock entry, durable order, later confirmed fill, automatic stop AND target, restart/replay, bad-depth refusal and balanced after-cost accounting rehearsals passed. No broker orders. Actual SPA checked in a disposable preview at desktop and 390px; mobile document width equals viewport width. Synthetic preview is not an authenticated production UI check.
+Local full unittest run: 2,804 tests / 2,671 passed / 133 skipped / zero failures. Additional function fixtures: 135 passed. Isolated production stock entry, durable order, later confirmed fill, automatic stop AND target, restart/replay, bad-depth refusal and balanced after-cost accounting rehearsals passed. No broker orders. Actual SPA checked in a disposable preview at desktop and 390px; mobile document width equals viewport width. Synthetic preview is not an authenticated production UI check.
 
 Follow the exact-commit CI and ignored rollout receipts for deployment state. Production books/configuration/protocol require preservation checks before and after restart.
 

@@ -48,6 +48,22 @@ class RuntimeDataHandlesTest(unittest.TestCase):
             for value in (True,float('inf'),float('nan'),-1):
                 self.assertEqual(helper(value,97),97)
 
+    def test_failed_panel_sector_and_health_reads_release_handles(self):
+        con=sqlite3.connect(':memory:')
+        with patch.object(v2_web,'_panel_cache',{}),patch.object(v2_web,'_ro',return_value=con),patch.object(v2_web.eng,'load_panel',side_effect=sqlite3.OperationalError('fixture')):
+            with self.assertRaises(sqlite3.OperationalError):v2_web._panel('IN')
+        self.assert_closed(con)
+        con=sqlite3.connect(':memory:')
+        with patch.object(v2_live,'_SECTOR_CACHE',{}),patch.object(v2_live,'_ro',return_value=con):
+            v2_live._sector_map('IN')
+        self.assert_closed(con)
+        handles=[]
+        def open_missing(path):
+            handle=sqlite3.connect(':memory:');handles.append(handle);return handle
+        with patch.object(v2_web,'_ro',side_effect=open_missing):v2_web.api_admin_jobs('IN')
+        self.assertGreater(len(handles),0)
+        for handle in handles:self.assert_closed(handle)
+
     def test_failed_optional_index_and_options_reads_release_handles(self):
         for fn in (v2_live._sleeve_index_bars,v2_live._sleeve_option_chain):
             with self.subTest(reader=fn.__name__):
